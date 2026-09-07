@@ -183,6 +183,17 @@ func gitCmdInRepoScanned(ctx context.Context, scan *gitScanMemo, args ...string)
 		}
 		cmd.Env = pinGitEnv(cmd.Env, "GIT_WORK_TREE", root)
 	}
+	// GIT_OPTIONAL_LOCKS=0: read-only commands (status/diff/ls-files) must
+	// not take git's opportunistic index lock. Without it every `git status`
+	// refresh rewrites .git/index (observed as REMOVE+CREATE under fsnotify),
+	// which the workspace watcher reports as workspace:tree_changed — closing
+	// a self-sustaining loop where each watcher flush triggers the very git
+	// re-fetches that rewrite the index again (~3 events/second, disrupting
+	// e.g. text selection in the review diff). The variable only disables
+	// OPTIONAL locks; commands that genuinely require the index (add/commit/
+	// stash) still take their real locks. pinGitEnv strips any inherited value
+	// first, so a user-exported GIT_OPTIONAL_LOCKS cannot re-enable it.
+	cmd.Env = pinGitEnv(cmd.Env, "GIT_OPTIONAL_LOCKS", "0")
 	cmd.Dir = scan.path
 	return cmd, nil
 }

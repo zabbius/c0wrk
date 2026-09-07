@@ -125,6 +125,22 @@ func (w *Watcher) eventLoop() {
 			if !ok {
 				return
 			}
+			// Attribute-only events (fsnotify Chmod — kqueue NOTE_ATTRIB on
+			// BSD/macOS, IN_ATTRIB on Linux) carry no content change. On macOS
+			// every git invocation that opens .git/index for reading produces
+			// one (observed with git 2.50.1 + fsnotify v1.9.0), so without this
+			// filter a plain `git status`/`git diff` refresh keeps the watcher —
+			// and every workspace:tree_changed consumer — firing forever in a
+			// self-sustaining loop (each flush triggers the git re-fetches whose
+			// index reads emit the next Chmod). Skip them entirely: a pure Chmod
+			// must neither enter the pending set nor restart the debounce window
+			// (a Chmod storm would otherwise postpone every real event's flush
+			// indefinitely). A Chmod ORed with a write-ish op still passes —
+			// kqueue reports NOTE_ATTRIB alongside most real mutations.
+			if event.Op&fsnotify.Chmod != 0 &&
+				event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) == 0 {
+				continue
+			}
 			if event.Name != "" {
 				if pending == nil {
 					pending = make(map[string]struct{})
