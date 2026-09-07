@@ -529,7 +529,10 @@ A cooperative pause is a **clean checkpoint, not a degraded completion** — the
 
 ```
 User clicks "Resume" (optionally with model/reasoning-effort overrides)
-  → Frontend: resumeSession(sessionId, modelOverride, reasoningEffort, nudge="")
+  → Frontend: a typed chat-mode draft routes through the SEND flow instead —
+      the nudge-resume router below reaches ResumeSession carrying the text;
+      an empty editor (or terminal mode, where the chat editor is hidden):
+      resumeSession(sessionId, modelOverride, reasoningEffort, nudge="")
   → Backend: FrontendAPI.ResumeSession()
       └─ Manager.ResumeSession() → ResumeTask()
           └─ loads unfinished task + persisted state (trajectory, goal state)
