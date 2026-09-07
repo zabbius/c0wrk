@@ -49,7 +49,17 @@ const GRAPH: HypothesisGraph = {
 const NODE: HypothesisNode = { id: 'H-001', title: 'Root hypothesis', status: 'open' }
 
 /** A draft that differs from the node in `result` (so a save is dirty). */
-const DIRTY_DRAFT: HypothesisDraft = { status: 'open', result: 'finding', timebox: '' }
+const DIRTY_DRAFT: HypothesisDraft = {
+  title: 'Root hypothesis',
+  parents: '',
+  status: 'open',
+  decision: '',
+  statement: '',
+  verification_criterion: '',
+  experiment_notes: '',
+  timebox: '',
+  result: 'finding',
+}
 
 function makeStatus(): ResearchStatus {
   return {

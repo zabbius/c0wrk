@@ -3,7 +3,7 @@ import {
   useResearchStore,
   selectEnabled,
   selectActiveProject,
-  RESEARCH_SIDEBAR_DEFAULT_WIDTH,
+  RESEARCH_CARD_DEFAULT_HEIGHT,
 } from './researchStore'
 import type { ResearchStatus, ResearchGraphResponse, HypothesisDraft } from '@/types/models'
 
@@ -38,6 +38,21 @@ function statusOf(enabled: boolean, projectId = 'proj-1'): ResearchStatus {
           ],
         }
       : undefined,
+  }
+}
+
+/** A minimal well-formed draft (fields default to '' apart from the args). */
+function draftOf(status: string, result: string, timebox: string): HypothesisDraft {
+  return {
+    title: 'Hypothesis',
+    parents: '',
+    status,
+    decision: '',
+    statement: '',
+    verification_criterion: '',
+    experiment_notes: '',
+    timebox,
+    result,
   }
 }
 
@@ -86,11 +101,11 @@ describe('researchStore', () => {
     expect(useResearchStore.getState().error).toBe('err')
   })
 
-  it('reset restores workspace view state defaults (selection, draft, filter, width)', () => {
+  it('reset restores workspace view state defaults (selection, draft, filter, height)', () => {
     const s = useResearchStore.getState()
-    s.selectHypothesis('h1', { status: 'open', result: 'wip', timebox: '1w' })
+    s.selectHypothesis('h1', draftOf('open', 'wip', '1w'))
     s.setHideTerminal(true)
-    s.setSidebarWidth(420)
+    s.setCardHeight(420)
     useResearchStore.getState().reset()
 
     const after = useResearchStore.getState()
@@ -98,7 +113,7 @@ describe('researchStore', () => {
     expect(after.selectedHypothesisProjectId).toBeNull()
     expect(after.hypothesisDraft).toBeNull()
     expect(after.hideTerminal).toBe(false)
-    expect(after.sidebarWidth).toBe(RESEARCH_SIDEBAR_DEFAULT_WIDTH)
+    expect(after.cardHeight).toBe(RESEARCH_CARD_DEFAULT_HEIGHT)
   })
 })
 
@@ -107,10 +122,10 @@ describe('researchStore — workspace view state', () => {
     useResearchStore.getState().reset()
   })
 
-  it('selectHypothesis / setHypothesisDraft / setHideTerminal / setSidebarWidth mutate only their slices', () => {
+  it('selectHypothesis / setHypothesisDraft / setHideTerminal / setCardHeight mutate only their slices', () => {
     const loadedStatus = statusOf(true)
     useResearchStore.getState().loadStatus(loadedStatus, 'proj-1')
-    const draft: HypothesisDraft = { status: 'confirmed', result: 'r', timebox: '2w' }
+    const draft = draftOf('confirmed', 'r', '2w')
     useResearchStore.getState().selectHypothesis('h1', draft)
     expect(useResearchStore.getState().selectedHypothesisId).toBe('h1')
     // The selection is stamped with the research project it was made in.
@@ -122,14 +137,14 @@ describe('researchStore — workspace view state', () => {
     expect(useResearchStore.getState().selectedHypothesisProjectId).toBeNull()
     useResearchStore.getState().selectHypothesis('h1', draft)
 
-    const next: HypothesisDraft = { status: 'confirmed', result: 'r2', timebox: '2w' }
+    const next = draftOf('confirmed', 'r2', '2w')
     useResearchStore.getState().setHypothesisDraft(next)
     expect(useResearchStore.getState().hypothesisDraft).toBe(next)
 
     useResearchStore.getState().setHideTerminal(true)
     expect(useResearchStore.getState().hideTerminal).toBe(true)
-    useResearchStore.getState().setSidebarWidth(340)
-    expect(useResearchStore.getState().sidebarWidth).toBe(340)
+    useResearchStore.getState().setCardHeight(340)
+    expect(useResearchStore.getState().cardHeight).toBe(340)
 
     // Selection/draft edits never touch the loading data slices: the loaded
     // status object is still the very reference loadStatus stored.
@@ -139,11 +154,7 @@ describe('researchStore — workspace view state', () => {
   })
 
   it('clearing the selection clears the draft with it', () => {
-    useResearchStore.getState().selectHypothesis('h1', {
-      status: 'open',
-      result: 'wip',
-      timebox: '',
-    })
+    useResearchStore.getState().selectHypothesis('h1', draftOf('open', 'wip', ''))
     useResearchStore.getState().selectHypothesis(null, null)
     const s = useResearchStore.getState()
     expect(s.selectedHypothesisId).toBeNull()
@@ -152,11 +163,7 @@ describe('researchStore — workspace view state', () => {
 
   it('loadStatus for a different project drops the selection and draft', () => {
     useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
-    useResearchStore.getState().selectHypothesis('h1', {
-      status: 'open',
-      result: 'wip',
-      timebox: '',
-    })
+    useResearchStore.getState().selectHypothesis('h1', draftOf('open', 'wip', ''))
 
     // Project switch: the new status belongs to another project — a generic
     // node id like 'h1' must not silently reopen the wrong project's card.
@@ -170,7 +177,7 @@ describe('researchStore — workspace view state', () => {
 
   it('loadStatus for the same project keeps the selection and draft (background refresh)', () => {
     useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
-    const draft: HypothesisDraft = { status: 'in-progress', result: 'wip', timebox: '' }
+    const draft: HypothesisDraft = draftOf('in-progress', 'wip', '')
     useResearchStore.getState().selectHypothesis('h1', draft)
 
     useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
@@ -182,11 +189,7 @@ describe('researchStore — workspace view state', () => {
 
   it('loadGraph never clobbers an in-progress draft', () => {
     useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
-    useResearchStore.getState().selectHypothesis('h1', {
-      status: 'open',
-      result: 'unsaved edits',
-      timebox: '3d',
-    })
+    useResearchStore.getState().selectHypothesis('h1', draftOf('open', 'unsaved edits', '3d'))
 
     // Incremental file-change update for the active project arrives while the
     // user is mid-edit — the draft must survive untouched.
@@ -210,11 +213,7 @@ describe('researchStore — workspace view state', () => {
     const s = useResearchStore.getState()
     expect(s.selectedHypothesisId).toBe('h1')
     expect(s.selectedHypothesisProjectId).toBe('r1')
-    expect(s.hypothesisDraft).toEqual({
-      status: 'open',
-      result: 'unsaved edits',
-      timebox: '3d',
-    })
+    expect(s.hypothesisDraft).toEqual(draftOf('open', 'unsaved edits', '3d'))
   })
 })
 
@@ -278,11 +277,7 @@ describe('researchStore — loadGraph convergence semantics', () => {
     // active_project_id the fallback picks the highest-numbered project).
     status.root!.active_project_id = 'r1'
     useResearchStore.getState().loadStatus(status, 'proj-1')
-    useResearchStore.getState().selectHypothesis('h1', {
-      status: 'open',
-      result: 'unsaved edits for r1',
-      timebox: '3d',
-    })
+    useResearchStore.getState().selectHypothesis('h1', draftOf('open', 'unsaved edits for r1', '3d'))
 
     // Same workspace project, but the active research project switches to
     // r2 (research-init + PickActiveProject). The selection must stay keyed
@@ -296,11 +291,7 @@ describe('researchStore — loadGraph convergence semantics', () => {
     expect(s.status?.root?.active_project_id).toBe('r2')
     expect(s.selectedHypothesisId).toBe('h1')
     expect(s.selectedHypothesisProjectId).toBe('r1')
-    expect(s.hypothesisDraft).toEqual({
-      status: 'open',
-      result: 'unsaved edits for r1',
-      timebox: '3d',
-    })
+    expect(s.hypothesisDraft).toEqual(draftOf('open', 'unsaved edits for r1', '3d'))
   })
 
   it('rejects a snapshot fetched before the last sync (stale) — no apply, no re-stamp', () => {

@@ -30,9 +30,8 @@ import (
 
 // HypothesisUpdate is the set of optional field updates for an existing
 // hypothesis card. Pointer fields distinguish "leave unchanged" (nil) from
-// "set to empty" (a non-nil pointer to ""). Only the five fields the UI mutates
-// are represented; identifier, statement, verification criterion, created, and
-// completed are not editable through this path.
+// "set to empty" (a non-nil pointer to "" / an empty Parents slice).
+// Identifier, created, and completed are not editable through this path.
 type HypothesisUpdate struct {
 	// Title is the short, human-readable label (also mirrored into the graph
 	// node label and catalog row).
@@ -52,6 +51,22 @@ type HypothesisUpdate struct {
 	// Decision is the iteration decision (continue / pivot / kill / fork),
 	// recorded by the research-decision skill.
 	Decision *string
+
+	// Statement replaces the card's "## Statement" section body.
+	Statement *string
+
+	// VerificationCriterion replaces the card's "## Verification Criterion"
+	// section body.
+	VerificationCriterion *string
+
+	// ExperimentNotes replaces the card's "## Experiment Notes" section body.
+	ExperimentNotes *string
+
+	// Parents replaces the card's parent set: the **Parent(s)** field row in
+	// the card, the incoming Mermaid edges, and the catalog row's Parent(s)
+	// column are all synchronized to this list. Validated (existence, no
+	// self-reference, no cycle) before any write.
+	Parents *[]string
 }
 
 // NewHypothesis is the input for creating a fresh hypothesis card.
@@ -280,6 +295,54 @@ func setTableField(content, fieldName, value string) string {
 	return strings.Join(result, "\n")
 }
 
+// setSection replaces the body of the first "## <heading>" section with the
+// given text (case-insensitive heading match, mirroring extractSection /
+// sectionBody on the parser side). When the section does not exist it is
+// appended at the end of the card, keeping a blank line on each side. The
+// value is preserved VERBATIM (no escaping/folding): section bodies are
+// free-form Markdown, unlike single-line table cells.
+func setSection(content, heading, value string) string {
+	body := strings.TrimRight(value, "\n")
+	lines := strings.Split(content, "\n")
+	// Mirror extractSection's matching semantics (Contains, lower-cased) so
+	// the writer and the parser always resolve the SAME section — including
+	// headings with extra decorations ("## Verification Criterion (scope)").
+	target := strings.ToLower(strings.TrimSpace(heading))
+	for i, line := range lines {
+		if h := sectionHeadingLower(line); h == "" || !strings.Contains(h, target) {
+			continue
+		}
+		// Find the end of the section: the next level-2 heading or a
+		// horizontal rule (mirroring extractSection's section semantics).
+		end := len(lines)
+		for j := i + 1; j < len(lines); j++ {
+			if sectionHeadingLower(lines[j]) != "" || strings.TrimSpace(lines[j]) == "---" {
+				end = j
+				break
+			}
+		}
+		replacement := make([]string, 0, len(lines))
+		replacement = append(replacement, lines[:i+1]...)
+		if body != "" {
+			replacement = append(replacement, "", body)
+		}
+		// Keep exactly one blank line before the next heading/rule/end.
+		replacement = append(replacement, "")
+		replacement = append(replacement, lines[end:]...)
+		return strings.TrimRight(strings.Join(replacement, "\n"), "\n")
+	}
+	// No such section: append one at the end of the card.
+	out := strings.TrimRight(content, "\n")
+	if out == "" {
+		out = "# Research"
+	}
+	out += "\n\n## " + strings.TrimSpace(heading)
+	if body != "" {
+		out += "\n\n" + body
+	}
+	return out + "\n"
+}
+
 // setFinding sets the card's recorded finding (**Finding:** line). When no
 // finding line exists yet it is inserted into the Result section (or appended
 // as a fresh Result section when the card has none). The value is escaped via
@@ -312,6 +375,15 @@ func setFinding(content, value string) string {
 	return strings.TrimRight(content, "\n") + "\n\n## Result\n\n**Finding:** " + folded + "\n"
 }
 
+// parentsCell renders a parent list for a card/table cell: "—" when empty
+// (mirroring buildCardContent), else the canonical ids joined by ", ".
+func parentsCell(parents []string) string {
+	if len(parents) == 0 {
+		return "—"
+	}
+	return strings.Join(parents, ", ")
+}
+
 // rewriteCard applies the given updates to a card's Markdown content.
 func rewriteCard(content, id string, upd HypothesisUpdate) string {
 	c := content
@@ -326,6 +398,18 @@ func rewriteCard(content, id string, upd HypothesisUpdate) string {
 	}
 	if upd.Decision != nil {
 		c = setTableField(c, "Decision", *upd.Decision)
+	}
+	if upd.Parents != nil {
+		c = setTableField(c, "Parent(s)", parentsCell(*upd.Parents))
+	}
+	if upd.Statement != nil {
+		c = setSection(c, "Statement", *upd.Statement)
+	}
+	if upd.VerificationCriterion != nil {
+		c = setSection(c, "Verification Criterion", *upd.VerificationCriterion)
+	}
+	if upd.ExperimentNotes != nil {
+		c = setSection(c, "Experiment Notes", *upd.ExperimentNotes)
 	}
 	if upd.Result != nil {
 		c = setFinding(c, *upd.Result)
@@ -415,15 +499,158 @@ func updateCatalogRow(content, id string, title, status, decision *string) strin
 	return strings.Join(lines, "\n")
 }
 
+// updateCatalogParents sets the Parent(s) column of one row in the Hypothesis
+// Catalog table (matching by canonical ID), padding the row with empty cells
+// when the catalog predates the five-column layout.
+func updateCatalogParents(content, id string, parents []string) string {
+	val := parentsCell(parents)
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(strings.TrimSpace(line), "|") {
+			continue
+		}
+		cells := splitCells(line)
+		if len(cells) < 3 || isSeparatorRow(cells) || NormalizeID(cells[0]) != id {
+			continue
+		}
+		for len(cells) < 5 {
+			cells = append(cells, "")
+		}
+		cells[4] = val
+		lines[i] = joinCells(cells)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// syncMermaidIncomingEdges synchronizes the Mermaid diagram's incoming edges
+// of one node (matching by canonical ID) with the given parent set: stale
+// incoming edges are dropped, missing ones added. When the target node or a
+// parent lacks a node definition in the diagram, a definition is added from
+// the reconciled node metadata (nodeMeta), so a new edge never references an
+// undefined Mermaid token (which would break rendering).
+func syncMermaidIncomingEdges(content, id string, parents []string, nodeMeta map[string]*HypothesisNode) string {
+	lines := strings.Split(content, "\n")
+
+	start, end := -1, -1
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if t == "```mermaid" {
+			start = i
+		}
+		if start != -1 && t == "```" && i > start {
+			end = i
+			break
+		}
+	}
+	if start == -1 || end == -1 {
+		return content
+	}
+
+	parentSet := make(map[string]struct{}, len(parents))
+	for _, p := range parents {
+		parentSet[p] = struct{}{}
+	}
+	childTok := strings.ReplaceAll(id, "-", "")
+
+	// Drop stale incoming edges (kept ones seed the existing-parents set).
+	kept := make(map[string]struct{}, len(parents))
+	dropped := 0
+	body := make([]string, 0, end-start)
+	body = append(body, lines[:start+1]...)
+	for i := start + 1; i < end; i++ {
+		if m := mermaidEdgeRe.FindStringSubmatch(strings.TrimSpace(lines[i])); len(m) >= 3 && NormalizeID(m[2]) == id {
+			if _, ok := parentSet[NormalizeID(m[1])]; !ok {
+				dropped++
+				continue
+			}
+			kept[NormalizeID(m[1])] = struct{}{}
+		}
+		body = append(body, lines[i])
+	}
+
+	// Which nodes already have a definition line in the diagram?
+	defined := make(map[string]bool)
+	for _, l := range body[start+1:] {
+		if m := mermaidNodeLineRe.FindStringSubmatch(l); len(m) >= 3 {
+			defined[NormalizeID(m[2])] = true
+		}
+	}
+
+	// Additions: missing node definitions (target first, then missing
+	// parents) followed by the missing edges — placed before the first
+	// non-comment edge line, or just before the closing fence, mirroring
+	// addMermaidNodeAndEdges' placement rule.
+	additions := make([]string, 0, 2*len(parents)+1)
+	if !defined[id] {
+		additions = append(additions, mermaidNodeLine(id, nodeMeta[id]))
+	}
+	for _, p := range parents {
+		if !defined[p] {
+			additions = append(additions, mermaidNodeLine(p, nodeMeta[p]))
+		}
+	}
+	for _, p := range parents {
+		if _, ok := kept[p]; !ok {
+			additions = append(additions, fmt.Sprintf("    %s --> %s", strings.ReplaceAll(p, "-", ""), childTok))
+		}
+	}
+	// Nothing to change (no stale edges dropped, nothing to add): return the
+	// original content untouched so a no-op parents update never rewrites
+	// the diagram's formatting.
+	if len(additions) == 0 && dropped == 0 {
+		return content
+	}
+
+	insertAt := len(body) // just before the closing fence
+	for i := start + 1; i < len(body); i++ {
+		t := strings.TrimSpace(body[i])
+		if strings.HasPrefix(t, "%%") {
+			continue
+		}
+		if mermaidEdgeRe.MatchString(t) {
+			insertAt = i
+			break
+		}
+	}
+
+	result := make([]string, 0, len(lines)+len(additions))
+	result = append(result, body[:insertAt]...)
+	result = append(result, additions...)
+	result = append(result, body[insertAt:]...)
+	result = append(result, lines[end:]...)
+	return strings.Join(result, "\n")
+}
+
+// mermaidNodeLine renders one Mermaid node-definition line for a hypothesis,
+// falling back to the bare id / open status when no reconciled metadata is
+// available (e.g. a catalog-only node).
+func mermaidNodeLine(id string, n *HypothesisNode) string {
+	title, status := id, StatusOpen
+	if n != nil {
+		title, status = n.Title, n.Status
+	}
+	return fmt.Sprintf("    %s[\"%s: %s\"]:::%s", strings.ReplaceAll(id, "-", ""), id, escapeMermaidLabel(foldTitle(title)), mermaidClass(status))
+}
+
 // rewriteGraphForUpdate applies the graph-relevant parts of an update (title /
-// status → Mermaid node + catalog; decision → catalog only).
-func rewriteGraphForUpdate(content, id string, upd HypothesisUpdate) string {
+// status → Mermaid node + catalog; decision → catalog only; parents → the
+// node's incoming Mermaid edges + the catalog's Parent(s) column). nodeMeta
+// carries the reconciled node metadata (id → node) used when a parent or the
+// target itself needs a Mermaid definition added; it is consulted only when
+// Parents is set.
+func rewriteGraphForUpdate(content, id string, upd HypothesisUpdate, nodeMeta map[string]*HypothesisNode) string {
 	c := content
 	if upd.Title != nil || upd.Status != nil {
 		c = updateMermaidNode(c, id, upd.Title, upd.Status)
 	}
+	if upd.Parents != nil {
+		c = syncMermaidIncomingEdges(c, id, *upd.Parents, nodeMeta)
+	}
 	if upd.Title != nil || upd.Status != nil || upd.Decision != nil {
 		c = updateCatalogRow(c, id, upd.Title, upd.Status, upd.Decision)
+	}
+	if upd.Parents != nil {
+		c = updateCatalogParents(c, id, *upd.Parents)
 	}
 	return c
 }
@@ -659,6 +886,51 @@ func normalizeParents(raw []string) []string {
 	return out
 }
 
+// childAdjacency derives the parent → children adjacency of a reconciled
+// graph from BOTH explicit edges and declared node parents — the same union
+// semantics as BuildGraph's reconciliation, so reachability checks agree
+// with the graph the panel renders.
+func childAdjacency(g *HypothesisGraph) map[string][]string {
+	m := make(map[string][]string, len(g.Nodes))
+	add := func(parent, child string) {
+		m[parent] = append(m[parent], child)
+	}
+	for _, e := range g.Edges {
+		add(e.From, e.To)
+	}
+	for _, n := range g.Nodes {
+		for _, p := range n.Parents {
+			add(p, n.ID)
+		}
+	}
+	return m
+}
+
+// reachesChild reports whether `to` is reachable from `from` following the
+// given child adjacency (iterative DFS; a malformed cyclic graph terminates
+// via the seen set).
+func reachesChild(children map[string][]string, from, to string) bool {
+	if from == to {
+		return true
+	}
+	seen := map[string]bool{from: true}
+	stack := []string{from}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, c := range children[cur] {
+			if c == to {
+				return true
+			}
+			if !seen[c] {
+				seen[c] = true
+				stack = append(stack, c)
+			}
+		}
+	}
+	return false
+}
+
 // parseIDNum extracts the numeric part of a canonical ID ("H-007" → 7).
 func parseIDNum(id string) int {
 	m := hidRe.FindStringSubmatch(id)
@@ -847,8 +1119,43 @@ func UpdateHypothesis(researchRoot, projectDir, id string, upd HypothesisUpdate)
 		upd.Title = &t
 	}
 
+	// Parents: normalize, then validate existence / self-reference / cycles
+	// against the RECONCILED graph (Mermaid ∪ catalog ∪ cards) BEFORE any
+	// mutation — an invalid parent set leaves both files byte-for-byte
+	// unchanged, like an illegal status transition. The reconciled graph
+	// doubles as the node metadata source for Mermaid definitions that
+	// syncMermaidIncomingEdges may need to add.
+	var nodeMeta map[string]*HypothesisNode
+	if upd.Parents != nil {
+		parents := normalizeParents(*upd.Parents)
+		for _, p := range parents {
+			if p == id {
+				return fmt.Errorf("hypothesis %s cannot be its own parent", id)
+			}
+		}
+		mnodes, medges := ParseMermaidGraph(graphContent)
+		g := BuildGraph(mnodes, medges, ParseCatalog(graphContent), loadCards(hypDir))
+		for _, p := range parents {
+			if g.Node(p) == nil {
+				return fmt.Errorf("parent hypothesis %s not found", p)
+			}
+		}
+		children := childAdjacency(&g)
+		for _, p := range parents {
+			// The new edge p → id cycles iff a path id ⇝ p already exists.
+			if reachesChild(children, id, p) {
+				return fmt.Errorf("making %s a parent of %s would create a cycle", p, id)
+			}
+		}
+		nodeMeta = make(map[string]*HypothesisNode, len(g.Nodes))
+		for _, n := range g.Nodes {
+			nodeMeta[n.ID] = n
+		}
+		upd.Parents = &parents
+	}
+
 	newCard := rewriteCard(cardContent, id, upd)
-	newGraph := rewriteGraphForUpdate(graphContent, id, upd)
+	newGraph := rewriteGraphForUpdate(graphContent, id, upd, nodeMeta)
 
 	// A real transition into a terminal status completes the hypothesis today
 	// (unless a completion date is already recorded — never overwrite it).

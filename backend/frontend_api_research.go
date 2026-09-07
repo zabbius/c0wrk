@@ -110,15 +110,21 @@ type ResearchNextStepDTO struct {
 
 // HypothesisUpdateFields is the structured update payload for UpdateHypothesis.
 // Pointer fields distinguish "leave unchanged" (nil) from "set to empty"
-// (a non-nil pointer to ""). Only the five UI-mutable fields are exposed;
-// identifier, statement, verification criterion, created, and completed are
-// not editable through this path.
+// (a non-nil pointer to "" / an empty Parents slice). Identifier, created,
+// and completed are not editable through this path.
 type HypothesisUpdateFields struct {
 	Title    *string `json:"title,omitempty"`
 	Status   *string `json:"status,omitempty"`
 	Result   *string `json:"result,omitempty"`
 	Timebox  *string `json:"timebox,omitempty"`
 	Decision *string `json:"decision,omitempty"`
+	// Long-form card sections (verbatim Markdown bodies).
+	Statement             *string `json:"statement,omitempty"`
+	VerificationCriterion *string `json:"verification_criterion,omitempty"`
+	ExperimentNotes       *string `json:"experiment_notes,omitempty"`
+	// Parents replaces the card's parent set; validated server-side
+	// (existence, no self-reference, no cycle) before any write.
+	Parents *[]string `json:"parents,omitempty"`
 }
 
 // NewHypothesisCard is the structured create payload for CreateHypothesis.
@@ -581,7 +587,10 @@ func (f *FrontendAPI) setupNextStep(projectID string) *ResearchNextStepDTO {
 // which may have moved on since the caller loaded its graph (cross-project /
 // cross-R-NNN save race). Status transitions are validated against the
 // methodology's state machine (open → in-progress → confirmed/refuted/
-// cancelled; no backward transitions); an illegal transition returns an error
+// cancelled; no backward transitions); a Parents update is validated against
+// the reconciled graph (parents must exist, no self-reference, no cycle) and
+// synchronized across the card's Parent(s) row, the Mermaid incoming edges,
+// and the catalog's Parent(s) column. Any invalid update returns an error
 // and leaves the card and graph unchanged.
 func (f *FrontendAPI) UpdateHypothesis(projectID, researchID, hypothesisID string, fields HypothesisUpdateFields) (*ResearchGraphDTO, error) {
 	researchRoot, err := f.researchRootForMutation(projectID)
@@ -615,11 +624,15 @@ func (f *FrontendAPI) UpdateHypothesis(projectID, researchID, hypothesisID strin
 	}
 
 	upd := research.HypothesisUpdate{
-		Title:    fields.Title,
-		Status:   fields.Status,
-		Result:   fields.Result,
-		Timebox:  fields.Timebox,
-		Decision: fields.Decision,
+		Title:                 fields.Title,
+		Status:                fields.Status,
+		Result:                fields.Result,
+		Timebox:               fields.Timebox,
+		Decision:              fields.Decision,
+		Statement:             fields.Statement,
+		VerificationCriterion: fields.VerificationCriterion,
+		ExperimentNotes:       fields.ExperimentNotes,
+		Parents:               fields.Parents,
 	}
 	if err := research.UpdateHypothesis(researchRoot, projectDir, hid, upd); err != nil {
 		return nil, err

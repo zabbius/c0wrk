@@ -45,6 +45,44 @@ describe('getResearchGraph boundary validation', () => {
     expect(res.graph.nodes).toEqual([validNode])
   })
 
+  it('drops nodes with malformed long-form fields but keeps valid ones', async () => {
+    mockApp.GetResearchGraph = vi.fn(() =>
+      Promise.resolve({
+        project_id: 'R-001',
+        has_report: false,
+        graph: {
+          nodes: [
+            {
+              ...validNode,
+              statement: 'Bundles can be parsed.',
+              verification_criterion: 'Recover 95%.',
+              experiment_notes: 'Run 1 passed.',
+              decision: 'continue',
+              timebox: '5 days',
+              result: 'Recovered 97%.',
+            },
+            { ...validNode, id: 'H-004', statement: 42 }, // non-string statement → dropped
+            { ...validNode, id: 'H-005', decision: ['continue'] }, // non-string decision → dropped
+            { ...validNode, id: 'H-006', experiment_notes: null }, // null long-form is fine (absent)
+          ],
+          edges: [],
+        },
+        metrics: {},
+        log: [],
+      }),
+    )
+
+    const res = await getResearchGraph('R-001')
+
+    expect(res.graph.nodes.map((n) => n.id)).toEqual(['H-001', 'H-006'])
+    expect(res.graph.nodes[0]).toMatchObject({
+      statement: 'Bundles can be parsed.',
+      verification_criterion: 'Recover 95%.',
+      experiment_notes: 'Run 1 passed.',
+      decision: 'continue',
+    })
+  })
+
   it('normalizes backend null slices to empty arrays', async () => {
     mockApp.GetResearchGraph = vi.fn(() =>
       Promise.resolve({

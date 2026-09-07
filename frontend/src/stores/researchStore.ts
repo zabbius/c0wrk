@@ -55,9 +55,9 @@ interface ResearchState {
   /** The workspace DAG's "Hide completed" filter toggle. Survives remounts
    *  for the same reason as the selection. */
   hideTerminal: boolean
-  /** Current width (px) of the workspace's detail sidebar. Survives remounts
-   *  for the same reason as the selection. */
-  sidebarWidth: number
+  /** Current height (px) of the workspace's bottom hypothesis-card panel.
+   *  Survives remounts for the same reason as the selection. */
+  cardHeight: number
   /** Wall-clock ms of the last successful graph sync (loadGraph or the full
    *  loadStatus). The status-events hook's research-scoped watchdog compares
    *  it against its own scheduling time to decide whether the incremental
@@ -96,8 +96,9 @@ interface ResearchActions {
   setHypothesisDraft: (draft: HypothesisDraft | null) => void
   /** Toggle the workspace DAG's "Hide completed" filter. */
   setHideTerminal: (hide: boolean) => void
-  /** Resize the workspace's detail sidebar (px, clamped by the caller). */
-  setSidebarWidth: (width: number) => void
+  /** Resize the workspace's bottom hypothesis-card panel (px, clamped by the
+   *  caller). */
+  setCardHeight: (height: number) => void
   /** Incrementally update only the active project's graph, metrics, brief,
    *  and has_report fields. Preserves status, projectId, and the selection;
    *  clears error and isLoading (a successful incremental sync is a
@@ -128,12 +129,14 @@ export type ResearchStore = ResearchState & ResearchActions
 
 // --- Initial state (used by both create and reset) ---
 
-/** Detail-sidebar width bounds (px) for the Research workspace. The default
- *  matches the former w-72 (288px); the split is user-resizable via the drag
- *  handle / arrow keys. Exported for the workspace component's useResize. */
-export const RESEARCH_SIDEBAR_DEFAULT_WIDTH = 288
-export const RESEARCH_SIDEBAR_MIN_WIDTH = 220
-export const RESEARCH_SIDEBAR_MAX_WIDTH = 560
+/** Bottom hypothesis-card panel height bounds (px) for the Research
+ *  workspace's horizontal (graph-above / card-below) split. The default
+ *  leaves the DAG the dominant share; the split is user-resizable via the
+ *  drag handle / arrow keys. Exported for the workspace component's
+ *  useResize. */
+export const RESEARCH_CARD_DEFAULT_HEIGHT = 300
+export const RESEARCH_CARD_MIN_HEIGHT = 120
+export const RESEARCH_CARD_MAX_HEIGHT = 720
 
 const initialState: ResearchState = {
   status: null,
@@ -146,7 +149,7 @@ const initialState: ResearchState = {
   selectedHypothesisProjectId: null,
   hypothesisDraft: null,
   hideTerminal: false,
-  sidebarWidth: RESEARCH_SIDEBAR_DEFAULT_WIDTH,
+  cardHeight: RESEARCH_CARD_DEFAULT_HEIGHT,
   lastGraphSyncAt: 0,
   graphSyncSeq: 0,
 }
@@ -211,7 +214,7 @@ export const useResearchStore = create<ResearchStore>((set) => ({
 
   setHideTerminal: (hide) => set({ hideTerminal: hide }),
 
-  setSidebarWidth: (width) => set({ sidebarWidth: width }),
+  setCardHeight: (height) => set({ cardHeight: height }),
 
   loadGraph: (graphResponse, startedSeq) => {
     // Returns false when a full refetch is required instead (see interface).

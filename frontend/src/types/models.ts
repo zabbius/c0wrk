@@ -651,6 +651,16 @@ export type HypothesisStatus =
 /** Category of a research-log entry (see core/research LogKind). */
 export type LogKind = 'experiment' | 'decision' | 'status_change' | 'note'
 
+/**
+ * Iteration decision vocabulary from the research methodology
+ * (research-decision skill): after each experiment the researcher chooses
+ * continue / pivot / kill / fork. Unlike the status, the backend stores the
+ * card's Decision field verbatim (no validation), so a card may carry a
+ * legacy free-text value — node/draft/update fields stay `string` and only
+ * the editor's option list is fixed (see hypothesisDecision.ts).
+ */
+export type HypothesisDecision = 'continue' | 'pivot' | 'kill' | 'fork'
+
 export interface HypothesisNode {
   id: string
   title: string
@@ -658,6 +668,12 @@ export interface HypothesisNode {
   parents?: string[]
   timebox?: string
   result?: string
+  /** Long-form card sections (verbatim Markdown bodies, core/research). */
+  statement?: string
+  verification_criterion?: string
+  experiment_notes?: string
+  /** Iteration decision (continue / pivot / kill / fork); '' while undecided. */
+  decision?: string
 }
 
 export interface HypothesisEdge {
@@ -785,27 +801,41 @@ export interface ResearchNextStep {
   skill: string
 }
 
-/** Editable draft of a hypothesis card's mutable fields (status / result /
- *  timebox), held between user edits and an explicit Save. UI-level view
+/** Editable draft of a hypothesis card's mutable fields (title / parents /
+ *  status / decision / statement / verification criterion / experiment
+ *  notes / timebox / result), held between user edits and an explicit Save.
+ *  `parents` is the raw comma-separated input from the card's field — the
+ *  change-set derivation parses it into ids before sending. UI-level view
  *  model: lives here (not in a component file) because it is persisted in the
  *  research store so an unsaved draft survives workspace remounts (floating
  *  viewer auto-collapse, tab switches). */
 export interface HypothesisDraft {
+  title: string
+  parents: string
   status: string
-  result: string
+  decision: string
+  statement: string
+  verification_criterion: string
+  experiment_notes: string
   timebox: string
+  result: string
 }
 
 /** Structured field update for an existing hypothesis card (mirrors backend
  *  HypothesisUpdateFields). Omit a field (leave it undefined) to leave it
- *  unchanged; set it to an empty string to clear it. Only the five UI-mutable
- *  fields are exposed. */
+ *  unchanged; set it to an empty string to clear it. */
 export interface HypothesisUpdateFields {
   title?: string
   status?: HypothesisStatus
   result?: string
   timebox?: string
   decision?: string
+  statement?: string
+  verification_criterion?: string
+  experiment_notes?: string
+  /** Replaces the card's parent set; validated server-side (existence, no
+   *  self-reference, no cycle) before any write. An empty array clears it. */
+  parents?: string[]
 }
 
 /** Structured input for creating a new hypothesis card (mirrors backend

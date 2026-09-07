@@ -435,6 +435,10 @@ export namespace backend {
 	    result?: string;
 	    timebox?: string;
 	    decision?: string;
+	    statement?: string;
+	    verification_criterion?: string;
+	    experiment_notes?: string;
+	    parents?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new HypothesisUpdateFields(source);
@@ -447,6 +451,10 @@ export namespace backend {
 	        this.result = source["result"];
 	        this.timebox = source["timebox"];
 	        this.decision = source["decision"];
+	        this.statement = source["statement"];
+	        this.verification_criterion = source["verification_criterion"];
+	        this.experiment_notes = source["experiment_notes"];
+	        this.parents = source["parents"];
 	    }
 	}
 	export class ProviderConfigRequest {
@@ -1613,6 +1621,10 @@ export namespace research {
 	    timebox?: string;
 	    completed?: string;
 	    result?: string;
+	    statement?: string;
+	    verification_criterion?: string;
+	    experiment_notes?: string;
+	    decision?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new HypothesisNode(source);
@@ -1627,6 +1639,10 @@ export namespace research {
 	        this.timebox = source["timebox"];
 	        this.completed = source["completed"];
 	        this.result = source["result"];
+	        this.statement = source["statement"];
+	        this.verification_criterion = source["verification_criterion"];
+	        this.experiment_notes = source["experiment_notes"];
+	        this.decision = source["decision"];
 	    }
 	}
 	export class HypothesisGraph {

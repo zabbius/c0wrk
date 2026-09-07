@@ -3,8 +3,8 @@ import { FlaskConical } from 'lucide-react'
 import {
   useResearchStore,
   selectActiveProject,
-  RESEARCH_SIDEBAR_MIN_WIDTH,
-  RESEARCH_SIDEBAR_MAX_WIDTH,
+  RESEARCH_CARD_MIN_HEIGHT,
+  RESEARCH_CARD_MAX_HEIGHT,
 } from '@/stores/researchStore'
 import { useResize } from '@/hooks/useResize'
 import { ResizeHandle } from '@/components/ResizeHandle'
@@ -16,19 +16,23 @@ import { layoutDag, buildDisplayGraph } from './researchDagRender'
 import { ResearchDagCanvas } from './ResearchDagCanvas'
 import type { HypothesisGraph } from '@/types/models'
 
-// Detail-sidebar width bounds live in the research store (RESEARCH_SIDEBAR_*)
-// alongside the persisted width: the split must survive workspace remounts.
+// Bottom card-panel height bounds live in the research store
+// (RESEARCH_CARD_*_HEIGHT) alongside the persisted height: the split must
+// survive workspace remounts.
 
 // ── ResearchWorkspace (the file-viewer tab content) ────────────────────
 
 /**
  * Research workspace rendered by the file viewer for the synthetic
- * `c0wrk:research` pseudo-path. Shows the incomplete-path hypothesis DAG (with
- * a "hide completed" toggle) beside a resizable detail sidebar: every
- * hypothesis mention (the card header and parent ids) opens the corresponding
- * markdown card as a sibling read-only tab, and the editable card (status /
- * result / timebox persisted through the t4 UpdateHypothesis RPC) fills the
- * sidebar height with a markdown-highlighted result editor.
+ * `c0wrk:research` pseudo-path. Horizontal split: the incomplete-path
+ * hypothesis DAG (with a "hide completed" toggle) fills the full width of
+ * the upper area, and the editable card of the selected hypothesis fills
+ * the full width of the lower area (resizable via the divider). Every
+ * hypothesis mention in the card header opens the corresponding markdown
+ * card as a sibling read-only tab, and the card edits (title / parents /
+ * status / decision / statement / verification criterion / experiment
+ * notes / timebox / result — persisted through the t4 UpdateHypothesis RPC)
+ * render in markdown-highlighted editors.
  */
 export function ResearchWorkspace() {
   // Data sync (full status + incremental graph updates) lives in the App-root
@@ -38,7 +42,7 @@ export function ResearchWorkspace() {
   const error = useResearchStore((s) => s.error)
   const isLoading = useResearchStore((s) => s.isLoading)
 
-  // Workspace view state (selection, draft, filter, sidebar width) lives in
+  // Workspace view state (selection, draft, filter, card height) lives in
   // the research store, not local state: the floating file viewer
   // auto-collapses on outside focus (and sibling-tab switches unmount the
   // workspace too), so local state would silently drop the selected vertex,
@@ -49,8 +53,8 @@ export function ResearchWorkspace() {
   const setHypothesisDraft = useResearchStore((s) => s.setHypothesisDraft)
   const hideTerminal = useResearchStore((s) => s.hideTerminal)
   const setHideTerminal = useResearchStore((s) => s.setHideTerminal)
-  const sidebarWidth = useResearchStore((s) => s.sidebarWidth)
-  const setSidebarWidth = useResearchStore((s) => s.setSidebarWidth)
+  const cardHeight = useResearchStore((s) => s.cardHeight)
+  const setCardHeight = useResearchStore((s) => s.setCardHeight)
 
   // Full graph drives selection + the editable card; the display graph is a
   // filtered projection for layout/rendering only. Memoised so an absent
@@ -87,15 +91,16 @@ export function ResearchWorkspace() {
   const { saving, saveError, selectNode, dirty, handleSave, openHypothesisCard } =
     useHypothesisEditor(graph, selectedNode, draft)
 
-  // Sidebar ↔ DAG split: dragging (or arrow-keying) the border between the
-  // canvas and the sidebar resizes them. Right-side panel → drag left grows
-  // it (direction −1), mirroring the docked file viewer's handle.
-  const sidebarResize = useResize({
-    initialWidth: sidebarWidth,
-    min: RESEARCH_SIDEBAR_MIN_WIDTH,
-    max: RESEARCH_SIDEBAR_MAX_WIDTH,
-    direction: -1,
-    onChange: setSidebarWidth,
+  // DAG ↔ card split: dragging (or arrow-keying) the horizontal divider
+  // between the canvas and the card panel resizes them. Bottom panel →
+  // drag down grows it (direction 1 on the y axis).
+  const cardResize = useResize({
+    initialWidth: cardHeight,
+    min: RESEARCH_CARD_MIN_HEIGHT,
+    max: RESEARCH_CARD_MAX_HEIGHT,
+    direction: 1,
+    axis: 'y',
+    onChange: setCardHeight,
   })
 
   // ── RESEARCH off → enable empty state ──────────────────────────────
@@ -135,9 +140,9 @@ export function ResearchWorkspace() {
 
       {error && <ErrorBanner message={error} />}
 
-      {/* Body: DAG + resizable detail sidebar */}
-      <div className="flex flex-1 min-h-0">
-        <div className="relative flex-1 min-w-0">
+      {/* Body: DAG above + resizable card panel below (full width each) */}
+      <div className="flex flex-1 min-h-0 flex-col">
+        <div className="relative flex-1 min-h-0">
           {isLoading && graph.nodes.length === 0 ? (
             <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
               Loading…
@@ -156,14 +161,17 @@ export function ResearchWorkspace() {
         </div>
 
         <ResizeHandle
-          onMouseDown={sidebarResize.handleMouseDown}
-          onKeyDown={sidebarResize.handleKeyDown}
+          orientation="horizontal"
+          onMouseDown={cardResize.handleMouseDown}
+          onKeyDown={cardResize.handleKeyDown}
         />
 
+        {/* Card panel: owns the vertical scroll — the whole card (header,
+            field table, sections, Save) scrolls together inside it. */}
         <div
           data-testid="hypothesis-sidebar"
-          style={{ width: sidebarWidth }}
-          className="flex shrink-0 flex-col overflow-auto border-l border-border bg-background p-3"
+          style={{ height: cardHeight }}
+          className="flex shrink-0 flex-col overflow-auto custom-scrollbar border-t border-border bg-background p-3"
         >
           {selectedNode && draft ? (
             // key on the hypothesis id: switching cards REMOUNTS the card

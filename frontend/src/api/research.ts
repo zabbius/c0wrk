@@ -228,15 +228,29 @@ function isResearchNextStep(v: unknown): v is ResearchNextStep {
 /**
  * A hypothesis node is well-typed when every field the research UI consumes
  * has the declared shape: id/title/status (layout crashes on a non-string
- * title in `titleTextWidth`), and the optional `parents` adjacency list.
- * Malformed entries are dropped at the boundary instead of crashing the DAG
- * render path on a backend bug/version skew.
+ * title in `titleTextWidth`), the optional `parents` adjacency list, and the
+ * optional long-form fields (statement / verification criterion /
+ * experiment notes / decision / timebox / result). Malformed entries are
+ * dropped at the boundary instead of crashing the DAG render path on a
+ * backend bug/version skew.
  */
 function isHypothesisNode(v: unknown): v is HypothesisNode {
   if (!isRecord(v)) return false
   if (typeof v['id'] !== 'string') return false
   if (typeof v['title'] !== 'string') return false
   if (typeof v['status'] !== 'string') return false
+  const stringField = (key: string): boolean =>
+    v[key] === undefined || v[key] === null || typeof v[key] === 'string'
+  if (
+    !stringField('timebox') ||
+    !stringField('result') ||
+    !stringField('statement') ||
+    !stringField('verification_criterion') ||
+    !stringField('experiment_notes') ||
+    !stringField('decision')
+  ) {
+    return false
+  }
   if (v['parents'] !== undefined && v['parents'] !== null) {
     if (!Array.isArray(v['parents'])) return false
     if (v['parents'].some((p) => typeof p !== 'string')) return false

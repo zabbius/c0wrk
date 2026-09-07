@@ -283,10 +283,18 @@ func TestResearchRPC_UpdateAndCreateRoundTrip(t *testing.T) {
 	status := "in-progress"
 	title := "Refined bundle parsing"
 	result := "Recovered 97% of modules."
+	decision := "continue"
+	statement := "Multi-line statement.\n\nSecond paragraph."
+	criterion := "Recover >= 95% of modules."
+	notes := "Run 1: passed."
 	dto, err := f.UpdateHypothesis(projectID, "R-001", "H-001", HypothesisUpdateFields{
-		Status: &status,
-		Title:  &title,
-		Result: &result,
+		Status:                &status,
+		Title:                 &title,
+		Result:                &result,
+		Decision:              &decision,
+		Statement:             &statement,
+		VerificationCriterion: &criterion,
+		ExperimentNotes:       &notes,
 	})
 	if err != nil {
 		t.Fatalf("UpdateHypothesis: %v", err)
@@ -312,6 +320,27 @@ func TestResearchRPC_UpdateAndCreateRoundTrip(t *testing.T) {
 	}
 	if n.Title != title || n.Result != result {
 		t.Errorf("title/result = %q/%q, want %q/%q", n.Title, n.Result, title, result)
+	}
+	if n.Decision != decision {
+		t.Errorf("decision = %q, want %q", n.Decision, decision)
+	}
+	if n.Statement != statement {
+		t.Errorf("statement = %q, want %q", n.Statement, statement)
+	}
+	if n.VerificationCriterion != criterion {
+		t.Errorf("verification criterion = %q, want %q", n.VerificationCriterion, criterion)
+	}
+	if n.ExperimentNotes != notes {
+		t.Errorf("experiment notes = %q, want %q", n.ExperimentNotes, notes)
+	}
+	// The refreshed graph DTO carries the long-form fields too.
+	dtoNode := findDTONode(dto, "H-001")
+	if dtoNode == nil {
+		t.Fatal("H-001 missing from the response graph")
+	}
+	if dtoNode.Statement != statement || dtoNode.VerificationCriterion != criterion ||
+		dtoNode.ExperimentNotes != notes || dtoNode.Decision != decision {
+		t.Errorf("DTO long-form fields = %+v", dtoNode)
 	}
 
 	// Create H-002 as a child of H-001.
@@ -346,6 +375,46 @@ func TestResearchRPC_UpdateAndCreateRoundTrip(t *testing.T) {
 	if !foundEdge {
 		t.Errorf("edge H-001→H-002 missing; edges=%v", proj2.Graph.Edges)
 	}
+
+	// Parents update through the RPC: clear H-002's parents and verify the
+	// reconciled graph drops the edge (card row + Mermaid + catalog sync).
+	none := []string{}
+	if _, err := f.UpdateHypothesis(projectID, "R-001", "H-002", HypothesisUpdateFields{Parents: &none}); err != nil {
+		t.Fatalf("UpdateHypothesis parents: %v", err)
+	}
+	proj3, err := research.ParseProject(projectDir)
+	if err != nil {
+		t.Fatalf("ParseProject after parents update: %v", err)
+	}
+	if n3 := proj3.Graph.Node("H-002"); n3 == nil {
+		t.Fatal("H-002 missing after parents update")
+	} else if len(n3.Parents) != 0 {
+		t.Errorf("H-002 parents after clear = %v, want none", n3.Parents)
+	}
+	for _, e := range proj3.Graph.Edges {
+		if e.From == "H-001" && e.To == "H-002" {
+			t.Errorf("edge H-001→H-002 survived the parents clear; edges=%v", proj3.Graph.Edges)
+		}
+	}
+
+	// A rejected parents update (unknown parent) leaves files unchanged.
+	unknown := []string{"H-999"}
+	if _, err := f.UpdateHypothesis(projectID, "R-001", "H-002", HypothesisUpdateFields{Parents: &unknown}); err == nil {
+		t.Fatal("expected error for unknown parent")
+	}
+}
+
+// findDTONode locates a hypothesis node in a ResearchGraphDTO response.
+func findDTONode(dto *ResearchGraphDTO, id string) *research.HypothesisNode {
+	if dto == nil {
+		return nil
+	}
+	for i := range dto.Graph.Nodes {
+		if dto.Graph.Nodes[i].ID == id {
+			return &dto.Graph.Nodes[i]
+		}
+	}
+	return nil
 }
 
 // TestResearchRPC_RejectsInvalidInput verifies the guards: illegal/backward

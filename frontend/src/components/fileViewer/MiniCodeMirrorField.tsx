@@ -12,6 +12,12 @@ interface MiniCodeMirrorFieldProps {
   /** Optional placeholder rendered while the document is empty. */
   placeholder?: string
   /**
+   * Optional accessible label for the editable region (rendered as
+   * role="textbox" aria-label). Required when multiple fields share a
+   * screen/form so tests and AT can address them individually.
+   */
+  ariaLabel?: string
+  /**
    * Enable soft word wrap (`EditorView.lineWrapping`) so long lines fold
    * instead of scrolling horizontally.
    */
@@ -27,7 +33,7 @@ interface MiniCodeMirrorFieldProps {
 /**
  * A small editable CodeMirror instance for individual plan fields.
  */
-export function MiniCodeMirrorField({ value, onChange, placeholder, lineWrapping, className }: MiniCodeMirrorFieldProps) {
+export function MiniCodeMirrorField({ value, onChange, placeholder, ariaLabel, lineWrapping, className }: MiniCodeMirrorFieldProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const themeCompartment = useRef(new Compartment())
@@ -67,7 +73,11 @@ export function MiniCodeMirrorField({ value, onChange, placeholder, lineWrapping
         markdown(),
         ...(initialLineWrapping ? [EditorView.lineWrapping] : []),
         ...(initialPlaceholder ? [cmPlaceholder(initialPlaceholder)] : []),
-        themeCompartment.current.of(createOneDarkCMTheme(initialTheme === 'dark')),
+        // Editable variant of the shared theme: the caret and cursor stay
+        // visible (the default hides them for the read-only file viewer).
+        themeCompartment.current.of(
+          createOneDarkCMTheme(initialTheme === 'dark', { editable: true }),
+        ),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             onChangeRef.current(update.state.doc.toString())
@@ -94,7 +104,9 @@ export function MiniCodeMirrorField({ value, onChange, placeholder, lineWrapping
     const view = viewRef.current
     if (!view) return
     view.dispatch({
-      effects: themeCompartment.current.reconfigure(createOneDarkCMTheme(theme === 'dark')),
+      effects: themeCompartment.current.reconfigure(
+        createOneDarkCMTheme(theme === 'dark', { editable: true }),
+      ),
     })
   }, [theme])
 
@@ -116,8 +128,16 @@ export function MiniCodeMirrorField({ value, onChange, placeholder, lineWrapping
   return (
     <div
       ref={containerRef}
+      role="textbox"
+      aria-label={ariaLabel}
+      aria-multiline="true"
       className={cn(
-        'min-h-[60px] max-h-[200px] border border-border rounded overflow-auto custom-scrollbar cm-viewer-container',
+        // cm-viewer-container carries the shared structural styling (font,
+        // scroller, scrollbar); cm-editable-field re-enables the caret the
+        // viewer-scoped global rules hide (see index.css). focus-within
+        // gives the field the same focus affordance as the surrounding
+        // native inputs (focus:border-primary), so it reads as editable.
+        'min-h-[60px] max-h-[200px] rounded border border-border bg-background focus-within:border-primary overflow-auto custom-scrollbar cm-viewer-container cm-editable-field',
         className,
       )}
     />

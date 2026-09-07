@@ -189,10 +189,19 @@ func TestParseCard_FullCard(t *testing.T) {
 | **Timebox** | 5 days |
 | **Parent(s)** | H-009, H-010 |
 | **Created** | 2025-04-02 |
+| **Decision** | continue |
 
 ## Statement
 
 Bundles can be parsed.
+
+## Verification Criterion
+
+A parser recovers 90% of modules on the fixture corpus.
+
+## Experiment Notes
+
+Ran the parser against the corpus twice.
 
 ## Result
 
@@ -220,6 +229,100 @@ Bundles can be parsed.
 	}
 	if node.Result != "Recovered 97% of modules." {
 		t.Errorf("Result = %q", node.Result)
+	}
+	if node.Statement != "Bundles can be parsed." {
+		t.Errorf("Statement = %q", node.Statement)
+	}
+	if node.VerificationCriterion != "A parser recovers 90% of modules on the fixture corpus." {
+		t.Errorf("VerificationCriterion = %q", node.VerificationCriterion)
+	}
+	if node.ExperimentNotes != "Ran the parser against the corpus twice." {
+		t.Errorf("ExperimentNotes = %q", node.ExperimentNotes)
+	}
+	if node.Decision != "continue" {
+		t.Errorf("Decision = %q", node.Decision)
+	}
+}
+
+func TestParseCard_LongFormSectionsPlaceholdersAndAbsence(t *testing.T) {
+	// A fresh template card: Experiment Notes carries the italic placeholder
+	// and Result the placeholder + dash finding — every long-form section
+	// must read as "" so template boilerplate never surfaces as editable
+	// content. Statement and Verification Criterion are absent entirely.
+	content := `# H-002: Fresh hypothesis
+
+| Field | Value |
+|---|---|
+| **Identifier** | H-002 |
+| **Status** | open |
+| **Timebox** | — |
+| **Parent(s)** | — |
+| **Created** | 2025-04-02 |
+| **Completed** | — |
+| **Decision** | — |
+
+## Statement
+
+## Verification Criterion
+
+## Experiment Notes
+
+*Not yet started.*
+
+## Result
+
+*Filled upon completion.*
+
+**Finding:** —
+
+**Prototype / Proof:** —
+`
+	node, err := ParseCard(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if node.Statement != "" {
+		t.Errorf("Statement should be empty, got %q", node.Statement)
+	}
+	if node.VerificationCriterion != "" {
+		t.Errorf("VerificationCriterion should be empty, got %q", node.VerificationCriterion)
+	}
+	if node.ExperimentNotes != "" {
+		t.Errorf("ExperimentNotes should drop the placeholder, got %q", node.ExperimentNotes)
+	}
+	if node.Result != "" {
+		t.Errorf("Result should be empty, got %q", node.Result)
+	}
+	if node.Decision != "" {
+		t.Errorf("Decision should drop the dash placeholder, got %q", node.Decision)
+	}
+}
+
+func TestParseCard_SectionBodyKeepsRealItalicContent(t *testing.T) {
+	// A body whose FIRST line is real content is preserved verbatim — even
+	// when later lines are italics. Only an all-placeholder body reads as "".
+	content := `# H-003: Notes with emphasis
+
+| Field | Value |
+|---|---|
+| **Identifier** | H-003 |
+| **Status** | in-progress |
+
+## Experiment Notes
+
+First run crashed on chunk 4.
+
+*Reminder: rerun with tracing enabled.*
+
+## Result
+`
+	node, err := ParseCard(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "First run crashed on chunk 4.\n\n*Reminder: rerun with tracing enabled.*"
+	if node.ExperimentNotes != want {
+		t.Errorf("ExperimentNotes = %q, want %q", node.ExperimentNotes, want)
 	}
 }
 

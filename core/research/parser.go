@@ -391,7 +391,39 @@ func ParseCard(content string) (HypothesisNode, error) {
 		node.Parents = parents
 	}
 	node.Result = extractFinding(content)
+	// Long-form card sections, parsed verbatim (the writer's setSection is
+	// their round-trip counterpart). Absent sections — and sections whose
+	// body is only template placeholder text — read as "".
+	node.Statement = sectionBody(content, "Statement")
+	node.VerificationCriterion = sectionBody(content, "Verification Criterion")
+	node.ExperimentNotes = sectionBody(content, "Experiment Notes")
+	node.Decision = dashToEmpty(extractField(content, "Decision"))
 	return node, nil
+}
+
+// italicPlaceholderRe matches a single-line run of italics — the shape of the
+// fresh-card template placeholders ("*Not yet started.*",
+// "*Filled upon completion.*").
+var italicPlaceholderRe = regexp.MustCompile(`^\*[^*]*\*$`)
+
+// sectionBody extracts a long-form card section ("## Name") with the same
+// placeholder normalization extractFinding applies to Result: a body that
+// consists only of empty and italic-placeholder lines reads as "" (the
+// fresh-card template), so template boilerplate never surfaces as editable
+// content. A body carrying any real line is preserved verbatim.
+func sectionBody(content, heading string) string {
+	body := extractSection(content, heading)
+	if body == "" {
+		return ""
+	}
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || italicPlaceholderRe.MatchString(line) {
+			continue
+		}
+		return body
+	}
+	return ""
 }
 
 // extractFinding pulls the recorded finding out of a card's Result section.
@@ -654,6 +686,18 @@ func BuildGraph(mermaidNodes []mermaidNode, mermaidEdges []HypothesisEdge, catal
 		}
 		if len(c.Parents) > 0 {
 			n.Parents = c.Parents
+		}
+		if c.Statement != "" {
+			n.Statement = c.Statement
+		}
+		if c.VerificationCriterion != "" {
+			n.VerificationCriterion = c.VerificationCriterion
+		}
+		if c.ExperimentNotes != "" {
+			n.ExperimentNotes = c.ExperimentNotes
+		}
+		if c.Decision != "" {
+			n.Decision = c.Decision
 		}
 	}
 
