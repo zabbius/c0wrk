@@ -4,6 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import { ResearchWorkspace } from './ResearchWorkspace'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { useResearchStore } from '@/stores/researchStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
@@ -137,7 +138,14 @@ async function renderWorkspace(): Promise<{ container: HTMLElement; root: Root }
   const root = createRoot(container)
   activeRoot = root
   await act(async () => {
-    root.render(<ResearchWorkspace />)
+    // The DAG nodes embed a Radix Tooltip (the hover hypothesis card), which
+    // requires a provider ancestor — the app mounts one at the root; tests
+    // mirror that here.
+    root.render(
+      <TooltipProvider>
+        <ResearchWorkspace />
+      </TooltipProvider>,
+    )
   })
   return { container, root }
 }

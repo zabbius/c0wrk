@@ -15,9 +15,11 @@
 
 import type {
   HypothesisGraph,
+  HypothesisNode,
   HypothesisStatus,
   ResearchRoot,
 } from '@/types/models'
+import { decisionLabel, DECISION_UNDECIDED } from './hypothesisDecision'
 
 // ── Graph grid geometry ────────────────────────────────────────────────
 
@@ -71,6 +73,48 @@ export function statusColorVar(status: string): string {
  */
 export function isTerminal(status: string): boolean {
   return status === 'confirmed' || status === 'refuted' || status === 'cancelled'
+}
+
+// ── Node hover-tooltip card ────────────────────────────────────────────
+
+/**
+ * Build the Markdown content of a hypothesis node's hover tooltip — a
+ * compact Markdown card mirroring the methodology card template (writer.go
+ * buildCardContent): an `id: title` heading (the card file's `#` H1), a
+ * Status / Decision / Timebox / Parents meta line, then the long-form
+ * sections in the card's order (Statement / Verification Criterion /
+ * Experiment Notes / Result). Section bodies are the node's verbatim
+ * Markdown — they render through the shared sanitized Markdown pipeline
+ * (TooltipMarkdown), same as the plan-step description tooltip this mirrors.
+ * Empty sections are omitted, so a barely-filled hypothesis stays a tight
+ * card instead of a wall of placeholders (the card FILE keeps those).
+ * Pure — no DOM — and unit-tested.
+ */
+export function hypothesisTooltipMarkdown(node: HypothesisNode): string {
+  const meta = [
+    `**Status:** ${node.status}`,
+    `**Decision:** ${decisionLabel(node.decision ?? DECISION_UNDECIDED)}`,
+    ...(node.timebox ? [`**Timebox:** ${node.timebox}`] : []),
+    `**Parents:** ${(node.parents ?? []).join(', ') || '—'}`,
+  ].join(' · ')
+
+  const sections = (
+    [
+      ['Statement', node.statement],
+      ['Verification Criterion', node.verification_criterion],
+      ['Experiment Notes', node.experiment_notes],
+      ['Result', node.result],
+    ] as const
+  )
+    .filter(([, body]) => (body ?? '').trim() !== '')
+    .map(([label, body]) => `**${label}**\n\n${body!.trim()}`)
+
+  // The heading is composed from plain short fields, so collapse whitespace
+  // to keep it one line; long-form section bodies stay verbatim — they are
+  // Markdown by design.
+  const title = node.title.replace(/\s+/g, ' ').trim()
+
+  return [`### ${node.id}: ${title}`, meta, ...sections].join('\n\n')
 }
 
 // ── Adjacency ──────────────────────────────────────────────────────────

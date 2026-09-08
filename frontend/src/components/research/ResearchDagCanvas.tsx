@@ -2,14 +2,17 @@ import { useCallback, useLayoutEffect, useMemo, type MouseEvent as ReactMouseEve
 import { Maximize, ZoomIn, ZoomOut } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DEFAULT_ZOOM_STEP, usePanZoom } from '@/lib/usePanZoom'
+import { StepTooltip } from '@/components/chat/StepTooltip'
 import {
   edgePathH,
   statusColorVar,
   NODE_R,
   LABEL_MAX_CHARS,
   layoutSignature,
+  hypothesisTooltipMarkdown,
   type DagLayout,
 } from './researchDagRender'
+import type { HypothesisNode } from '@/types/models'
 
 /** Truncate a title for compact SVG labelling. */
 function truncate(s: string, max: number): string {
@@ -22,9 +25,15 @@ interface DagSvgProps {
   layout: DagLayout
   selectedId: string | null
   onSelect: (id: string) => void
+  /**
+   * Full display-graph nodes keyed by id — the hover-tooltip content source.
+   * Layout nodes carry only painted geometry fields (id / title / status /
+   * result); the Markdown hypothesis card needs the long-form sections.
+   */
+  nodesById: Map<string, HypothesisNode>
 }
 
-function DagSvg({ layout, selectedId, onSelect }: DagSvgProps) {
+function DagSvg({ layout, selectedId, onSelect, nodesById }: DagSvgProps) {
   // The layout box hugs the painted content — ids hanging left of nodes,
   // truncated titles right of them — so the camera's fit() centers the
   // actual graph, and left-hanging ids stay inside the SVG viewport (an SVG
@@ -52,65 +61,80 @@ function DagSvg({ layout, selectedId, onSelect }: DagSvgProps) {
         />
       ))}
 
-      {layout.nodes.map((node) => {
-        const selected = node.id === selectedId
+      {/* Hover tooltips mirror the plan-step hover card (chat StepTooltip:
+          default provider delay, markdown content, viewport-aware scrollable
+          bubble — Radix portals it to document.body, so the pan/zoom
+          transform never scales or clips it). Panning self-suppresses: the
+          trigger's onPointerDown closes an open tooltip, and once the drag
+          threshold engages pointer capture the browser retargets subsequent
+          events to the canvas, so no other node's tooltip can open mid-drag;
+          on release the hover re-arms naturally. The native SVG <title> is
+          gone — it would double up with the custom tooltip. */}
+      {layout.nodes.map((layoutNode) => {
+        const selected = layoutNode.id === selectedId
+        const node = nodesById.get(layoutNode.id)
         return (
-          <g
-            key={node.id}
-            role="button"
-            tabIndex={0}
-            data-node-id={node.id}
-            aria-label={`${node.id} ${node.title}`}
-            className="cursor-pointer"
-            onClick={() => onSelect(node.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onSelect(node.id)
-              }
-            }}
+          <StepTooltip
+            key={layoutNode.id}
+            // Layout and content are built from the same display graph, so
+            // the lookup always resolves; the bare-title fallback is purely
+            // defensive.
+            description={node ? hypothesisTooltipMarkdown(node) : layoutNode.title}
           >
-            {/* Native tooltip: the full (untruncated) title. */}
-            <title>{node.title}</title>
-            {selected && (
+            <g
+              role="button"
+              tabIndex={0}
+              data-node-id={layoutNode.id}
+              aria-label={`${layoutNode.id} ${layoutNode.title}`}
+              className="cursor-pointer"
+              onClick={() => onSelect(layoutNode.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onSelect(layoutNode.id)
+                }
+              }}
+            >
+              {selected && (
+                <circle
+                  cx={layoutNode.x}
+                  cy={layoutNode.y}
+                  r={NODE_R + 3}
+                  fill="none"
+                  stroke="var(--color-highlight)"
+                  strokeWidth="1.5"
+                />
+              )}
               <circle
-                cx={node.x}
-                cy={node.y}
-                r={NODE_R + 3}
-                fill="none"
-                stroke="var(--color-highlight)"
-                strokeWidth="1.5"
+                cx={layoutNode.x}
+                cy={layoutNode.y}
+                r={NODE_R}
+                fill={statusColorVar(layoutNode.status)}
+                stroke="var(--color-background)"
+                strokeWidth="1"
               />
-            )}
-            <circle
-              cx={node.x}
-              cy={node.y}
-              r={NODE_R}
-              fill={statusColorVar(node.status)}
-              stroke="var(--color-background)"
-              strokeWidth="1"
-            />
-            <text
-              x={node.x - NODE_R - 4}
-              y={node.y - 6}
-              fontSize="9"
-              textAnchor="end"
-              fill="var(--color-muted-foreground)"
-            >
-              {node.id}
-            </text>
-            <text
-              x={node.x + NODE_R + 4}
-              y={node.y + 3.5}
-              fontSize="11"
-              textAnchor="start"
-              fill="var(--color-foreground)"
-            >
-              {/* Same budget the layout's column pitch and box math derive
-                  from (LABEL_MAX_CHARS) — kept in lockstep via one constant. */}
-              {truncate(node.title, LABEL_MAX_CHARS)}
-            </text>
-          </g>
+              <text
+                x={layoutNode.x - NODE_R - 4}
+                y={layoutNode.y - 6}
+                fontSize="9"
+                textAnchor="end"
+                fill="var(--color-muted-foreground)"
+              >
+                {layoutNode.id}
+              </text>
+              <text
+                x={layoutNode.x + NODE_R + 4}
+                y={layoutNode.y + 3.5}
+                fontSize="11"
+                textAnchor="start"
+                fill="var(--color-foreground)"
+              >
+                {/* Same budget the layout's column pitch and box math derive
+                    from (LABEL_MAX_CHARS) — kept in lockstep via one constant. */}
+                {truncate(layoutNode.title, LABEL_MAX_CHARS)}
+              </text>
+            </g>
+          </StepTooltip>
         )
       })}
     </svg>
@@ -121,6 +145,11 @@ function DagSvg({ layout, selectedId, onSelect }: DagSvgProps) {
 
 export interface ResearchDagCanvasProps {
   layout: DagLayout
+  /**
+   * The display graph's full hypothesis nodes (same ids as `layout.nodes` —
+   * both derive from it): the source of the hover-tooltip Markdown card.
+   */
+  nodes: HypothesisNode[]
   selectedId: string | null
   onSelect: (id: string) => void
 }
@@ -132,9 +161,14 @@ export interface ResearchDagCanvasProps {
  * (anchored zoom, fit, drag, wheel, click-suppression counter) lives in the
  * reusable `usePanZoom` hook; on first paint — and whenever the painted
  * geometry actually changes — the DAG is scaled to fit the canvas width
- * (never upscaled).
+ * (never upscaled). Hovering a node opens a custom tooltip with the
+ * hypothesis's Markdown card (the plan-step hover pattern); it is driven by
+ * the full nodes prop, not the painted geometry.
  */
-export function ResearchDagCanvas({ layout, selectedId, onSelect }: ResearchDagCanvasProps) {
+export function ResearchDagCanvas({ layout, nodes, selectedId, onSelect }: ResearchDagCanvasProps) {
+  // id → full node for the hover tooltips. `nodes` is a stable memo from the
+  // workspace (displayGraph.nodes), so this rebuilds only on graph changes.
+  const nodesById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes])
   const {
     view,
     canvasRef,
@@ -234,7 +268,12 @@ export function ResearchDagCanvas({ layout, selectedId, onSelect }: ResearchDagC
           className="absolute left-0 top-0 origin-top-left"
           style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
         >
-          <DagSvg layout={layout} selectedId={selectedId} onSelect={onSelect} />
+          <DagSvg
+            layout={layout}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            nodesById={nodesById}
+          />
         </div>
       </div>
     </div>

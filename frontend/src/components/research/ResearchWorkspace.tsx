@@ -157,6 +157,7 @@ export function ResearchWorkspace() {
           ) : (
             <ResearchDagCanvas
               layout={layout}
+              nodes={displayGraph.nodes}
               selectedId={selectionIsCurrent ? selectedId : null}
               onSelect={selectNode}
             />

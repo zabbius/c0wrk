@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { HypothesisGraph } from '@/types/models'
+import type { HypothesisGraph, HypothesisNode } from '@/types/models'
 import {
   NODE_R,
   COLUMN_W,
@@ -26,6 +26,7 @@ import {
   projectDir,
   hypothesisCardPath,
   projectFilePaths,
+  hypothesisTooltipMarkdown,
 } from './researchDagRender'
 
 function graphOf(
@@ -767,5 +768,71 @@ describe('buildDisplayGraph', () => {
     // Every node sits in a mixed chain: open nodes survive, terminal drop.
     const openIds = nodes.filter((n) => n.status !== 'confirmed').map((n) => n.id)
     expect(filtered.nodes.map((n) => n.id).sort()).toEqual(openIds.slice().sort())
+  })
+})
+
+describe('hypothesisTooltipMarkdown', () => {
+  const FULL_NODE: HypothesisNode = {
+    id: 'H-001',
+    title: 'Root hypothesis',
+    status: 'in-progress',
+    parents: ['H-000', 'H-002'],
+    timebox: '2 weeks',
+    decision: 'pivot',
+    statement: 'Caching cuts p95 latency.',
+    verification_criterion: 'p95 < 100ms under load',
+    experiment_notes: 'Benchmark A ran clean.',
+    result: 'Confirmed on staging.',
+  }
+
+  it('renders the id: title heading and the Status/Decision/Timebox/Parents meta line', () => {
+    const md = hypothesisTooltipMarkdown(FULL_NODE)
+    expect(md).toContain('### H-001: Root hypothesis')
+    expect(md).toContain('**Status:** in-progress')
+    expect(md).toContain('**Decision:** pivot')
+    expect(md).toContain('**Timebox:** 2 weeks')
+    expect(md).toContain('**Parents:** H-000, H-002')
+  })
+
+  it('keeps the methodology card order with verbatim section bodies', () => {
+    const md = hypothesisTooltipMarkdown(FULL_NODE)
+    expect(md).toContain('**Statement**\n\nCaching cuts p95 latency.')
+    expect(md).toContain('**Verification Criterion**\n\np95 < 100ms under load')
+    expect(md).toContain('**Experiment Notes**\n\nBenchmark A ran clean.')
+    expect(md).toContain('**Result**\n\nConfirmed on staging.')
+    // Card template order (writer.go buildCardContent): Statement →
+    // Verification Criterion → Experiment Notes → Result.
+    const order = [
+      '**Statement**',
+      '**Verification Criterion**',
+      '**Experiment Notes**',
+      '**Result**',
+    ].map((label) => md.indexOf(label))
+    for (let i = 1; i < order.length; i++) {
+      expect(order[i]!).toBeGreaterThan(order[i - 1]!)
+    }
+  })
+
+  it('omits empty sections and falls back to undecided / parentless meta', () => {
+    const md = hypothesisTooltipMarkdown({ id: 'H-009', title: 'Bare', status: 'open' })
+    expect(md).toContain('### H-009: Bare')
+    expect(md).toContain('**Decision:** undecided')
+    expect(md).toContain('**Parents:** —')
+    expect(md).not.toContain('**Timebox:**')
+    expect(md).not.toContain('**Statement**')
+    expect(md).not.toContain('**Verification Criterion**')
+    expect(md).not.toContain('**Experiment Notes**')
+    expect(md).not.toContain('**Result**')
+  })
+
+  it('collapses whitespace in the heading title but keeps section bodies verbatim', () => {
+    const md = hypothesisTooltipMarkdown({
+      id: 'H-003',
+      title: ' Spaced \n out ',
+      status: 'open',
+      statement: 'Line one\n\nLine two',
+    })
+    expect(md).toContain('### H-003: Spaced out')
+    expect(md).toContain('Line one\n\nLine two')
   })
 })
