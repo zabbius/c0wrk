@@ -3,9 +3,15 @@ import {
   useResearchStore,
   selectEnabled,
   selectActiveProject,
+  selectActiveHypothesisId,
   RESEARCH_CARD_DEFAULT_HEIGHT,
 } from './researchStore'
-import type { ResearchStatus, ResearchGraphResponse, HypothesisDraft } from '@/types/models'
+import type {
+  ResearchProject,
+  ResearchStatus,
+  ResearchGraphResponse,
+  HypothesisDraft,
+} from '@/types/models'
 
 function statusOf(enabled: boolean, projectId = 'proj-1'): ResearchStatus {
   return {
@@ -412,6 +418,410 @@ describe('researchStore — loadGraph convergence semantics', () => {
   })
 })
 
+// --- Fixtures for the dashboard current-card + pins suites ---
+
+/** A research project fixture with explicit hypothesis nodes and active
+ *  front (the front lists node ids; its first entry is the leader). */
+function projOf(
+  id: string,
+  nodes: { id: string; status?: string }[],
+  front: string[],
+): ResearchProject {
+  return {
+    id,
+    brief: { id, title: `Brief ${id}` },
+    graph: {
+      nodes: nodes.map((n) => ({ id: n.id, title: n.id, status: n.status ?? 'open' })),
+      edges: [],
+    },
+    metrics: {
+      total: nodes.length,
+      by_status: {},
+      confirmation_rate: 0,
+      depth: 1,
+      breadth: 1,
+      active_front: front,
+    },
+    prior_art_count: 0,
+    has_report: false,
+    log: [],
+  }
+}
+
+function statusWithRoot(
+  projects: ResearchProject[],
+  activeProjectId?: string,
+  pins?: { research?: string[]; hypotheses?: Record<string, string[]> },
+  projectId = 'proj-1',
+): ResearchStatus {
+  return {
+    enabled: true,
+    project_id: projectId,
+    research_root: '/ws/.research',
+    root: {
+      path: '/ws/.research',
+      index: [],
+      active_project_id: activeProjectId,
+      projects,
+    },
+    pinned_research: pins?.research,
+    pinned_hypotheses: pins?.hypotheses,
+  }
+}
+
+/** A graph response for one research project, mirroring projOf's shape. */
+function cardGraphOf(
+  projectId: string,
+  nodes: { id: string; status?: string }[],
+  front: string[],
+): ResearchGraphResponse {
+  const project = projOf(projectId, nodes, front)
+  return {
+    project_id: projectId,
+    graph: project.graph,
+    metrics: project.metrics,
+    has_report: false,
+    log: [],
+  }
+}
+
+describe('researchStore — dashboard current card (active hypothesis)', () => {
+  beforeEach(() => {
+    useResearchStore.getState().reset()
+  })
+
+  it('loadStatus defaults the current card to the active front leading hypothesis', () => {
+    useResearchStore
+      .getState()
+      .loadStatus(statusWithRoot([projOf('r1', [{ id: 'h1' }, { id: 'h2' }], ['h1', 'h2'])]), 'proj-1')
+
+    const s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBe('h1')
+    expect(s.activeHypothesisResearchId).toBe('r1')
+  })
+
+  it('setActiveHypothesis stamps the active research project; null clears both fields', () => {
+    useResearchStore
+      .getState()
+      .loadStatus(
+        statusWithRoot([projOf('r1', [{ id: 'h1' }, { id: 'h2' }, { id: 'h3' }], ['h1'])]),
+        'proj-1',
+      )
+    // A non-leader card: distinguishes the user's pick from the front default.
+    useResearchStore.getState().setActiveHypothesis('h3')
+
+    let s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBe('h3')
+    expect(s.activeHypothesisResearchId).toBe('r1')
+
+    useResearchStore.getState().setActiveHypothesis(null)
+    s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBeNull()
+    expect(s.activeHypothesisResearchId).toBeNull()
+  })
+
+  it('a still-valid current card survives same-project reloads', () => {
+    const status = statusWithRoot(
+      [projOf('r1', [{ id: 'h1' }, { id: 'h2' }, { id: 'h3' }], ['h1'])],
+    )
+    useResearchStore.getState().loadStatus(status, 'proj-1')
+    useResearchStore.getState().setActiveHypothesis('h3')
+
+    // Background refresh with identical data: the pick stays.
+    useResearchStore.getState().loadStatus(status, 'proj-1')
+    const s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBe('h3')
+    expect(s.activeHypothesisResearchId).toBe('r1')
+  })
+
+  it('the current card resets to the new front when the active research switches', () => {
+    useResearchStore
+      .getState()
+      .loadStatus(
+        statusWithRoot(
+          [projOf('r1', [{ id: 'h1' }], ['h1']), projOf('r2', [{ id: 'h9' }], ['h9'])],
+          'r1',
+        ),
+        'proj-1',
+      )
+    useResearchStore.getState().setActiveHypothesis('h1')
+
+    // The active R-NNN switches to r2 (e.g. SetActiveResearch) — the old
+    // card belonged to r1, so the dashboard follows r2's front leader.
+    useResearchStore
+      .getState()
+      .loadStatus(
+        statusWithRoot(
+          [projOf('r1', [{ id: 'h1' }], ['h1']), projOf('r2', [{ id: 'h9' }], ['h9'])],
+          'r2',
+        ),
+        'proj-1',
+      )
+    const s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBe('h9')
+    expect(s.activeHypothesisResearchId).toBe('r2')
+  })
+
+  it('the current card resets to the front when its hypothesis disappears', () => {
+    useResearchStore
+      .getState()
+      .loadStatus(
+        statusWithRoot([projOf('r1', [{ id: 'h1' }, { id: 'h2' }], ['h1'])]),
+        'proj-1',
+      )
+    useResearchStore.getState().setActiveHypothesis('h2')
+
+    // h2's card was deleted externally: the refresh's graph no longer has
+    // it — the current card falls back to the front leader.
+    useResearchStore
+      .getState()
+      .loadStatus(statusWithRoot([projOf('r1', [{ id: 'h1' }], ['h1'])]), 'proj-1')
+    const s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBe('h1')
+    expect(s.activeHypothesisResearchId).toBe('r1')
+  })
+
+  it('an empty active front clears the current card (project-level recommendation)', () => {
+    // All hypotheses terminal → no front → no current card; the next-step
+    // call sites then pass '' (project-level).
+    useResearchStore
+      .getState()
+      .loadStatus(statusWithRoot([projOf('r1', [{ id: 'h1', status: 'confirmed' }], [])]), 'proj-1')
+    let s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBeNull()
+    expect(s.activeHypothesisResearchId).toBeNull()
+
+    // A new open hypothesis re-opens the front — the card follows it again.
+    useResearchStore
+      .getState()
+      .loadStatus(
+        statusWithRoot([
+          projOf('r1', [{ id: 'h1', status: 'confirmed' }, { id: 'h2' }], ['h2']),
+        ]),
+        'proj-1',
+      )
+    s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBe('h2')
+    expect(s.activeHypothesisResearchId).toBe('r1')
+  })
+
+  it('a cross-project load never inherits the previous project current card (R-NNN collision)', () => {
+    // proj-1: r1 with front leader h1; the user's current card is h1.
+    useResearchStore
+      .getState()
+      .loadStatus(statusWithRoot([projOf('r1', [{ id: 'h1' }, { id: 'h2' }], ['h1'])]), 'proj-1')
+    useResearchStore.getState().setActiveHypothesis('h1')
+    expect(useResearchStore.getState().activeHypothesisId).toBe('h1')
+
+    // proj-2: a DIFFERENT research root whose project also uses the ids r1
+    // and h1 — but whose front leader is h2. Inheriting the previous
+    // project's card (h1) would silently scope the new project's
+    // recommendation to the wrong card; the load must re-derive from the
+    // new front instead.
+    useResearchStore.getState().loadStatus(
+      statusWithRoot([projOf('r1', [{ id: 'h1' }, { id: 'h2' }], ['h2'])], undefined, undefined, 'proj-2'),
+      'proj-2',
+    )
+    const s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBe('h2')
+    expect(s.activeHypothesisResearchId).toBe('r1')
+  })
+
+  it('a front entry with no matching node is skipped in favor of the next valid one', () => {
+    // The RPC boundary drops malformed node entries, so a front entry can
+    // dangle after sanitizing — the reconciliation picks the next front
+    // entry that still resolves to a node.
+    useResearchStore
+      .getState()
+      .loadStatus(
+        statusWithRoot([projOf('r1', [{ id: 'h1' }], ['h-ghost', 'h1'])]),
+        'proj-1',
+      )
+    const s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBe('h1')
+    expect(s.activeHypothesisResearchId).toBe('r1')
+  })
+
+  it('loadGraph keeps the current card while it still resolves', () => {
+    useResearchStore
+      .getState()
+      .loadStatus(
+        statusWithRoot([projOf('r1', [{ id: 'h1' }, { id: 'h2' }, { id: 'h3' }], ['h1'])]),
+        'proj-1',
+      )
+    useResearchStore.getState().setActiveHypothesis('h3')
+
+    const applied = useResearchStore
+      .getState()
+      .loadGraph(cardGraphOf('r1', [{ id: 'h1' }, { id: 'h2' }, { id: 'h3' }], ['h1']))
+    expect(applied).toBe(true)
+    const s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBe('h3')
+    expect(s.activeHypothesisResearchId).toBe('r1')
+  })
+
+  it('loadGraph resets the current card when its node disappears', () => {
+    useResearchStore
+      .getState()
+      .loadStatus(
+        statusWithRoot([projOf('r1', [{ id: 'h1' }, { id: 'h2' }], ['h1'])]),
+        'proj-1',
+      )
+    useResearchStore.getState().setActiveHypothesis('h2')
+
+    // The incremental update carries the deletion of h2's card.
+    const applied = useResearchStore.getState().loadGraph(cardGraphOf('r1', [{ id: 'h1' }], ['h1']))
+    expect(applied).toBe(true)
+    const s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBe('h1')
+    expect(s.activeHypothesisResearchId).toBe('r1')
+  })
+
+  it('loadGraph follows an active-R-NNN switch by resetting to the new project front', () => {
+    useResearchStore
+      .getState()
+      .loadStatus(
+        statusWithRoot(
+          [projOf('r1', [{ id: 'h1' }], ['h1']), projOf('r2', [{ id: 'h9' }], ['h9'])],
+          'r1',
+        ),
+        'proj-1',
+      )
+    useResearchStore.getState().setActiveHypothesis('h1')
+
+    // A response for r2 (the backend's fresh PickActiveProject choice).
+    const applied = useResearchStore.getState().loadGraph(cardGraphOf('r2', [{ id: 'h9' }], ['h9']))
+    expect(applied).toBe(true)
+    const s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBe('h9')
+    expect(s.activeHypothesisResearchId).toBe('r2')
+  })
+
+  it('a stale loadGraph ticket leaves the current card untouched (rejected wholesale)', () => {
+    useResearchStore
+      .getState()
+      .loadStatus(
+        statusWithRoot([projOf('r1', [{ id: 'h1' }, { id: 'h2' }], ['h1'])]),
+        'proj-1',
+      )
+    useResearchStore.getState().setActiveHypothesis('h2')
+
+    const applied = useResearchStore
+      .getState()
+      .loadGraph(cardGraphOf('r1', [{ id: 'h1' }], ['h1']), 0) // stale ticket
+    expect(applied).toBe(false)
+    const s = useResearchStore.getState()
+    expect(s.activeHypothesisId).toBe('h2')
+    expect(s.activeHypothesisResearchId).toBe('r1')
+  })
+})
+
+describe('researchStore — pins', () => {
+  beforeEach(() => {
+    useResearchStore.getState().reset()
+  })
+
+  it('loadStatus mirrors pinned_research/pinned_hypotheses from the status', () => {
+    const pins = {
+      research: ['R-001-web-exfil/brief.md'],
+      hypotheses: {
+        // The same H-001 pinned in two research projects — a list per key.
+        'H-001': [
+          'R-001-web-exfil/hypotheses/H-001.md',
+          'R-002-other/hypotheses/H-001.md',
+        ],
+      },
+    }
+    useResearchStore
+      .getState()
+      .loadStatus(statusWithRoot([projOf('r1', [], [])], undefined, pins), 'proj-1')
+
+    const s = useResearchStore.getState()
+    expect(s.pinnedResearch).toEqual(pins.research)
+    expect(s.pinnedHypotheses).toEqual(pins.hypotheses)
+  })
+
+  it('loadStatus defaults absent pins to empty collections (older payloads)', () => {
+    useResearchStore
+      .getState()
+      .loadStatus(statusWithRoot([projOf('r1', [], [])]), 'proj-1')
+
+    const s = useResearchStore.getState()
+    expect(s.pinnedResearch).toEqual([])
+    expect(s.pinnedHypotheses).toEqual({})
+  })
+
+  it('loadGraph preserves the pins (file edits never change them)', () => {
+    const pins = { research: ['R-001-x/brief.md'] }
+    useResearchStore
+      .getState()
+      .loadStatus(statusWithRoot([projOf('r1', [{ id: 'h1' }], ['h1'])], undefined, pins), 'proj-1')
+
+    const applied = useResearchStore.getState().loadGraph(cardGraphOf('r1', [{ id: 'h1' }], ['h1']))
+    expect(applied).toBe(true)
+    // The incremental graph response carries no pins — the persisted pins
+    // must survive untouched (they change only via the pin RPCs, whose
+    // callers refresh the full status).
+    expect(useResearchStore.getState().pinnedResearch).toEqual(pins.research)
+  })
+
+  it('reset clears the pins (and the current card) back to initial', () => {
+    useResearchStore
+      .getState()
+      .loadStatus(
+        statusWithRoot(
+          [projOf('r1', [{ id: 'h1' }], ['h1'])],
+          undefined,
+          { research: ['R-001-x/brief.md'], hypotheses: { 'H-001': ['R-001-x/hypotheses/H-001.md'] } },
+        ),
+        'proj-1',
+      )
+    expect(useResearchStore.getState().activeHypothesisId).toBe('h1')
+
+    useResearchStore.getState().reset()
+    const s = useResearchStore.getState()
+    expect(s.pinnedResearch).toEqual([])
+    expect(s.pinnedHypotheses).toEqual({})
+    expect(s.activeHypothesisId).toBeNull()
+    expect(s.activeHypothesisResearchId).toBeNull()
+  })
+})
+
+describe('researchStore — selectActiveHypothesisId', () => {
+  beforeEach(() => {
+    useResearchStore.getState().reset()
+  })
+
+  it('returns the current card id while its stamp matches the active project', () => {
+    useResearchStore
+      .getState()
+      .loadStatus(
+        statusWithRoot([projOf('r1', [{ id: 'h1' }, { id: 'h2' }], ['h1'])]),
+        'proj-1',
+      )
+    useResearchStore.getState().setActiveHypothesis('h2')
+    expect(selectActiveHypothesisId(useResearchStore.getState())).toBe('h2')
+  })
+
+  it('returns "" with no current card (fresh store, or an empty front)', () => {
+    expect(selectActiveHypothesisId(useResearchStore.getState())).toBe('')
+
+    useResearchStore
+      .getState()
+      .loadStatus(statusWithRoot([projOf('r1', [{ id: 'h1', status: 'confirmed' }], [])]), 'proj-1')
+    expect(selectActiveHypothesisId(useResearchStore.getState())).toBe('')
+  })
+
+  it('returns "" for an unstamped selection (made while nothing was active)', () => {
+    // A selection made before any status loaded carries no R-NNN stamp —
+    // it must never resolve (mirrors the workspace selection semantics).
+    useResearchStore.getState().setActiveHypothesis('h1')
+    expect(useResearchStore.getState().activeHypothesisId).toBe('h1')
+    expect(useResearchStore.getState().activeHypothesisResearchId).toBeNull()
+    expect(selectActiveHypothesisId(useResearchStore.getState())).toBe('')
+  })
+})
+
 describe('researchStore selectors', () => {
   beforeEach(() => {
     useResearchStore.getState().reset()
@@ -420,7 +830,6 @@ describe('researchStore selectors', () => {
   it('selectEnabled is false when no status loaded', () => {
     expect(selectEnabled(useResearchStore.getState())).toBe(false)
   })
-
   it('selectEnabled reflects status.enabled', () => {
     useResearchStore.getState().loadStatus(statusOf(true), 'proj-1')
     expect(selectEnabled(useResearchStore.getState())).toBe(true)

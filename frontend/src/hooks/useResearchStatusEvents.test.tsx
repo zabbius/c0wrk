@@ -25,10 +25,11 @@ vi.mock('@/api/runtime', () => ({
 }))
 
 const statusMock = vi.fn<(projectId: string) => Promise<ResearchStatus>>()
-const nextStepMock = vi.fn<(projectId: string) => Promise<ResearchNextStep>>()
+const nextStepMock = vi.fn<(projectId: string, hypothesisId?: string) => Promise<ResearchNextStep>>()
 vi.mock('@/api/research', () => ({
   getResearchStatus: (projectId: string) => statusMock(projectId),
-  getResearchNextStep: (projectId: string) => nextStepMock(projectId),
+  getResearchNextStep: (projectId: string, hypothesisId?: string) =>
+    nextStepMock(projectId, hypothesisId),
 }))
 
 vi.mock('@/lib/logger', () => ({
@@ -170,5 +171,37 @@ describe('useResearchStatusEvents — refresh + research watchdog', () => {
       await vi.advanceTimersByTimeAsync(100)
     })
     expect(statusMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('scopes the next-step fetch to the dashboard current hypothesis card', async () => {
+    // A research project with an open front: the store's reconciliation
+    // adopts the front leader (H-001) as the dashboard's current card, and
+    // the next-step fetch must carry it — '' would degrade the
+    // recommendation to the project level.
+    const status = makeStatus()
+    const project = status.root!.projects[0]!
+    project.graph.nodes = [
+      { id: 'H-001', title: 'Front leader', status: 'open' },
+      { id: 'H-002', title: 'Terminal card', status: 'confirmed' },
+    ]
+    project.metrics.active_front = ['H-001']
+    statusMock.mockResolvedValue(status)
+
+    await act(async () => {
+      root.render(<Probe />)
+    })
+    expect(nextStepMock).toHaveBeenCalledWith('p1', 'H-001')
+
+    // The user picks another card on the dashboard…
+    act(() => {
+      useResearchStore.getState().setActiveHypothesis('H-002')
+    })
+    await act(async () => {
+      handlers.get('research:changed')!()
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    // …and the refreshed recommendation is scoped to it (the card still
+    // resolves in the reloaded status, so the reconciliation keeps it).
+    expect(nextStepMock).toHaveBeenLastCalledWith('p1', 'H-002')
   })
 })

@@ -986,9 +986,7 @@ func maxHypothesisNumber(projectDir string) int {
 // directories normalizing to the same R-NNN) cannot redirect mutations to a
 // different project than the one the panel renders. The legacy name-matching
 // path remains only as a fallback for hand-constructed models whose Dir was
-// never set. It handles both the canonical nested layout (R-NNN-short-name/)
-// and the flat single-project layout. It returns an error when no project
-// exists yet.
+// never set. It returns an error when no project exists yet.
 func ActiveProjectDir(researchRoot string) (string, error) {
 	root, err := ParseResearchRoot(researchRoot)
 	if err != nil {
@@ -1016,10 +1014,6 @@ func ActiveProjectDir(researchRoot string) (string, error) {
 		if NormalizeResearchID(e.Name()) == active.ID {
 			return filepath.Join(researchRoot, e.Name()), nil
 		}
-	}
-	// Flat single-project layout: the root itself is the project.
-	if isFlatProjectRoot(researchRoot) {
-		return researchRoot, nil
 	}
 	return "", fmt.Errorf("active research project directory for %q not found", active.ID)
 }

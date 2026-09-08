@@ -30,11 +30,12 @@ vi.mock('@/api/runtime', () => ({
 
 const statusMock = vi.fn<(projectId: string) => Promise<ResearchStatus>>()
 const graphMock = vi.fn<(projectId: string) => Promise<ResearchGraphResponse>>()
-const nextStepMock = vi.fn<(projectId: string) => Promise<ResearchNextStep>>()
+const nextStepMock = vi.fn<(projectId: string, hypothesisId?: string) => Promise<ResearchNextStep>>()
 vi.mock('@/api/research', () => ({
   getResearchStatus: (projectId: string) => statusMock(projectId),
   getResearchGraph: (projectId: string) => graphMock(projectId),
-  getResearchNextStep: (projectId: string) => nextStepMock(projectId),
+  getResearchNextStep: (projectId: string, hypothesisId?: string) =>
+    nextStepMock(projectId, hypothesisId),
 }))
 
 vi.mock('@/lib/logger', () => ({
@@ -231,8 +232,9 @@ describe('useResearchFileWatcher — event → store update', () => {
     // The fallback converged the status…
     expect(statusMock).toHaveBeenCalledWith('p1')
     expect(selectActiveLog(useResearchStore.getState())).toHaveLength(4)
-    // …and refreshed the recommendation alongside it.
-    expect(nextStepMock).toHaveBeenCalledWith('p1')
+    // …and refreshed the recommendation alongside it (project-level: the
+    // fixture's front is empty, so there is no current card).
+    expect(nextStepMock).toHaveBeenCalledWith('p1', '')
     expect(useResearchStore.getState().nextStep).toBe(freshNextStep)
 
     await unmount()
@@ -287,6 +289,43 @@ describe('useResearchFileWatcher — event → store update', () => {
     expect(statusMock).toHaveBeenCalledWith('p1')
     expect(selectActiveLog(useResearchStore.getState())).toHaveLength(2)
     expect(useResearchStore.getState().error).toBeNull()
+
+    await unmount()
+  })
+
+  it('scopes the incremental next-step fetch to the dashboard current hypothesis card', async () => {
+    // Seed the store with a project whose graph has an open front leader
+    // (H-001) and a terminal card (H-002), then make H-002 the dashboard's
+    // current card — the file-change refresh must scope its next-step fetch
+    // to H-002 (the graph response carries it, so the reconciliation keeps
+    // the pick).
+    const seed = makeStatus(1)
+    const seeded = seed.root!.projects[0]!
+    seeded.graph.nodes = [
+      { id: 'H-001', title: 'Front leader', status: 'open' },
+      { id: 'H-002', title: 'Terminal card', status: 'confirmed' },
+    ]
+    seeded.metrics.active_front = ['H-001']
+    useResearchStore.getState().loadStatus(seed, 'p1')
+    useResearchStore.getState().setActiveHypothesis('H-002')
+
+    const fresh = makeGraphResponse(2)
+    fresh.graph.nodes = [
+      { id: 'H-001', title: 'Front leader', status: 'open' },
+      { id: 'H-002', title: 'Terminal card', status: 'confirmed' },
+    ]
+    fresh.metrics = { ...fresh.metrics, active_front: ['H-001'] }
+    graphMock.mockResolvedValue(fresh)
+    nextStepMock.mockResolvedValue({} as ResearchNextStep)
+
+    const unmount = await mountProbe()
+
+    await act(async () => {
+      handlers.get('research:file_changed')!({ project_id: 'p1', paths: '/ws/.research/log.md' })
+      await vi.advanceTimersByTimeAsync(150)
+    })
+
+    expect(nextStepMock).toHaveBeenCalledWith('p1', 'H-002')
 
     await unmount()
   })

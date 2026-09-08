@@ -522,3 +522,43 @@ export function projectFilePaths(rootPath: string, dir: string): ResearchFilePat
     graph: hypothesisCardPath(rootPath, dir, 'graph'),
   }
 }
+
+// ── Pin resolution (match persisted pin paths to projects / cards) ──────
+
+/**
+ * True when a research-root-relative pin path (e.g.
+ * "R-001-slug/brief.md" or "R-001-slug/hypotheses/H-001.md") belongs to the
+ * research project directory `dir` ("" = the flat single-project root, where
+ * pin paths carry no directory component). Pure and unit-tested.
+ */
+export function pinPathInDir(pinPath: string, dir: string): boolean {
+  if (dir === '') return !pinPath.includes('/')
+  return pinPath.startsWith(`${dir}/`)
+}
+
+/**
+ * True when a research project (R-NNN) is pinned: at least one persisted pin
+ * path lies inside the project's directory (a pinned research records its
+ * brief path). Pure and unit-tested.
+ */
+export function isResearchProjectPinned(
+  pinnedResearch: readonly string[],
+  dir: string,
+): boolean {
+  return pinnedResearch.some((p) => pinPathInDir(p, dir))
+}
+
+/**
+ * True when a hypothesis card is pinned FOR the given research project
+ * directory: the persisted pin map is keyed by hypothesis id (H-NNN), but the
+ * same H-NNN exists across R-NNN projects (one key can carry several
+ * projects' card paths), so the directory prefix — not the key alone —
+ * decides whether THIS project's card is pinned. Pure and unit-tested.
+ */
+export function isHypothesisPinned(
+  pinnedHypotheses: Readonly<Record<string, readonly string[]>>,
+  hypothesisId: string,
+  dir: string,
+): boolean {
+  return (pinnedHypotheses[hypothesisId] ?? []).some((p) => pinPathInDir(p, dir))
+}

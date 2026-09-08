@@ -1213,23 +1213,6 @@ func ParseResearchRoot(rootPath string) (*ResearchRoot, error) {
 		root.Projects = append(root.Projects, project)
 	}
 
-	// Flat single-project fallback. The canonical methodology layout wraps
-	// every project in an R-NNN-short-name/ subdirectory (handled above), but a
-	// research root may also hold a single project flat at its top level —
-	// brief.md, prior-art.md and hypotheses/ sitting directly under the root,
-	// with no R-NNN wrapper. This shape arises when a root was populated by an
-	// earlier or non-conformant workflow, or is used as a dedicated
-	// single-project directory. When no R-NNN subdirectories were found but the
-	// root itself carries the signature project artifacts, treat the root as
-	// one project so the panel renders it instead of an empty state. Nested
-	// roots are unaffected: they always have at least one R-NNN entry, so this
-	// branch never runs for them.
-	if len(root.Projects) == 0 && isFlatProjectRoot(rootPath) {
-		if project, perr := ParseProject(rootPath); perr == nil {
-			root.Projects = append(root.Projects, project)
-		}
-	}
-
 	// Numeric R-NNN order (R-2 before R-10 — compareResearchIDs), with the
 	// parsed directory as the tie-break so duplicate IDs (two directories
 	// normalizing to the same R-NNN after a copy) keep a deterministic order:
@@ -1248,21 +1231,4 @@ func ParseResearchRoot(rootPath string) (*ResearchRoot, error) {
 		root.ActiveProjectID = active.ID
 	}
 	return root, nil
-}
-
-// isFlatProjectRoot reports whether a directory holds a single research
-// project's artifacts directly at its top level (the flat single-project
-// layout), as opposed to the canonical nested layout where projects live in
-// R-NNN-short-name/ subdirectories. The signature artifacts are brief.md
-// and/or a hypotheses/ container; the presence of either is sufficient to
-// recognize the shape. It never returns true for a canonical nested root
-// (whose top level holds only index.md and R-NNN-* directories).
-func isFlatProjectRoot(dir string) bool {
-	if _, ok := readFile(filepath.Join(dir, "brief.md")); ok {
-		return true
-	}
-	if info, err := os.Stat(filepath.Join(dir, "hypotheses")); err == nil && info.IsDir() {
-		return true
-	}
-	return false
 }

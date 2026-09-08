@@ -32,7 +32,9 @@ import type { HypothesisGraph } from '@/types/models'
  * card as a sibling read-only tab, and the card edits (title / parents /
  * status / decision / statement / verification criterion / experiment
  * notes / timebox / result — persisted through the t4 UpdateHypothesis RPC)
- * render in markdown-highlighted editors.
+ * render in markdown-highlighted editors. The header carries the RESEARCH
+ * mode toggle (disable), so the workspace tab remains usable even when the
+ * sidebar panel is hidden.
  */
 export function ResearchWorkspace() {
   // Data sync (full status + incremental graph updates) lives in the App-root
@@ -117,7 +119,7 @@ export function ResearchWorkspace() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Header: title + hide-completed toggle */}
+      {/* Header: title + hide-completed toggle + mode toggle (disable) */}
       <div className="flex items-center gap-2 shrink-0 border-b border-border bg-secondary/30 px-2 py-1">
         <FlaskConical className="size-3.5 shrink-0 text-success" />
         <span
@@ -136,6 +138,7 @@ export function ResearchWorkspace() {
           />
           Hide completed
         </label>
+        <ResearchToggle variant="button" />
       </div>
 
       {error && <ErrorBanner message={error} />}

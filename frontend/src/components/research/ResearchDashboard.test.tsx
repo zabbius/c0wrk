@@ -7,14 +7,19 @@ import { ResearchNextStep } from './ResearchNextStep'
 import { ResearchQuickActions } from './ResearchQuickActions'
 import { ResearchLog } from './ResearchLog'
 import { latestLogEntries, formatLogTime } from './researchLogUtils'
-import { ResearchQuickMutate } from './ResearchQuickMutate'
 import { ResearchPanel } from './index'
 import { useResearchStore } from '@/stores/researchStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
 import { updateHypothesis } from '@/api/research'
-import { buildNextStepPrompt, QUICK_ACTIONS } from './researchActions'
+import {
+  buildNextStepPrompt,
+  buildExperimentPrompt,
+  buildRecordResultPrompt,
+  buildDecisionPrompt,
+  QUICK_ACTIONS,
+} from './researchActions'
 import type {
   ResearchNextStep as ResearchNextStepDTO,
   ResearchStatus,
@@ -38,6 +43,12 @@ vi.mock('@/api/research', () => ({
   getResearchNextStep: vi.fn(),
   updateHypothesis: vi.fn(),
   createHypothesis: vi.fn(),
+  setActiveResearch: vi.fn(),
+  deleteResearch: vi.fn(),
+  setResearchPinned: vi.fn(),
+  setHypothesisPinned: vi.fn(),
+  enableResearch: vi.fn(),
+  disableResearch: vi.fn(),
 }))
 
 // Radix dropdown positioning observes the trigger with ResizeObserver, which
@@ -217,6 +228,9 @@ describe('ResearchNextStep — dispatch', () => {
 
 describe('ResearchQuickActions — dispatch', () => {
   it('renders one button per action, each carrying its skill', async () => {
+    // Seed a project: with workflow gating, an empty store renders every
+    // button disabled — no enabled title (and thus no Shift hint) at all.
+    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
     const container = await render(<ResearchQuickActions />)
     const buttons = container.querySelectorAll('[data-testid="research-quick-action"]')
     expect(buttons.length).toBe(QUICK_ACTIONS.length)
@@ -232,6 +246,8 @@ describe('ResearchQuickActions — dispatch', () => {
   })
 
   it('dispatches the matching skill for a clicked action', async () => {
+    // Synthesize requires total > 0 — seed the two-hypothesis project.
+    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
     const container = await render(<ResearchQuickActions />)
     const synthesize = Array.from(
       container.querySelectorAll<HTMLButtonElement>('[data-testid="research-quick-action"]'),
@@ -250,6 +266,9 @@ describe('ResearchQuickActions — dispatch', () => {
   })
 
   it('dispatches into a fresh session when Shift is held (quick action)', async () => {
+    // Decision requires ≥1 terminal hypothesis — the fixture's confirmed
+    // H-002 provides it (H-001 stays the open current card).
+    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
     const container = await render(<ResearchQuickActions />)
     const decision = Array.from(
       container.querySelectorAll<HTMLButtonElement>('[data-testid="research-quick-action"]'),
@@ -287,71 +306,108 @@ describe('ResearchQuickActions — dispatch', () => {
   })
 })
 
-describe('ResearchQuickActions — Run experiment dropdown', () => {
-  function experimentTrigger(container: HTMLElement): HTMLButtonElement {
+describe('ResearchQuickActions — Run experiment button (current-card gating)', () => {
+  function experimentButton(container: HTMLElement): HTMLButtonElement {
     return Array.from(
       container.querySelectorAll<HTMLButtonElement>('[data-testid="research-quick-action"]'),
     ).find((b) => b.getAttribute('data-skill') === 'research-experiment')!
   }
 
-  async function openExperimentMenu(container: HTMLElement): Promise<HTMLElement> {
-    const trigger = experimentTrigger(container)
-    await act(async () => {
-      trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 10))
-    })
-    const menu = document.body.querySelector('[role="menu"]')
-    expect(menu).not.toBeNull()
-    return menu as HTMLElement
-  }
-
-  it('lists only the active-front hypotheses and dispatches the picked target', async () => {
+  it('is enabled for an open current card and dispatches the scoped prompt', async () => {
     useResearchStore.getState().loadStatus(makeStatus(), 'p1')
 
     const container = await render(<ResearchQuickActions />)
-    const menu = await openExperimentMenu(container)
-    const items = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]'))
-    // H-001 (open) is on the active front; H-002 (confirmed) is not.
-    expect(items.length).toBe(1)
-    expect(items[0]!.textContent).toContain('H-001')
-    expect(items[0]!.textContent).toContain('Leading hypothesis')
+    const button = experimentButton(container)
+    expect(button.disabled).toBe(false)
 
     await act(async () => {
-      items[0]!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
-      items[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      button.click()
     })
 
     expect(sendSpy).toHaveBeenCalledTimes(1)
     const [prompt, skills, , , options] = sendSpy.mock.calls[0]!
     expect(skills).toEqual(['research-experiment'])
+    expect(prompt).toBe(buildExperimentPrompt({ id: 'H-001', title: 'Leading hypothesis' }))
     expect(prompt).toContain('H-001')
-    expect(prompt).toContain('Leading hypothesis')
     expect(options).toEqual({ newSession: false })
   })
 
-  it('dispatches into a fresh session when Shift is held on the picked item', async () => {
-    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
-
-    const container = await render(<ResearchQuickActions />)
-    const menu = await openExperimentMenu(container)
-    const item = menu.querySelector<HTMLElement>('[role="menuitem"]')!
-
-    await act(async () => {
-      item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, shiftKey: true }))
-      item.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    const [, , , , options] = sendSpy.mock.calls[0]!
-    expect(options).toEqual({ newSession: true })
-  })
-
-  it('disables the Run experiment trigger when the active front is empty', async () => {
+  it('scopes Record result and Decision prompts to the current card too', async () => {
     const status = makeStatus()
-    status.root!.projects[0]!.metrics.active_front = []
+    status.root!.projects[0]!.graph.nodes[0]!.status = 'in-progress'
+    status.root!.projects[0]!.metrics.by_status = { 'in-progress': 1, confirmed: 1 }
     useResearchStore.getState().loadStatus(status, 'p1')
 
     const container = await render(<ResearchQuickActions />)
-    expect(experimentTrigger(container).disabled).toBe(true)
+
+    const record = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[data-testid="research-quick-action"]'),
+    ).find((b) => b.getAttribute('data-skill') === 'research-hypothesis')!
+    expect(record.disabled).toBe(false)
+    await act(async () => {
+      record.click()
+    })
+    let [prompt] = sendSpy.mock.calls[0]!
+    expect(prompt).toBe(
+      buildRecordResultPrompt({ id: 'H-001', title: 'Leading hypothesis' }),
+    )
+
+    const decision = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[data-testid="research-quick-action"]'),
+    ).find((b) => b.getAttribute('data-skill') === 'research-decision')!
+    await act(async () => {
+      decision.click()
+    })
+    ;[prompt] = sendSpy.mock.calls[1]!
+    expect(prompt).toBe(
+      buildDecisionPrompt({ id: 'H-001', title: 'Leading hypothesis' }),
+    )
+  })
+
+  it('disables experiment + record when the picked current card is terminal', async () => {
+    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
+    // The user picked the terminal card as the dashboard's current card.
+    useResearchStore.getState().setActiveHypothesis('H-002')
+
+    const container = await render(<ResearchQuickActions />)
+    const buttons = container.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="research-quick-action"]',
+    )
+    const bySkill = new Map(
+      Array.from(buttons).map((b) => [b.getAttribute('data-skill'), b] as const),
+    )
+    // H-002 is confirmed: experiments and results are workflow-invalid.
+    expect(bySkill.get('research-experiment')!.disabled).toBe(true)
+    expect(bySkill.get('research-hypothesis')!.disabled).toBe(true)
+    // A terminal card exists and the project has hypotheses, so the
+    // project-level gestures stay available.
+    expect(bySkill.get('research-decision')!.disabled).toBe(false)
+    expect(bySkill.get('research-synthesis')!.disabled).toBe(false)
+  })
+
+  it('keeps Decision + Synthesize available when the front is empty (all terminal)', async () => {
+    const status = makeStatus()
+    status.root!.projects[0]!.graph.nodes = [
+      { id: 'H-001', title: 'Leading hypothesis', status: 'confirmed' },
+      { id: 'H-002', title: 'Done hypothesis', status: 'refuted', parents: ['H-001'] },
+    ]
+    status.root!.projects[0]!.metrics.active_front = []
+    status.root!.projects[0]!.metrics.by_status = { confirmed: 1, refuted: 1 }
+    useResearchStore.getState().loadStatus(status, 'p1')
+
+    const container = await render(<ResearchQuickActions />)
+    const buttons = container.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="research-quick-action"]',
+    )
+    const bySkill = new Map(
+      Array.from(buttons).map((b) => [b.getAttribute('data-skill'), b] as const),
+    )
+    // No current card (empty front) → hypothesis-targeted gestures off…
+    expect(bySkill.get('research-experiment')!.disabled).toBe(true)
+    expect(bySkill.get('research-hypothesis')!.disabled).toBe(true)
+    // …while the project-level gestures reflect the terminal-only graph.
+    expect(bySkill.get('research-decision')!.disabled).toBe(false)
+    expect(bySkill.get('research-synthesis')!.disabled).toBe(false)
   })
 })
 
@@ -436,71 +492,6 @@ describe('ResearchLog — rendering + helpers', () => {
   })
 })
 
-describe('ResearchQuickMutate — status change', () => {
-  it('persists a status change through updateHypothesis (t4)', async () => {
-    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
-
-    const container = await render(<ResearchQuickMutate />)
-    const select = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="Status for H-001"]',
-    )!
-    expect(select.value).toBe('open')
-
-    await act(async () => {
-      select.value = 'in-progress'
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 0))
-    })
-
-    expect(updateHypothesis).toHaveBeenCalledWith('p1', 'R-001', 'H-001', { status: 'in-progress' })
-  })
-
-  it('does not offer illegal status transitions', async () => {
-    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
-
-    const container = await render(<ResearchQuickMutate />)
-    const select = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="Status for H-001"]',
-    )!
-
-    const options = Array.from(select.options).map((o) => o.value)
-    // open → in-progress | cancelled are the only legal transitions; the
-    // current value is kept so the controlled select always has a match.
-    expect(options).toContain('open')
-    expect(options).toContain('in-progress')
-    expect(options).toContain('cancelled')
-    expect(options).not.toContain('confirmed')
-    expect(options).not.toContain('refuted')
-  })
-
-  it('does not call updateHypothesis when the status is unchanged', async () => {
-    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
-
-    const container = await render(<ResearchQuickMutate />)
-    const select = container.querySelector<HTMLSelectElement>(
-      'select[aria-label="Status for H-001"]',
-    )!
-
-    await act(async () => {
-      // Re-selecting the current value must be a no-op (guarded in changeStatus).
-      select.value = 'open'
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 0))
-    })
-
-    expect(updateHypothesis).not.toHaveBeenCalled()
-  })
-
-  it('renders nothing when there is no active front', async () => {
-    const status = makeStatus()
-    status.root!.projects[0]!.metrics.active_front = []
-    useResearchStore.getState().loadStatus(status, 'p1')
-
-    const container = await render(<ResearchQuickMutate />)
-    expect(container.querySelector('[data-testid="research-quick-mutate"]')).toBeNull()
-  })
-})
-
 describe('ResearchPanel — header + View Artifacts', () => {
   function viewArtifactsTrigger(container: HTMLElement): HTMLButtonElement {
     const el = container.querySelector<HTMLButtonElement>(
@@ -521,28 +512,43 @@ describe('ResearchPanel — header + View Artifacts', () => {
     return menu as HTMLElement
   }
 
-  it('carries the full project title as a tooltip on the truncated header', async () => {
+  it('header shows the active research title through the project picker', async () => {
     useResearchStore.getState().loadStatus(makeStatus(), 'p1')
 
     const container = await render(<ResearchPanel />)
-    const header = container.querySelector<HTMLElement>('span[title="Test Research"]')
-    expect(header).not.toBeNull()
-    expect(header!.textContent).toBe('Test Research')
+    const picker = container.querySelector<HTMLButtonElement>(
+      '[data-testid="research-project-picker"]',
+    )
+    expect(picker).not.toBeNull()
+    expect(picker!.textContent).toContain('Test Research')
+    expect(picker!.disabled).toBe(false)
   })
 
-  it('header toggle is an icon-only destructive disable button (no RESEARCH ON label)', async () => {
+  it('header carries the research-init plus button and no disable toggle', async () => {
     useResearchStore.getState().loadStatus(makeStatus(), 'p1')
 
     const container = await render(<ResearchPanel />)
     const toolbar = container.firstElementChild!
-    expect(toolbar.textContent).not.toContain('RESEARCH ON')
+    expect(toolbar.querySelector('[data-testid="research-project-init"]')).not.toBeNull()
+    // The RESEARCH disable control moved to the workspace tab header.
+    expect(
+      toolbar.querySelector('button[aria-label="Disable RESEARCH mode"]'),
+    ).toBeNull()
+  })
 
-    const disable = toolbar.querySelector<HTMLButtonElement>(
-      'button[aria-label="Disable RESEARCH mode"]',
-    )!
-    expect(disable).not.toBeNull()
-    expect(disable.className).toContain('text-destructive')
-    expect(disable.className).not.toContain('text-success')
+  it('renders the hypothesis picker between the next step and the quick actions', async () => {
+    useResearchStore.getState().loadStatus(makeStatus(), 'p1')
+
+    const container = await render(<ResearchPanel />)
+    const next = container.querySelector('[data-testid="research-next-step"]')!
+    const picker = container.querySelector('[data-testid="research-hypothesis-picker"]')!
+    const actions = container.querySelector('[data-testid="research-quick-actions"]')!
+    expect(next).not.toBeNull()
+    expect(picker).not.toBeNull()
+    expect(actions).not.toBeNull()
+    // DOM order: next step → hypothesis picker → quick actions.
+    expect(next.compareDocumentPosition(picker) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(picker.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('drops the old bottom quick links (no New hypothesis button)', async () => {

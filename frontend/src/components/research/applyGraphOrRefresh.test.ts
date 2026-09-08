@@ -13,10 +13,11 @@ import type {
 } from '@/types/models'
 
 const statusMock = vi.fn<(projectId: string) => Promise<ResearchStatus>>()
-const nextStepMock = vi.fn<(projectId: string) => Promise<ResearchNextStep>>()
+const nextStepMock = vi.fn<(projectId: string, hypothesisId?: string) => Promise<ResearchNextStep>>()
 vi.mock('@/api/research', () => ({
   getResearchStatus: (projectId: string) => statusMock(projectId),
-  getResearchNextStep: (projectId: string) => nextStepMock(projectId),
+  getResearchNextStep: (projectId: string, hypothesisId?: string) =>
+    nextStepMock(projectId, hypothesisId),
 }))
 
 vi.mock('@/lib/logger', () => ({
@@ -141,5 +142,23 @@ describe('applyGraphOrRefresh ([18]b shared convergence path)', () => {
 
     expect(selectActiveProject(useResearchStore.getState())?.graph.nodes).toHaveLength(2)
     expect(useResearchStore.getState().nextStep).toBe(next)
+    // The fixture's front is empty, so the fetch degrades to the
+    // project-level recommendation ('').
+    expect(nextStepMock).toHaveBeenCalledWith('p1', '')
+  })
+
+  it('fullResearchRefresh scopes the next-step fetch to the dashboard current card', async () => {
+    seedStore(1)
+    // The refreshed status names H-001 as the front leader — the store's
+    // reconciliation adopts it, and the fallback's next-step fetch must
+    // follow (the fetch runs AFTER loadStatus).
+    const status = makeStatus(1)
+    status.root!.projects[0]!.metrics.active_front = ['H-001']
+    statusMock.mockResolvedValue(status)
+    nextStepMock.mockResolvedValue({} as ResearchNextStep)
+
+    await fullResearchRefresh('p1')
+
+    expect(nextStepMock).toHaveBeenCalledWith('p1', 'H-001')
   })
 })

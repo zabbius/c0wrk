@@ -11,7 +11,7 @@ import { getResearchStatus, getResearchNextStep } from '@/api/research'
 import { subscribe } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 import { useProjectStore } from '@/stores/projectStore'
-import { useResearchStore } from '@/stores/researchStore'
+import { useResearchStore, selectActiveHypothesisId } from '@/stores/researchStore'
 
 export function useResearchStatusEvents(): void {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
@@ -52,11 +52,17 @@ export function useResearchStatusEvents(): void {
       }
     }
 
-    // The recommended next step is a separate lightweight RPC. A failure here
-    // must not surface as a status error — the recommendation is best-effort,
-    // and the dashboard falls back to a muted empty card.
+    // The recommended next step is a separate lightweight RPC, scoped to the
+    // dashboard's CURRENT hypothesis card (resolved AFTER loadStatus so the
+    // fetch follows the fresh reconciliation; '' degrades to the
+    // project-level recommendation). A failure here must not surface as a
+    // status error — the recommendation is best-effort, and the dashboard
+    // falls back to a muted empty card.
     try {
-      const nextStep = await getResearchNextStep(projectId)
+      const nextStep = await getResearchNextStep(
+        projectId,
+        selectActiveHypothesisId(useResearchStore.getState()),
+      )
       if (useProjectStore.getState().activeProjectId === projectId) {
         useResearchStore.getState().loadNextStep(nextStep)
       }

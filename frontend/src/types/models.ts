@@ -759,6 +759,17 @@ export interface ResearchStatus {
   research_root: string
   root?: ResearchRoot
   seed_result?: ResearchSeedResult
+  /** Pinned research projects — brief paths, research-root-relative with
+   *  forward slashes (`R-NNN-<slug>/brief.md`), mirrored from the persisted
+   *  project pins. Optional on the wire (older payloads omit it); the RPC
+   *  boundary normalizes it to `[]`. */
+  pinned_research?: string[]
+  /** Pinned hypothesis cards keyed by hypothesis id (H-NNN): each entry
+   *  lists the pinned card paths (`R-NNN-<slug>/hypotheses/H-NNN.md`) —
+   *  the same H-NNN exists across R-NNN projects, so one key can carry
+   *  cards from several research projects. Optional on the wire; the RPC
+   *  boundary normalizes it to `{}`. */
+  pinned_hypotheses?: Record<string, string[]>
 }
 
 /** Lightweight response for GetResearchGraph: only the hypothesis graph,

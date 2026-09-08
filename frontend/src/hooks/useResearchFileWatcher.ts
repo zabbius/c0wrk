@@ -18,7 +18,7 @@ import { getResearchGraph, getResearchNextStep } from '@/api/research'
 import { subscribe } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 import { useProjectStore } from '@/stores/projectStore'
-import { useResearchStore } from '@/stores/researchStore'
+import { useResearchStore, selectActiveHypothesisId } from '@/stores/researchStore'
 import { applyGraphOrRefresh, fullResearchRefresh } from '@/components/research/applyGraphOrRefresh'
 
 /** Type guard for the research:file_changed event payload. The backend emits
@@ -62,10 +62,16 @@ export function useResearchFileWatcher(): void {
       await applyGraphOrRefresh(graph, projectId, startedSeq)
 
       // A file change can flip the phase (e.g. a status transition), so the
-      // recommendation must be refreshed alongside the graph. Best-effort:
-      // a failure leaves the previous recommendation in place.
+      // recommendation must be refreshed alongside the graph — scoped to the
+      // dashboard's CURRENT hypothesis card (resolved AFTER the graph apply
+      // so the fetch follows the fresh reconciliation; '' degrades to the
+      // project-level recommendation). Best-effort: a failure leaves the
+      // previous recommendation in place.
       try {
-        const nextStep = await getResearchNextStep(projectId)
+        const nextStep = await getResearchNextStep(
+          projectId,
+          selectActiveHypothesisId(useResearchStore.getState()),
+        )
         if (useProjectStore.getState().activeProjectId === projectId) {
           useResearchStore.getState().loadNextStep(nextStep)
         }

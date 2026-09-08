@@ -842,6 +842,8 @@ export namespace backend {
 	    research_root: string;
 	    root?: research.ResearchRoot;
 	    seed_result?: ResearchSeedResultDTO;
+	    pinned_research: string[];
+	    pinned_hypotheses: Record<string, Array<string>>;
 	
 	    static createFrom(source: any = {}) {
 	        return new ResearchStatusDTO(source);
@@ -854,6 +856,8 @@ export namespace backend {
 	        this.research_root = source["research_root"];
 	        this.root = this.convertValues(source["root"], research.ResearchRoot);
 	        this.seed_result = this.convertValues(source["seed_result"], ResearchSeedResultDTO);
+	        this.pinned_research = source["pinned_research"];
+	        this.pinned_hypotheses = source["pinned_hypotheses"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1520,6 +1524,20 @@ export namespace mcp {
 
 export namespace project {
 	
+	export class ResearchPins {
+	    research: string[];
+	    hypotheses: Record<string, Array<string>>;
+	
+	    static createFrom(source: any = {}) {
+	        return new ResearchPins(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.research = source["research"];
+	        this.hypotheses = source["hypotheses"];
+	    }
+	}
 	export class ProjectInfo {
 	    id: string;
 	    name: string;
@@ -1527,6 +1545,7 @@ export namespace project {
 	    is_external: boolean;
 	    is_no_project: boolean;
 	    research_root: string;
+	    research_pins: ResearchPins;
 	    is_research: boolean;
 	    created_at: string;
 	    last_active_at: string;
@@ -1543,11 +1562,31 @@ export namespace project {
 	        this.is_external = source["is_external"];
 	        this.is_no_project = source["is_no_project"];
 	        this.research_root = source["research_root"];
+	        this.research_pins = this.convertValues(source["research_pins"], ResearchPins);
 	        this.is_research = source["is_research"];
 	        this.created_at = source["created_at"];
 	        this.last_active_at = source["last_active_at"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
+	
 	export class WorkDirectoryRecord {
 	    id: string;
 	    path: string;

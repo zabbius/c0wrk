@@ -21,8 +21,31 @@
 import { getResearchStatus, getResearchNextStep } from '@/api/research'
 import { logger } from '@/lib/logger'
 import { useProjectStore } from '@/stores/projectStore'
-import { useResearchStore } from '@/stores/researchStore'
+import { useResearchStore, selectActiveHypothesisId } from '@/stores/researchStore'
 import type { ResearchGraphResponse } from '@/types/models'
+
+/**
+ * Best-effort next-step refetch scoped to the dashboard's CURRENT hypothesis
+ * card (resolved from the store, so the fetch always follows the latest
+ * reconciliation — an active-R-NNN switch or a deleted card degrades to the
+ * project-level recommendation, never to the old card's). Shared by the
+ * fallback path below and the pickers' selection gestures. Quiet on failure:
+ * a failed refresh leaves the previous recommendation in place and never
+ * surfaces as a status error.
+ */
+export async function refreshNextStep(projectId: string): Promise<void> {
+  try {
+    const nextStep = await getResearchNextStep(
+      projectId,
+      selectActiveHypothesisId(useResearchStore.getState()),
+    )
+    if (useProjectStore.getState().activeProjectId === projectId) {
+      useResearchStore.getState().loadNextStep(nextStep)
+    }
+  } catch (err) {
+    logger.debug('[research] next-step refresh failed:', err)
+  }
+}
 
 /**
  * Best-effort full status + next-step refetch (the incremental path's
@@ -48,16 +71,7 @@ export async function fullResearchRefresh(projectId: string): Promise<void> {
       useResearchStore.getState().loadStatus(status, projectId, startedSeq)
     }
 
-    // Best-effort: a failure leaves the previous recommendation in place
-    // and never surfaces as a status error.
-    try {
-      const nextStep = await getResearchNextStep(projectId)
-      if (useProjectStore.getState().activeProjectId === projectId) {
-        useResearchStore.getState().loadNextStep(nextStep)
-      }
-    } catch (err) {
-      logger.debug('[research] fallback next-step fetch failed:', err)
-    }
+    await refreshNextStep(projectId)
   } catch (err) {
     logger.debug('[research] fallback status fetch failed:', err)
   }

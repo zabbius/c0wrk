@@ -88,17 +88,110 @@ export async function getResearchGraph(projectId: string): Promise<ResearchGraph
  * Get the single recommended next research action for a project, derived from
  * the active R-NNN's current phase. Returns the setup recommendation
  * (research-init) when there is no active R-NNN yet.
+ *
+ * `hypothesisId` scopes the recommendation to that hypothesis (the dashboard's
+ * selected card); the default empty string yields the project-level
+ * recommendation.
  */
-export async function getResearchNextStep(projectId: string): Promise<ResearchNextStep> {
+export async function getResearchNextStep(
+  projectId: string,
+  hypothesisId = '',
+): Promise<ResearchNextStep> {
   try {
     const app = getApp()
-    const result = await app.GetResearchNextStep(projectId)
+    const result = await app.GetResearchNextStep(projectId, hypothesisId)
     if (!isResearchNextStep(result)) {
       throw new Error('Invalid research next-step response from backend')
     }
     return result
   } catch (err) {
     logger.error('Failed to get research next step:', err)
+    throw err
+  }
+}
+
+/**
+ * Make a research project (R-NNN) the ACTIVE one: the backend rewrites the
+ * research root's index.md so the project's row is the last table entry (the
+ * chronological rule its active-project picker applies) and returns the
+ * refreshed status. Foreign/unknown R-NNNs are rejected by the backend.
+ */
+export async function setActiveResearch(
+  projectId: string,
+  researchId: string,
+): Promise<ResearchStatus> {
+  try {
+    const app = getApp()
+    const result = await app.SetActiveResearch(projectId, researchId)
+    if (!isResearchStatus(result)) {
+      throw new Error('Invalid research status response from backend')
+    }
+    return normalizeResearchStatus(result)
+  } catch (err) {
+    logger.error('Failed to set active research:', err)
+    throw err
+  }
+}
+
+/**
+ * Delete a research project (R-NNN): its index rows, its directory tree, and
+ * its persisted pins. Deleting the active project falls the active selection
+ * through to the remaining projects. Returns the refreshed status (the
+ * toggle stays on even after deleting the last project).
+ */
+export async function deleteResearch(
+  projectId: string,
+  researchId: string,
+): Promise<ResearchStatus> {
+  try {
+    const app = getApp()
+    const result = await app.DeleteResearch(projectId, researchId)
+    if (!isResearchStatus(result)) {
+      throw new Error('Invalid research status response from backend')
+    }
+    return normalizeResearchStatus(result)
+  } catch (err) {
+    logger.error('Failed to delete research:', err)
+    throw err
+  }
+}
+
+/**
+ * Pin or unpin a research project (persists across restarts via the
+ * project's stored pins). Idempotent in both directions; the R-NNN is
+ * ownership-checked by the backend. Emits no event — the resolved promise
+ * is the refresh signal (callers refetch the status to see the new pins).
+ */
+export async function setResearchPinned(
+  projectId: string,
+  researchId: string,
+  pinned: boolean,
+): Promise<void> {
+  try {
+    const app = getApp()
+    await app.SetResearchPinned(projectId, researchId, pinned)
+  } catch (err) {
+    logger.error('Failed to set research pin:', err)
+    throw err
+  }
+}
+
+/**
+ * Pin or unpin a hypothesis card. Pinning requires the card file to exist;
+ * unpinning tolerates a deleted card, so stale pins stay removable. Emits no
+ * event — the resolved promise is the refresh signal.
+ */
+export async function setHypothesisPinned(
+  projectId: string,
+  researchId: string,
+  hypothesisId: string,
+  pinned: boolean,
+): Promise<void> {
+  try {
+    const app = getApp()
+    await app.SetHypothesisPinned(projectId, researchId, hypothesisId, pinned)
+  } catch (err) {
+    logger.error('Failed to set hypothesis pin:', err)
     throw err
   }
 }
@@ -192,7 +285,27 @@ function isResearchStatus(v: unknown): v is ResearchStatus {
       }
     }
   }
+  // Pins are optional on the wire (accepted missing/null like the graph
+  // slices), but when present every entry must be a string path — a
+  // malformed pins field fails closed at the boundary instead of rendering
+  // as an uncaught store exception later.
+  if (!isStringArrayOrMissing(v['pinned_research'])) return false
+  const pinnedHypotheses = v['pinned_hypotheses']
+  if (pinnedHypotheses !== undefined && pinnedHypotheses !== null) {
+    if (!isRecord(pinnedHypotheses)) return false
+    for (const cards of Object.values(pinnedHypotheses)) {
+      if (!isStringArrayOrMissing(cards)) return false
+    }
+  }
   return true
+}
+
+/** `[]`, `null`, and missing are all accepted (Go serializes nil slices as
+ *  null); anything else — or a non-string entry — fails the boundary check. */
+function isStringArrayOrMissing(v: unknown): v is string[] | null | undefined {
+  if (v === undefined || v === null) return true
+  if (!Array.isArray(v)) return false
+  return v.every((entry) => typeof entry === 'string')
 }
 
 function isResearchGraphResponse(v: unknown): v is ResearchGraphResponse {
@@ -273,6 +386,10 @@ function normalizeResearchStatus(status: ResearchStatus): ResearchStatus {
       project.log ??= []
     }
   }
+  // Pins follow the same nil-slice normalization: the store consumes them
+  // as always-present collections, never null/undefined.
+  status.pinned_research ??= []
+  status.pinned_hypotheses ??= {}
   return status
 }
 

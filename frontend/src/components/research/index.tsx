@@ -12,9 +12,10 @@ import {
 import { ResearchToggle } from './ResearchToggle'
 import { ResearchMetricsRow } from './ResearchMetrics'
 import { ResearchNextStep } from './ResearchNextStep'
+import { ResearchHypothesisPicker } from './ResearchHypothesisPicker'
 import { ResearchQuickActions } from './ResearchQuickActions'
-import { ResearchQuickMutate } from './ResearchQuickMutate'
 import { ResearchLog } from './ResearchLog'
+import { ResearchProjectPicker } from './ResearchProjectPicker'
 import { projectDir, projectFilePaths } from './researchDagRender'
 
 /**
@@ -24,9 +25,11 @@ import { projectDir, projectFilePaths } from './researchDagRender'
  * research:changed / workspace:tree_changed full status and
  * research:file_changed incremental graph + log — is mounted once at the App
  * root via ResearchEventBridge), rendering a compact control
- * surface — a status/metrics header, the recommended next step with one-click
- * execution, a quick-actions row that dispatches research-* skills, quick
- * status mutations on the active front (t4), and the research log (t1).
+ * surface — a header with the research-project picker (active R-NNN switch,
+ * pins, delete) and the research-init plus button, the status/metrics row,
+ * the recommended next step with one-click execution, the current-hypothesis
+ * picker (selection, status flip, Create hypothesis), the quick-actions row
+ * that dispatches research-* skills, and the research log (t1).
  *
  * The hypothesis tree/DAG presentation lives in the Research workspace tab
  * (t5); the bottom bar is a single View Artifacts dropdown that opens the
@@ -71,7 +74,6 @@ export function ResearchPanel() {
   }
 
   const metrics = project?.metrics
-  const brief = project?.brief
 
   // Resolve artifact paths for the quick links (brief/prior-art/report/graph).
   const dir = project ? projectDir(root, project.id) : ''
@@ -96,18 +98,11 @@ export function ResearchPanel() {
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Toolbar: title + mode toggle (disable) */}
+      {/* Toolbar: flask + research-project picker (active R-NNN switch,
+          pins, delete) + research-init plus button */}
       <div className="flex items-center gap-2 px-2 py-1 min-h-[32px] shrink-0 border-b border-border bg-secondary/30">
         <FlaskConical className="size-3.5 shrink-0 text-success" />
-        <span
-          className="truncate text-xs font-medium"
-          title={brief?.title ?? 'Research'}
-        >
-          {brief?.title ?? 'Research'}
-        </span>
-        <div className="ml-auto shrink-0">
-          <ResearchToggle variant="button" />
-        </div>
+        <ResearchProjectPicker />
       </div>
 
       {error && <ErrorBanner message={error} />}
@@ -122,8 +117,8 @@ export function ResearchPanel() {
           <>
             {metrics && <ResearchMetricsRow metrics={metrics} />}
             <ResearchNextStep />
+            <ResearchHypothesisPicker />
             <ResearchQuickActions />
-            <ResearchQuickMutate />
             <ResearchLog />
           </>
         )}

@@ -1,6 +1,6 @@
 // Hypothesis status lifecycle shared by every research UI surface that lets
-// the user flip a status (the workspace detail card's select, the
-// ResearchQuickMutate active-front dropdowns).
+// the user flip a status (the workspace detail card's select, the dashboard
+// hypothesis picker's status select).
 //
 // Mirrors the backend transition state machine in core/research/writer.go
 // (`transitions`): a status may move only to its listed targets, and terminal

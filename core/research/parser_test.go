@@ -927,8 +927,9 @@ func TestParseResearchRoot_MissingDirIsError(t *testing.T) {
 	}
 }
 
-// TestParseResearchRoot_FlatSingleProject covers a research root that holds a
-// single project's artifacts directly at its top level (the "flat" layout):
+// TestParseResearchRoot_FlatRootYieldsNoProjects covers a research root that
+// holds a single project's artifacts directly at its top level (the "flat"
+// layout):
 //
 //	root/
 //	├── brief.md
@@ -937,12 +938,10 @@ func TestParseResearchRoot_MissingDirIsError(t *testing.T) {
 //	    ├── graph.md
 //	    └── H-001.md
 //
-// This shape is non-conformant with the canonical nested layout
-// (R-NNN-short-name/ wrapper), but it arises in practice (e.g. a dedicated
-// single-project directory, or a root populated by an earlier workflow). The
-// parser must surface it as a single project instead of rendering an empty
-// panel.
-func TestParseResearchRoot_FlatSingleProject(t *testing.T) {
+// Only the canonical nested layout (projects in R-NNN-short-name/
+// subdirectories) is recognized: a flat root parses as a root with no
+// projects, so the panel renders an empty state for it.
+func TestParseResearchRoot_FlatRootYieldsNoProjects(t *testing.T) {
 	root := t.TempDir()
 
 	writeFile := func(name, body string) {
@@ -970,32 +969,19 @@ func TestParseResearchRoot_FlatSingleProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseResearchRoot: %v", err)
 	}
-	if len(parsed.Projects) != 1 {
-		t.Fatalf("Projects = %d, want 1 (flat project must be discovered): %+v",
+	if len(parsed.Projects) != 0 {
+		t.Fatalf("Projects = %d, want 0 (flat root is not a project): %+v",
 			len(parsed.Projects), parsed.Projects)
 	}
-	p := parsed.Projects[0]
-	if p.ID != "R-007" {
-		t.Errorf("project ID = %q, want R-007 (from brief)", p.ID)
-	}
-	if p.Brief.Title != "Flat Project" {
-		t.Errorf("Brief.Title = %q, want \"Flat Project\"", p.Brief.Title)
-	}
-	if p.PriorArtCount != 2 {
-		t.Errorf("PriorArtCount = %d, want 2", p.PriorArtCount)
-	}
-	if len(p.Graph.Nodes) != 1 {
-		t.Fatalf("Graph.Nodes = %d, want 1: %+v", len(p.Graph.Nodes), p.Graph.Nodes)
-	}
-	if p.Graph.Nodes[0].ID != "H-001" {
-		t.Errorf("node ID = %q, want H-001", p.Graph.Nodes[0].ID)
+	if parsed.ActiveProjectID != "" {
+		t.Errorf("ActiveProjectID = %q, want empty (no projects)", parsed.ActiveProjectID)
 	}
 }
 
-// TestParseResearchRoot_NestedUnaffected confirms the flat-layout fallback
-// does not fire when the canonical nested layout is present: a root with an
-// R-NNN subdirectory is parsed via the nested path only (no spurious second
-// project from the root itself).
+// TestParseResearchRoot_NestedUnaffected confirms root-level artifacts are
+// ignored when the canonical nested layout is present: a root with an R-NNN
+// subdirectory is parsed via the nested path only, and a stray brief.md at
+// the root level never adds a second project.
 func TestParseResearchRoot_NestedUnaffected(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "R-001-x"), 0o755); err != nil {
@@ -1015,7 +1001,7 @@ func TestParseResearchRoot_NestedUnaffected(t *testing.T) {
 		t.Fatalf("ParseResearchRoot: %v", err)
 	}
 	if len(parsed.Projects) != 1 {
-		t.Fatalf("Projects = %d, want exactly 1 (nested only, no flat duplicate): %+v",
+		t.Fatalf("Projects = %d, want exactly 1 (nested only, root artifacts ignored): %+v",
 			len(parsed.Projects), parsed.Projects)
 	}
 	if parsed.Projects[0].ID != "R-001" {

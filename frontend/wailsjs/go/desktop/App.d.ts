@@ -73,6 +73,8 @@ export function DeleteRemoteBranch(arg1:string,arg2:string):Promise<string>;
 
 export function DeleteRemoteTag(arg1:string,arg2:string):Promise<string>;
 
+export function DeleteResearch(arg1:string,arg2:string):Promise<backend.ResearchStatusDTO>;
+
 export function DeleteReviewComment(arg1:string):Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<void>;
@@ -153,7 +155,7 @@ export function GetRebaseMergeState():Promise<workspace.MergeRebaseState>;
 
 export function GetResearchGraph(arg1:string):Promise<backend.ResearchGraphDTO>;
 
-export function GetResearchNextStep(arg1:string):Promise<backend.ResearchNextStepDTO>;
+export function GetResearchNextStep(arg1:string,arg2:string):Promise<backend.ResearchNextStepDTO>;
 
 export function GetResearchStatus(arg1:string):Promise<backend.ResearchStatusDTO>;
 
@@ -287,9 +289,15 @@ export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<back
 
 export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:Array<string>,arg5:string,arg6:string,arg7:boolean,arg8:string,arg9:boolean):Promise<void>;
 
+export function SetActiveResearch(arg1:string,arg2:string):Promise<backend.ResearchStatusDTO>;
+
+export function SetHypothesisPinned(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
+
 export function SetLogLevel(arg1:string):Promise<void>;
 
 export function SetModelConfig(arg1:string,arg2:backend.ModelConfigRequest):Promise<void>;
+
+export function SetResearchPinned(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function SetReviewStatus(arg1:string,arg2:string):Promise<void>;
 
