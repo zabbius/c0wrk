@@ -2,9 +2,11 @@ package workspace
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,6 +109,12 @@ func TestWatcher_ChmodWithWriteStillFires(t *testing.T) {
 // for the self-sustaining loop: with GIT_OPTIONAL_LOCKS=0 pinned by
 // gitCmdInRepoScanned, running the same read-only git commands the frontend
 // issues on workspace:tree_changed must not itself trigger onChange.
+//
+// Diagnosis aid: the watcher is wired to a Debug-level logger so every raw
+// fsnotify event (op + path) lands in the test's output on failure — with
+// FSNOTIFY_DEBUG=1 in the environment the fsnotify backend additionally
+// prints the RAW ReadDirectoryChangesW/inotify/kqueue actions. The failure
+// message also lists the paths that reached onChange.
 func TestWatcher_GitReadDoesNotTriggerOnChange(t *testing.T) {
 	dir := t.TempDir()
 	runGitPlain(t, dir, "init", "-q")
@@ -117,7 +125,15 @@ func TestWatcher_GitReadDoesNotTriggerOnChange(t *testing.T) {
 	runGitPlain(t, dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
 
 	var fired atomic.Int32
-	w, err := NewWatcher(dir, func(_ []string) { fired.Add(1) })
+	var firedMu sync.Mutex
+	var firedPaths []string
+	debugLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	w, err := NewWatcher(dir, func(paths []string) {
+		firedMu.Lock()
+		firedPaths = append(firedPaths, paths...)
+		firedMu.Unlock()
+		fired.Add(1)
+	}, debugLogger)
 	if err != nil {
 		t.Fatalf("NewWatcher: %v", err)
 	}
@@ -140,7 +156,10 @@ func TestWatcher_GitReadDoesNotTriggerOnChange(t *testing.T) {
 	time.Sleep(defaultDebounce + 200*time.Millisecond)
 
 	if c := fired.Load(); c != 0 {
-		t.Errorf("onChange fired %d times for read-only git commands, want 0 (loop regression)", c)
+		firedMu.Lock()
+		paths := append([]string(nil), firedPaths...)
+		firedMu.Unlock()
+		t.Errorf("onChange fired %d times for read-only git commands, want 0 (loop regression); paths: %q", c, paths)
 	}
 
 	// Control: a real working-tree edit must still fire.

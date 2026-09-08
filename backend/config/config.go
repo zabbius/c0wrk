@@ -630,6 +630,8 @@ type TimeoutsConfig struct {
 	BashWaitDelay            int `yaml:"bashWaitDelay"`            // seconds, default: 5
 	RipgrepTimeout           int `yaml:"ripgrepTimeout"`           // seconds, default: 60
 	WebFetchTimeout          int `yaml:"webFetchTimeout"`          // seconds, default: 30
+	WebFetchProxyTimeout     int `yaml:"webFetchProxyTimeout"`     // seconds, default: 30 — per-attempt web fetch timeout used when the proxy is enabled
+	WebFetchRetries          int `yaml:"webFetchRetries"`          // retry count (not seconds) for failed web fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when the proxy is on), default: 2
 	WebSearchTimeout         int `yaml:"webSearchTimeout"`         // seconds, default: 30
 	PersistenceTimeout       int `yaml:"persistenceTimeout"`       // seconds, default: 5
 	LLMRequestTimeout        int `yaml:"llmRequestTimeout"`        // seconds, default: 600 (10 min) — main chat loop

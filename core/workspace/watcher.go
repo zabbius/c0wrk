@@ -125,6 +125,7 @@ func (w *Watcher) eventLoop() {
 			if !ok {
 				return
 			}
+			w.log().Debug("fsnotify event", "op", event.Op.String(), "path", event.Name)
 			// Attribute-only events (fsnotify Chmod — kqueue NOTE_ATTRIB on
 			// BSD/macOS, IN_ATTRIB on Linux) carry no content change. On macOS
 			// every git invocation that opens .git/index for reading produces
@@ -136,10 +137,40 @@ func (w *Watcher) eventLoop() {
 			// must neither enter the pending set nor restart the debounce window
 			// (a Chmod storm would otherwise postpone every real event's flush
 			// indefinitely). A Chmod ORed with a write-ish op still passes —
-			// kqueue reports NOTE_ATTRIB alongside most real mutations.
+			// kqueue reports NOTE_ATTRIB alongside most real mutations. (The
+			// Windows backend never emits Chmod; the filter below covers it.)
 			if event.Op&fsnotify.Chmod != 0 &&
 				event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) == 0 {
 				continue
+			}
+			// Directory Write suppression: on Windows (and kqueue) a Write
+			// event whose path IS a watched directory does not mean that a
+			// file named like the directory was written. NTFS reports
+			// FILE_ACTION_MODIFIED for the directory itself whenever one of
+			// its direct entries changes (the directory's last-write time),
+			// and ReadDirectoryChangesW delivers it under the
+			// FILE_NOTIFY_CHANGE_LAST_WRITE filter — fsnotify's own docs
+			// recommend filtering out "Write events whose path refers to a
+			// directory" when only file content matters. Delivery of that
+			// metadata event can also LAG the child events by seconds (NTFS
+			// defers directory-mtime updates), so the echo of repo-setup
+			// writes can land inside a much later debounce window — this is
+			// what re-armed the git-refresh loop under the Windows CI runner
+			// (a single Write on the repo/.git directory right after read-only
+			// git commands had run). No information is lost: we watch
+			// directories non-recursively, so every real change inside a
+			// watched directory arrives as its own Create/Remove/Rename/Write
+			// event on the CHILD path, and staging/unstaging still wakes the
+			// file tree (the .git watch keeps its file-level index events).
+			if event.Has(fsnotify.Write) &&
+				!event.Has(fsnotify.Create|fsnotify.Remove|fsnotify.Rename) {
+				w.mu.Lock()
+				watchedDir := w.watched[event.Name]
+				w.mu.Unlock()
+				if watchedDir {
+					w.log().Debug("suppressing Write on watched directory", "path", event.Name)
+					continue
+				}
 			}
 			if event.Name != "" {
 				if pending == nil {

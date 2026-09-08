@@ -86,7 +86,11 @@ type SearchOptions struct {
 ```
 core/workspace.NewWatcher(root string, onChange ChangeHandler, loggers ...*slog.Logger)  // wired in backend/frontend_api_project.go
   → fsnotify watches root + .git (not recursive; recursion is opt-in via Watcher.WatchTree)
-  → On file change:
+  → Event filters before debounce (keep the read-only-git refresh loop from
+    self-sustaining): pure-Chmod events (kqueue NOTE_ATTRIB on .git/index reads)
+    and Write-only events on watched directories (NTFS/kqueue directory-mtime
+    churn — on Windows its delivery can lag the child events by seconds) are
+    dropped; every real change arrives as its own event on the child path
       ├─ Debounce (batch rapid changes)
       ├─ Emit global event: workspace:tree_changed
       └─ Frontend: fileTreeStore refreshes affected subtree

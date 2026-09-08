@@ -153,7 +153,7 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 
 	// 0. Build proxy client (fast — no network, just config parsing)
 	if cfg.Proxy.Enabled {
-		proxyClient, err := proxy.BuildClient(cfg.Proxy, 30*time.Second, logger)
+		proxyClient, err := proxy.BuildClient(cfg.Proxy, time.Duration(cfg.Timeouts.WebFetchProxyTimeout)*time.Second, logger)
 		if err != nil {
 			logger.Warn("failed to build proxy client, proceeding without proxy", "error", err)
 		} else {
@@ -844,7 +844,7 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 		// SetGlobalEnv (the user has explicitly switched proxy off).
 		proxy.ClearEnvVars()
 	} else {
-		proxyClient, err := proxy.BuildClient(cfg.Proxy, 30*time.Second, b.logger)
+		proxyClient, err := proxy.BuildClient(cfg.Proxy, time.Duration(cfg.Timeouts.WebFetchProxyTimeout)*time.Second, b.logger)
 		if err != nil {
 			return fmt.Errorf("building proxy client: %w", err)
 		}
@@ -883,6 +883,7 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 func (b *OrchestratorBuilder) UpdateWebTools(cfg *BuilderConfig) {
 	fetchLimits := builtins.WebFetchLimits{
 		Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
+		Retries: cfg.Timeouts.WebFetchRetries,
 	}
 	b.mu.RLock()
 	pc := b.proxyClient
@@ -2561,6 +2562,7 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 		},
 		WebFetchLimits: builtins.WebFetchLimits{
 			Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
+			Retries: cfg.Timeouts.WebFetchRetries,
 		},
 		WebSearchLimits: builtins.WebSearchLimits{
 			MaxResults: cfg.ToolLimits.WebSearchMaxResults,

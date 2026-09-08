@@ -534,6 +534,8 @@ timeouts:
   bashWaitDelay: 5 # Wait delay for bash process cleanup
   ripgrepTimeout: 60 # Timeout for ripgrep searches
   webFetchTimeout: 30 # Timeout for web page fetching
+  webFetchProxyTimeout: 30 # Timeout for web page fetching when the proxy is enabled. 0 = use default 30s
+  webFetchRetries: 2 # Retries for failed web page fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when proxy is on). 0 = use default 2
   webSearchTimeout: 30 # Timeout for web search queries
   persistenceTimeout: 5 # Timeout for persistence (DB) operations
   llmRequestTimeout: 600 # Timeout for a single LLM API call in the main chat loop (10 min). 0 = use default 600s

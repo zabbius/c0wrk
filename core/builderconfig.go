@@ -523,10 +523,12 @@ type BuilderToolTruncationConfig struct {
 
 // BuilderTimeoutsConfig holds timeout values (in seconds).
 type BuilderTimeoutsConfig struct {
-	BashMaxTimeout    int
-	BashWaitDelay     int
-	RipgrepTimeout    int
-	WebFetchTimeout   int
-	WebSearchTimeout  int
-	LLMRequestTimeout int
+	BashMaxTimeout       int
+	BashWaitDelay        int
+	RipgrepTimeout       int
+	WebFetchTimeout      int
+	WebFetchProxyTimeout int // seconds; per-attempt web fetch timeout when the proxy is enabled
+	WebFetchRetries      int // retry count (not seconds); each retry doubles the active web fetch timeout
+	WebSearchTimeout     int
+	LLMRequestTimeout    int
 }

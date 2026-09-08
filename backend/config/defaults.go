@@ -300,6 +300,12 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Timeouts.WebFetchTimeout == 0 {
 		cfg.Timeouts.WebFetchTimeout = 30
 	}
+	if cfg.Timeouts.WebFetchProxyTimeout == 0 {
+		cfg.Timeouts.WebFetchProxyTimeout = 30
+	}
+	if cfg.Timeouts.WebFetchRetries == 0 {
+		cfg.Timeouts.WebFetchRetries = 2
+	}
 	if cfg.Timeouts.WebSearchTimeout == 0 {
 		cfg.Timeouts.WebSearchTimeout = 30
 	}
