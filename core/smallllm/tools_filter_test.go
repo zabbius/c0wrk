@@ -366,3 +366,89 @@ func TestSelectTools_MatchedFillFreeSlotsInRegistryOrder(t *testing.T) {
 		t.Errorf("selection must be deterministic regardless of matched-list order:\n%s", diff)
 	}
 }
+
+func TestSelectTools_ExtraGuaranteedKeepsUnmatchedDelegate(t *testing.T) {
+	// The turn requested subagents: delegate is passed as extra-guaranteed
+	// and must survive the narrowing even though it is neither matched, nor
+	// protected, nor MCP-sourced.
+	got := SelectTools(fullToolSet(), []string{"read_file"}, nil, 0, "delegate")
+	names := descriptorNames(got)
+	if !contains(names, "delegate") {
+		t.Errorf("extra-guaranteed delegate must be kept even when unmatched; got %v", names)
+	}
+	if !contains(names, "read_file") {
+		t.Errorf("matched tool must still be kept; got %v", names)
+	}
+	// Only the requested guarantee opens the door: unrelated orchestration
+	// tools stay excluded.
+	for _, ex := range []string{"declare_plan", "execute_plan", "reflect", "propose_goal"} {
+		if contains(names, ex) {
+			t.Errorf("unrelated orchestration tool %q must stay excluded; got %v", ex, names)
+		}
+	}
+}
+
+func TestSelectTools_NoExtraGuaranteedIsNoOp(t *testing.T) {
+	// Zero or nil extra names must reproduce the legacy selection exactly.
+	matched := []string{"read_file", "write_file"}
+	base := SelectTools(fullToolSet(), matched, nil, 0)
+	var nilExtra []string
+	withNilSpread := SelectTools(fullToolSet(), matched, nil, 0, nilExtra...)
+	if diff := cmp.Diff(descriptorNames(base), descriptorNames(withNilSpread)); diff != "" {
+		t.Errorf("nil extraGuaranteed must be a no-op:\n%s", diff)
+	}
+	// In particular delegate (conductor-only) stays excluded without the
+	// turn-scoped guarantee.
+	if names := descriptorNames(base); contains(names, "delegate") {
+		t.Errorf("delegate must stay excluded without extraGuaranteed; got %v", names)
+	}
+}
+
+func TestSelectTools_ExtraGuaranteedNeverTrimmedUnderBudget(t *testing.T) {
+	// Guaranteed base = 5 protected + 3 MCP = 8; with the extra-guaranteed
+	// delegate the guaranteed population is 9 — exactly the budget. delegate
+	// must survive and matched tools get zero slots.
+	matched := []string{"read_file", "write_file", "edit_file", "bash_exec"}
+	got := SelectTools(fullToolSet(), matched, nil, 9, "delegate")
+	names := descriptorNames(got)
+	if len(got) != 9 {
+		t.Fatalf("expected exactly the 9 guaranteed tools (8 base + delegate); got %d (%v)", len(got), names)
+	}
+	if !contains(names, "delegate") {
+		t.Errorf("extra-guaranteed delegate must not be trimmed by the budget; got %v", names)
+	}
+	for _, n := range matched {
+		if contains(names, n) {
+			t.Errorf("matched %q must get zero slots once delegate consumes the last one; got %v", n, names)
+		}
+	}
+
+	// Even far below the guaranteed size the guarantee holds: delegate is
+	// never trimmed (the result legitimately exceeds maxTools).
+	over := SelectTools(fullToolSet(), matched, nil, 2, "delegate")
+	if !contains(descriptorNames(over), "delegate") {
+		t.Errorf("delegate must survive an over-budget call untrimmed; got %v", descriptorNames(over))
+	}
+}
+
+func TestSelectTools_ExtraGuaranteedDedupsWithMatched(t *testing.T) {
+	// A tool that is both matched and extra-guaranteed appears exactly once,
+	// classified as guaranteed (never trimmed).
+	got := SelectTools(fullToolSet(), []string{"read_file", "delegate"}, nil, 0, "delegate")
+	count := 0
+	for _, d := range got {
+		if d.Name == "delegate" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("delegate must appear exactly once; got %d (%v)", count, descriptorNames(got))
+	}
+
+	// An extra-guaranteed name matching nothing registered is a silent no-op:
+	// a guarantee cannot invent a tool.
+	ghost := SelectTools(fullToolSet(), []string{"read_file"}, nil, 0, "no_such_tool")
+	if names := descriptorNames(ghost); contains(names, "no_such_tool") {
+		t.Errorf("unregistered extra-guaranteed name must not invent a tool; got %v", names)
+	}
+}

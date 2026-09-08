@@ -193,3 +193,27 @@ Code references: `backend/config/defaults.go:411–472` (profile defaults), `:88
 3. **presence_penalty=1.5 behavior in long agentic sessions** on Qwen3.8-27B (language-mixing risk noted by Qwen [1]) — measure before recommending a non-inherit default.
 4. **Few-shot/lite prompt marginal effect on a harness-post-trained 27B** — A/B candidate, not a default change.
 5. **MTP acceptance rate as a sampling-health proxy** — a falling speculative-acceptance rate signals deviation from the trained distribution; consider surfacing it as a metric.
+
+## Addendum (2026-09-08): code-level verification follow-up
+
+A follow-up verification pass against the actual code (`backend/config/defaults.go`, `config.example.yaml`, `core/prompts/*`, `core/systemprompt.go`, `core/smallllm/tools_filter.go`, sp4rk `prompt/sampling.go`, `llm/provider_openai.go`, `llm/modelregistry.go`) confirmed **all 27 defaults unchanged** and closed the open items of this review.
+
+**Recommendation ledger (R1–R6):**
+
+| ID | Status | Verified at |
+|---|---|---|
+| R1 | ✅ closed in sp4rk — qwen `reasoning_effort` is native per-request for Qwen 3.8+ (`applyQwenReasoning` + `IsQwen38OrLater`); `off` → `enable_thinking: false` | `sp4rk/llm/provider_openai.go:364` |
+| R2 | ✅ closed in sp4rk — qwen preset is 1.0 / 0.95 / 20 (official thinking recipe). The preset is family-keyed with no mode signal, so instruct-mode values (0.7 / 0.80 / top_k 20 + presence_penalty 1.5) must be set explicitly when thinking is off — now documented by the mode-mismatch note in `config.example.yaml` (`small_llm.sampling`) | `sp4rk/prompt/sampling.go:53–68` |
+| R3 | ✅ closed — `ApplyDefaults` seeds an unset `reasoning_effort` to `medium` | `backend/config/defaults.go` |
+| R4 | ✅ reformulated — the reserve is a fallback-tier knob, not the generation ceiling; the catalog-check below (gap #5) removes the residual "catalog truncates the answer" concern for the target model | — |
+| R5 | ✅ closed — `presence_penalty` added to `small_llm.sampling` (range [0, 2]; unset = field not sent) | `backend/config`, `config.example.yaml` |
+| R6 | ✅ closed by the change-set — over-budget tool sets surface a warning + diagnostic instead of passing silently | `core/orchestrator.go` (`warnSmallLLMToolBudgetOverflow`) |
+
+**Follow-up gap ledger (lite-prompt / integration verification, gaps #1–#6):**
+
+1. **Git Policy lost in lite** — closed: compact Git Policy restored in `core/prompts/orchestrator_lite.md`.
+2. **Micro-hints missing in lite** (truncated-output mechanics, fact-memory discipline, MCP priority) — closed: added in `orchestrator_lite.md`.
+3. **Edit→Verify Cycle asymmetry** (duplicated ×3 across lite/scaffold/few-shot, absent from the full directive) — closed: deduplicated to exactly one occurrence per directive and added to `orchestrator_system.md`; the few-shot structural defect fixed.
+4. **`delegate` not guaranteed under tool narrowing** — closed: `smallllm.SelectTools` accepts turn-scoped `extraGuaranteed` names and the orchestrator passes `["delegate"]` whenever the task context carries requested subagents (`core/smallllm/tools_filter.go`, `core/orchestrator.go`).
+5. **Catalog ceiling for the target model** — **closed by catalog inspection, no code change**: sp4rk `llm/modelregistry.go:1912` carries `qwen/qwen3.8-27b` with `ContextWindow: 262144` / `OutputLimit: 65536` (plus Reasoning/Attachment/Temperature/ToolCall capabilities). The ceiling comfortably covers the measured 3.7K–22.3K reasoning traces, so `output_token_reserve` stays the fallback-tier knob it was reformulated to be (R4).
+6. **Guaranteed-set over-budget silence (R6)** — closed: `warnSmallLLMToolBudgetOverflow` emits a one-shot slog warning plus a `small_llm_tool_budget_overflow` service diagnostic (count / maxTools / over-budget tool names) whenever the final curated set exceeds `max_tools`.

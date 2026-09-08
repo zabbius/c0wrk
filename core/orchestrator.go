@@ -2217,7 +2217,13 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// (declare_verification etc.) that SelectTools would otherwise drop — is
 	// never narrowed. Runs exactly once per task, never inside the step loop.
 	// When the profile is OFF (default) this is a no-op passthrough.
-	availableTools = o.applySmallLLMToolFilter(availableTools, routing)
+	// Turn-scoped agent guarantee: when the user explicitly requested
+	// subagents (#mentions threaded into ctx by enrichAgentContext earlier in
+	// the flow), the Conductor prompt renders a "## Requested Subagents"
+	// directive — the delegate tool must survive narrowing or the directive
+	// would reference a tool the model cannot call. Without mentions the
+	// helper returns nil and the filter behaves exactly as before.
+	availableTools = o.applySmallLLMToolFilter(availableTools, routing, smallLLMAgentGuaranteedTools(ctx)...)
 
 	// Truncate conversation history to the configured window so long
 	// sessions don't overflow the Conductor's context. The most recent
@@ -2278,6 +2284,28 @@ func (o *Orchestrator) disabledToolNames() map[string]bool {
 	return o.coreToolRegistry.DisabledTools()
 }
 
+// delegateToolName is the conductor-only delegation channel. It is normally a
+// narrowable orchestration tool, but becomes turn-scoped guaranteed whenever
+// the user explicitly requested subagents (see smallLLMAgentGuaranteedTools).
+const delegateToolName = "delegate"
+
+// smallLLMAgentGuaranteedTools returns the extra tool names that must join the
+// small-LLM guaranteed set for THIS turn, derived from the request context
+// populated by enrichAgentContext. When the user explicitly requested
+// subagents (#agent mentions → WithUserAgents), the Conductor's system prompt
+// renders a "## Requested Subagents" directive instructing it to delegate —
+// narrowing must then keep the delegate tool visible, or the directive would
+// reference a tool the model cannot call. The guarantee is turn-scoped, like
+// the MCP-sourced class: without an explicit request the helper returns nil
+// and delegate keeps its default semantics (a conductor-only tool excluded
+// by the narrowing). Static config validation is unaffected.
+func smallLLMAgentGuaranteedTools(ctx context.Context) []string {
+	if len(UserAgentsFromContext(ctx)) > 0 {
+		return []string{delegateToolName}
+	}
+	return nil
+}
+
 // applySmallLLMToolFilter narrows the conductor's available-tool set when the
 // small-LLM profile is active. It delegates to smallllm.SelectTools, which
 // unions the router-matched tool names (routing.MatchedTools), the user's
@@ -2287,6 +2315,12 @@ func (o *Orchestrator) disabledToolNames() map[string]bool {
 // order — the guaranteed set itself is never trimmed. It runs exactly once per
 // task, before the non-goal ReAct loop starts (HandleMessage applies it after
 // the goal-mode early return, so goal mode is intentionally never narrowed).
+//
+// The optional extraGuaranteed names are turn-scoped guaranteed tools passed
+// by the caller (see smallLLMAgentGuaranteedTools): currently the delegate
+// tool when the request explicitly asks for subagents. Like the MCP class,
+// the guarantee is scoped to this call and never part of static config
+// validation.
 //
 // When the profile is OFF (the default), it returns the tools untouched — zero
 // behavior change. When filtering is active (master ON + essential ON + a
@@ -2302,7 +2336,7 @@ func (o *Orchestrator) disabledToolNames() map[string]bool {
 // match and emits a diagnostic. The task continues; description compaction
 // still applies to the fallback set (it is orthogonal to narrowing), so only
 // the tool-count budget suffers.
-func (o *Orchestrator) applySmallLLMToolFilter(in []sdktools.ToolDescriptor, routing *router.RoutingDecision) []sdktools.ToolDescriptor {
+func (o *Orchestrator) applySmallLLMToolFilter(in []sdktools.ToolDescriptor, routing *router.RoutingDecision, extraGuaranteed ...string) []sdktools.ToolDescriptor {
 	sc := o.config.SmallLLM
 	// Master toggle AND the essential-tools variant must both be enabled.
 	// When either is off, return the input untouched (zero behavior change).
@@ -2327,7 +2361,19 @@ func (o *Orchestrator) applySmallLLMToolFilter(in []sdktools.ToolDescriptor, rou
 		return smallllm.MaybeCompactDescriptions(in, sc.EssentialTools.CompactDescriptions)
 	}
 
-	filtered := smallllm.SelectTools(in, matched, sc.EssentialTools.AlwaysPresent, sc.EssentialTools.MaxTools)
+	filtered := smallllm.SelectTools(in, matched, sc.EssentialTools.AlwaysPresent, sc.EssentialTools.MaxTools, extraGuaranteed...)
+
+	// Budget-overflow diagnostic (R6): SelectTools never trims the guaranteed
+	// set (always-present ∪ protected ∪ MCP), so when that set alone exceeds
+	// maxTools the final tool set silently exceeds the configured budget —
+	// typically because MCP tools were installed after the profile was
+	// validated. Surface the inflation (warn + ServiceWithMeta diagnostic,
+	// mirroring emitToolSelectionFallback) instead of letting it pass silently;
+	// the ToolsAssigned payload below is unchanged, since the over-budget tools
+	// are part of the legitimate curated set. The filter runs exactly once per
+	// task, so the warning is inherently once per task.
+	o.warnSmallLLMToolBudgetOverflow(filtered, sc.EssentialTools.MaxTools)
+
 	filtered = smallllm.MaybeCompactDescriptions(filtered, sc.EssentialTools.CompactDescriptions)
 
 	// Surface the curated tool set as a UI card when filtering is active
@@ -2371,6 +2417,48 @@ func (o *Orchestrator) emitToolSelectionFallback(matchedCount int) {
 			"phase":        "orchestration",
 			"fallback":     "small_llm_tool_match",
 			"matchedTools": matchedCount,
+		},
+	)
+}
+
+// warnSmallLLMToolBudgetOverflow surfaces a final tool set larger than the
+// configured maxTools budget as a warn + diagnostic event (R6: MCP/guaranteed
+// inflation). SelectTools never trims the guaranteed set (always-present ∪
+// protected ∪ MCP ∪ turn-scoped agent guarantees), so when that set alone
+// exceeds the budget the result legitimately carries more tools than
+// maxTools — previously passing silently.
+// The warn names the over-budget tools (registry order) so the inflation is
+// attributable; maxTools <= 0 means "unlimited" and can never be exceeded.
+// The filter runs exactly once per task (single call site, before the ReAct
+// loop), so the warning is once per task. The diagnostic mirrors
+// emitToolSelectionFallback's ServiceWithMeta style and leaves the
+// ToolsAssigned payload untouched. Never fatal.
+func (o *Orchestrator) warnSmallLLMToolBudgetOverflow(filtered []sdktools.ToolDescriptor, maxTools int) {
+	if maxTools <= 0 || len(filtered) <= maxTools {
+		return
+	}
+	over := make([]string, 0, len(filtered)-maxTools)
+	for _, d := range filtered[maxTools:] {
+		over = append(over, d.Name)
+	}
+	if o.logger != nil {
+		o.logger.Warn("orchestrator: small-LLM tool set exceeds the maxTools budget (guaranteed set is never trimmed)",
+			"count", len(filtered),
+			"maxTools", maxTools,
+			"overBudgetTools", over)
+	}
+	if o.emitter == nil {
+		return
+	}
+	o.emitter.ServiceWithMeta(
+		fmt.Sprintf("Tool budget overflow: %d tools assigned against a budget of %d — the guaranteed set (always-present/protected/MCP/agent-guaranteed) is never trimmed",
+			len(filtered), maxTools),
+		map[string]any{
+			"phase":           "orchestration",
+			"diagnostic":      "small_llm_tool_budget_overflow",
+			"count":           len(filtered),
+			"maxTools":        maxTools,
+			"overBudgetTools": over,
 		},
 	)
 }

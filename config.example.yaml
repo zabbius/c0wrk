@@ -921,6 +921,14 @@ orchestration:
 #     # seeds "medium" — so enabling this variant with no explicit values
 #     # lowers the reasoning depth from the inherited vendor default
 #     # (xhigh on qwen thinking models) to medium.
+#     # Mode-mismatch caveat: the inherited qwen preset is the official
+#     # thinking-mode recipe (temperature 1.0 / top_p 0.95 / top_k 20), and
+#     # the preset is family-keyed with no per-mode signal. If this variant
+#     # turns thinking off (reasoning_effort: "off"), the inherited numeric
+#     # preset still remains the thinking recipe — for instruct-style
+#     # (non-thinking) operation set the values explicitly: temperature 0.7,
+#     # top_p 0.80, top_k 20 and presence_penalty 1.5 (the official instruct
+#     # recipe). Rationale: docs/small-llm-defaults-research.md (R2).
 #     # Generation temperature (lower = more deterministic). When set, must
 #     # be > 0. Default: inherit the vendor preset.
 #     temperature: 0

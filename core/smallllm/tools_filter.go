@@ -7,15 +7,17 @@
 // Selection is purely semantic: SelectTools unions the router-matched tool
 // names, the user's always-present list, the protected orchestration tools
 // (the completion channel, fact memory, and the human-interaction channel),
-// and every MCP-sourced tool. There is no domain-specific allow-listing — the
-// router and the user decide which tools are relevant; this function only
-// assembles their choices and enforces a slot budget on the router-matched
-// portion.
+// every MCP-sourced tool, and any turn-scoped extra-guaranteed names the
+// caller passes (e.g. delegate when the user explicitly requested subagents).
+// There is no domain-specific allow-listing — the router and the user decide
+// which tools are relevant; this function only assembles their choices and
+// enforces a slot budget on the router-matched portion.
 //
 // The tool population is split into two classes with different budget
 // semantics:
 //
-//   - guaranteed (always-present ∪ protected ∪ MCP-sourced): NEVER trimmed.
+//   - guaranteed (always-present ∪ protected ∪ MCP-sourced ∪ extra-guaranteed):
+//     NEVER trimmed.
 //     These are explicit user/operator choices; dropping them would silently
 //     break pinned workflows, the completion channel, or user-installed MCP
 //     integrations.
@@ -77,7 +79,10 @@ func ProtectedToolNames() []string {
 // SelectTools assembles the small-LLM tool set from two classes of sources:
 //
 //   - guaranteed, never trimmed: the user's always-present pins, the protected
-//     orchestration tools, and every MCP-sourced tool (user-installed).
+//     orchestration tools, every MCP-sourced tool (user-installed), and the
+//     caller's extraGuaranteed names — turn-scoped tools this task's
+//     directives require (e.g. delegate when the user explicitly requested
+//     subagents; like the MCP class the guarantee is per-call, never static).
 //   - matchedNames: the tools the router selected for this task. When
 //     maxTools > 0, at most maxTools − len(guaranteed) of them are kept,
 //     filling the free slots in registry (input) order; maxTools <= 0 means
@@ -89,14 +94,20 @@ func ProtectedToolNames() []string {
 // descriptor, plus matched descriptors while free slots remain. When the
 // guaranteed set alone meets or exceeds maxTools, zero matched tools are kept
 // — and the guaranteed set is returned in full, even though its length then
-// exceeds maxTools (see the package comment).
-func SelectTools(all []sdktools.ToolDescriptor, matchedNames, alwaysPresent []string, maxTools int) []sdktools.ToolDescriptor {
-	// a. Guaranteed name set: alwaysPresent ∪ protectedToolNames.
-	guaranteedNames := make(map[string]struct{}, len(alwaysPresent)+len(protectedToolNames))
+// exceeds maxTools (see the package comment). extraGuaranteed names consume
+// budget exactly like every other guaranteed tool, and a name matching
+// nothing registered is silently ignored (a guarantee cannot invent a tool).
+func SelectTools(all []sdktools.ToolDescriptor, matchedNames, alwaysPresent []string, maxTools int, extraGuaranteed ...string) []sdktools.ToolDescriptor {
+	// a. Guaranteed name set: alwaysPresent ∪ protectedToolNames ∪
+	// extraGuaranteed.
+	guaranteedNames := make(map[string]struct{}, len(alwaysPresent)+len(protectedToolNames)+len(extraGuaranteed))
 	for _, n := range alwaysPresent {
 		guaranteedNames[n] = struct{}{}
 	}
 	for n := range protectedToolNames {
+		guaranteedNames[n] = struct{}{}
+	}
+	for _, n := range extraGuaranteed {
 		guaranteedNames[n] = struct{}{}
 	}
 	matchedSet := make(map[string]struct{}, len(matchedNames))

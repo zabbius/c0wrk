@@ -1,9 +1,12 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/v0lka/c0wrk/core/smallllm"
@@ -443,6 +446,73 @@ func TestApplySmallLLMToolFilter_MaxToolsCapPreservesProtectedAndMCP(t *testing.
 	}
 }
 
+// TestApplySmallLLMToolFilter_RequestedAgentsGuaranteeDelegate verifies the
+// turn-scoped delegate guarantee: with narrowing active and an explicit
+// #agent mention threaded into the context (enrichAgentContext →
+// WithUserAgents), the delegate tool survives the filter even though the
+// router did not match it — the "## Requested Subagents" directive in the
+// Conductor's prompt must never reference a tool the model cannot call. The
+// call mirrors the production wiring in HandleMessage's task flow exactly.
+func TestApplySmallLLMToolFilter_RequestedAgentsGuaranteeDelegate(t *testing.T) {
+	in := smallLLMTestTools()
+	o := &Orchestrator{config: OrchestratorConfig{SmallLLM: SmallLLMSettings{
+		Enabled: true,
+		EssentialTools: SmallLLMEssentialSettings{
+			Enabled:       true,
+			AlwaysPresent: []string{"read_file"},
+		},
+	}}}
+
+	ctx := WithUserAgents(context.Background(), []string{"x"})
+	got := o.applySmallLLMToolFilter(in, &router.RoutingDecision{
+		Domain:       router.DomainCode,
+		MatchedTools: []string{"read_file", "write_file"},
+	}, smallLLMAgentGuaranteedTools(ctx)...)
+	names := sortedToolNames(got)
+
+	if !containsToolName(names, "delegate") {
+		t.Errorf("requested subagents must guarantee delegate in the narrowed set; got %v", names)
+	}
+	// Only delegate is turn-guaranteed: unrelated orchestration tools stay
+	// excluded.
+	for _, drop := range []string{"declare_plan", "reflect"} {
+		if containsToolName(names, drop) {
+			t.Errorf("only delegate is turn-guaranteed; %q must stay excluded; got %v", drop, names)
+		}
+	}
+}
+
+// TestApplySmallLLMToolFilter_NoRequestedAgentsKeepsLegacyBehavior is the
+// no-regression guard for the turn-scoped guarantee: without explicit
+// #mentions the helper yields no extra guarantees, so the filtered set is
+// byte-identical to the legacy (extra-free) call and delegate stays a
+// conductor-only, excluded tool.
+func TestApplySmallLLMToolFilter_NoRequestedAgentsKeepsLegacyBehavior(t *testing.T) {
+	in := smallLLMTestTools()
+	o := &Orchestrator{config: OrchestratorConfig{SmallLLM: SmallLLMSettings{
+		Enabled: true,
+		EssentialTools: SmallLLMEssentialSettings{
+			Enabled:       true,
+			AlwaysPresent: []string{"read_file"},
+		},
+	}}}
+
+	if got := smallLLMAgentGuaranteedTools(context.Background()); got != nil {
+		t.Errorf("no requested agents must yield no extra guarantees, got %v", got)
+	}
+
+	routing := &router.RoutingDecision{Domain: router.DomainCode, MatchedTools: []string{"read_file"}}
+	legacy := o.applySmallLLMToolFilter(in, routing)
+	withCtx := o.applySmallLLMToolFilter(in, routing, smallLLMAgentGuaranteedTools(context.Background())...)
+	if !equalNames(sortedToolNames(legacy), sortedToolNames(withCtx)) {
+		t.Errorf("empty UserAgents must not change the filtered set: got %v, want %v",
+			sortedToolNames(withCtx), sortedToolNames(legacy))
+	}
+	if containsToolName(sortedToolNames(withCtx), "delegate") {
+		t.Error("without requested agents delegate must stay excluded")
+	}
+}
+
 func sortedToolNames(descs []sdktools.ToolDescriptor) []string {
 	names := make([]string, 0, len(descs))
 	for _, d := range descs {
@@ -459,4 +529,145 @@ func containsToolName(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// findServiceMetas returns the meta maps of every ServiceWithMeta call whose
+// meta carries meta[key] == value. Empty when the diagnostic never fired.
+func findServiceMetas(spy *spyEmitter, key, value string) []map[string]any {
+	var metas []map[string]any
+	for _, c := range spy.calls {
+		if c.method != "ServiceWithMeta" || len(c.args) < 2 {
+			continue
+		}
+		if meta, ok := c.args[1].(map[string]any); ok && meta[key] == value {
+			metas = append(metas, meta)
+		}
+	}
+	return metas
+}
+
+// TestApplySmallLLMToolFilter_BudgetOverflowWarnsExactlyOnce verifies the R6
+// inflation signal: when the never-trimmed guaranteed set alone exceeds
+// maxTools, the orchestrator warns exactly once (one slog warn + one
+// ServiceWithMeta diagnostic) carrying the count, the budget, and the
+// over-budget names — while the ToolsAssigned payload stays the full
+// (over-budget) curated set and the selection-fallback diagnostic stays
+// silent.
+func TestApplySmallLLMToolFilter_BudgetOverflowWarnsExactlyOnce(t *testing.T) {
+	var logBuf bytes.Buffer
+	spy := &spyEmitter{}
+	o := &Orchestrator{
+		config: OrchestratorConfig{SmallLLM: SmallLLMSettings{
+			Enabled: true,
+			EssentialTools: SmallLLMEssentialSettings{
+				Enabled:       true,
+				AlwaysPresent: []string{"read_file", "write_file", "bash_exec", "web_search"},
+				// budget (3) < guaranteed (7: always-present 4 + protected
+				// 2: finish/store_fact + MCP 1: mcp_linter).
+				MaxTools: 3,
+			},
+		}},
+		emitter: spy,
+		logger:  slog.New(slog.NewTextHandler(&logBuf, nil)),
+	}
+
+	// A registered matched tool outside the guaranteed set: zero free slots,
+	// so SelectTools returns the 7 guaranteed tools (7 > 3) and drops grep.
+	capped := append(smallLLMTestTools(), sdktools.ToolDescriptor{
+		Name: "grep", SourceCategory: sdktools.SourceCategoryCore,
+	})
+	got := o.applySmallLLMToolFilter(
+		capped, &router.RoutingDecision{Domain: router.DomainCode, MatchedTools: []string{"grep"}})
+	if len(got) != 7 {
+		t.Fatalf("expected the 7 guaranteed tools to survive the tight cap, got %d", len(got))
+	}
+
+	// Exactly one overflow diagnostic with the count, budget, and names.
+	metas := findServiceMetas(spy, "diagnostic", "small_llm_tool_budget_overflow")
+	if len(metas) != 1 {
+		t.Fatalf("expected exactly 1 budget-overflow diagnostic, got %d", len(metas))
+	}
+	meta := metas[0]
+	if meta["count"] != 7 || meta["maxTools"] != 3 {
+		t.Errorf("diagnostic must carry count=7 and maxTools=3, got %+v", meta)
+	}
+	over, ok := meta["overBudgetTools"].([]string)
+	if !ok || len(over) != 4 {
+		t.Fatalf("diagnostic must name the 4 over-budget tools, got %+v", meta["overBudgetTools"])
+	}
+	// The MCP tool is the R6 inflation archetype — it must be named.
+	if !containsToolName(over, "mcp_linter") {
+		t.Errorf("over-budget names must include the MCP tool mcp_linter, got %v", over)
+	}
+
+	// Exactly one slog warn about the budget.
+	if warns := strings.Count(logBuf.String(), "maxTools budget"); warns != 1 {
+		t.Errorf("expected exactly 1 slog warn about the tool budget, got %d:\n%s", warns, logBuf.String())
+	}
+
+	// ToolsAssigned payload unchanged: the full over-budget curated set.
+	assignedCount := 0
+	var assigned []string
+	for _, c := range spy.calls {
+		if c.method == "ToolsAssigned" {
+			assignedCount++
+			if names, ok := c.args[0].([]string); ok {
+				assigned = names
+			}
+		}
+	}
+	if assignedCount != 1 {
+		t.Fatalf("expected exactly 1 ToolsAssigned event, got %d", assignedCount)
+	}
+	if len(assigned) != 7 {
+		t.Errorf("ToolsAssigned payload must stay the full 7-tool set, got %d (%v)", len(assigned), assigned)
+	}
+
+	// Selection succeeded, so the selection-fallback diagnostic must NOT fire.
+	if fallbacks := findServiceMetas(spy, "fallback", "small_llm_tool_match"); len(fallbacks) != 0 {
+		t.Errorf("overflow path must not emit the selection-fallback diagnostic, got %d", len(fallbacks))
+	}
+}
+
+// TestApplySmallLLMToolFilter_WithinBudgetNoOverflowWarn verifies the negative
+// cases: a final set at or under the maxTools budget emits no overflow warning
+// and no diagnostic, and an unlimited budget (maxTools <= 0) never warns even
+// though its tool count exceeds a literal zero.
+func TestApplySmallLLMToolFilter_WithinBudgetNoOverflowWarn(t *testing.T) {
+	// Guaranteed set: always-present(read_file) + protected(finish,
+	// store_fact) + MCP(mcp_linter) = 4; plus the matched bash_exec = 5 tools.
+	cases := []struct {
+		name     string
+		maxTools int
+	}{
+		{"within budget", 10},
+		{"unlimited budget", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spy := &spyEmitter{}
+			o := &Orchestrator{
+				config: OrchestratorConfig{SmallLLM: SmallLLMSettings{
+					Enabled: true,
+					EssentialTools: SmallLLMEssentialSettings{
+						Enabled:       true,
+						AlwaysPresent: []string{"read_file"},
+						MaxTools:      tc.maxTools,
+					},
+				}},
+				emitter: spy,
+			}
+
+			got := o.applySmallLLMToolFilter(smallLLMTestTools(), &router.RoutingDecision{
+				Domain:       router.DomainCode,
+				MatchedTools: []string{"bash_exec"},
+			})
+			if len(got) != 5 {
+				t.Fatalf("expected 5 tools (4 guaranteed + 1 matched), got %d (%v)", len(got), sortedToolNames(got))
+			}
+			if metas := findServiceMetas(spy, "diagnostic", "small_llm_tool_budget_overflow"); len(metas) != 0 {
+				t.Errorf("within-budget set must not emit the overflow diagnostic, got %d", len(metas))
+			}
+		})
+	}
 }
