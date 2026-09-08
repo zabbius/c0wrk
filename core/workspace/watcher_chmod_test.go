@@ -172,6 +172,50 @@ func TestWatcher_GitReadDoesNotTriggerOnChange(t *testing.T) {
 	}
 }
 
+// TestWatcher_WriteEchoClassification is the deterministic unit behind the
+// directory-Write suppression in watcher.go's event loop: a Write-only event
+// whose path is a directory must classify as a suppressible echo whether or
+// not the directory is watched (the NTFS echo for .git/logs arrives through
+// the .git watch and is NOT in the watch list), while file paths and missing
+// paths must not. The end-to-end timing — the echo landing inside a later
+// debounce window — is what TestWatcher_GitReadDoesNotTriggerOnChange
+// exercises; it only manifests when NTFS defers the directory-mtime update
+// far enough (observed on the Windows CI runner).
+func TestWatcher_WriteEchoClassification(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	file := filepath.Join(dir, "f.txt")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewWatcher(dir, func([]string) {})
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"watched root directory", dir, true},
+		{"unwatched subdirectory", sub, true},
+		{"regular file", file, false},
+		{"missing path", filepath.Join(dir, "gone.txt"), false},
+		{"empty path", "", false},
+	}
+	for _, tt := range tests {
+		if got := w.pathIsDirectory(tt.path); got != tt.want {
+			t.Errorf("pathIsDirectory(%s) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 // TestGitCmdInRepoPinsOptionalLocksOff asserts the env pin on the hardened
 // path (and documents the raw/trusted path's nil-Env contract).
 func TestGitCmdInRepoPinsOptionalLocksOff(t *testing.T) {

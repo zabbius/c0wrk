@@ -144,33 +144,40 @@ func (w *Watcher) eventLoop() {
 				continue
 			}
 			// Directory Write suppression: on Windows (and kqueue) a Write
-			// event whose path IS a watched directory does not mean that a
-			// file named like the directory was written. NTFS reports
-			// FILE_ACTION_MODIFIED for the directory itself whenever one of
-			// its direct entries changes (the directory's last-write time),
-			// and ReadDirectoryChangesW delivers it under the
+			// event whose path IS a directory does not mean that a file named
+			// like the directory was written. NTFS reports
+			// FILE_ACTION_MODIFIED for a directory whenever one of its direct
+			// entries changes (the directory's last-write time), and
+			// ReadDirectoryChangesW delivers it under the
 			// FILE_NOTIFY_CHANGE_LAST_WRITE filter — fsnotify's own docs
 			// recommend filtering out "Write events whose path refers to a
-			// directory" when only file content matters. Delivery of that
-			// metadata event can also LAG the child events by seconds (NTFS
-			// defers directory-mtime updates), so the echo of repo-setup
-			// writes can land inside a much later debounce window — this is
-			// what re-armed the git-refresh loop under the Windows CI runner
-			// (a single Write on the repo/.git directory right after read-only
-			// git commands had run). No information is lost: we watch
-			// directories non-recursively, so every real change inside a
-			// watched directory arrives as its own Create/Remove/Rename/Write
-			// event on the CHILD path, and staging/unstaging still wakes the
-			// file tree (the .git watch keeps its file-level index events).
+			// directory" when only file content matters.
+			//
+			// The check must cover EVERY directory, not just the watched
+			// ones: a change inside an unwatched subdirectory of a watched
+			// parent (e.g. the reflog append to .git/logs/HEAD during `git
+			// commit` — only .git's top level is watched) updates that
+			// subdirectory's own last-write time, which the parent watch
+			// stream reports as a Write on the subdirectory's path. NTFS
+			// defers directory-mtime updates (kqueue/inotify surface the
+			// same metadata change as an attribute event, i.e. Chmod, which
+			// the pure-Chmod filter above already skips), so the echo can
+			// LAG the child events by seconds and land inside a much later
+			// debounce window — this is what re-armed the git-refresh loop
+			// under the Windows CI runner even after the watched-dir-only
+			// suppression (a single Write on .git/logs right after read-only
+			// git commands had run).
+			//
+			// No information is lost: we watch directories non-recursively,
+			// so every real change inside a watched directory arrives as its
+			// own Create/Remove/Rename/Write event on the CHILD path, and
+			// staging/unstaging still wakes the file tree (the .git watch
+			// keeps its file-level index events).
 			if event.Has(fsnotify.Write) &&
-				!event.Has(fsnotify.Create|fsnotify.Remove|fsnotify.Rename) {
-				w.mu.Lock()
-				watchedDir := w.watched[event.Name]
-				w.mu.Unlock()
-				if watchedDir {
-					w.log().Debug("suppressing Write on watched directory", "path", event.Name)
-					continue
-				}
+				!event.Has(fsnotify.Create|fsnotify.Remove|fsnotify.Rename) &&
+				w.pathIsDirectory(event.Name) {
+				w.log().Debug("suppressing Write on directory", "path", event.Name)
+				continue
 			}
 			if event.Name != "" {
 				if pending == nil {
@@ -213,6 +220,27 @@ func (w *Watcher) eventLoop() {
 			w.log().Debug("fsnotify watcher error", "error", watchErr)
 		}
 	}
+}
+
+// pathIsDirectory reports whether path currently refers to a directory.
+// Watched paths are answered from the watch list without a syscall (only
+// directories are ever added there); anything else costs one os.Stat —
+// negligible at fsnotify's event rate. The event loop uses this to drop the
+// directory-echo Write events described in its comment block; a missing path
+// (deleted between event and stat) classifies as a file so the event still
+// reaches consumers, matching the pre-suppression behaviour.
+func (w *Watcher) pathIsDirectory(path string) bool {
+	if path == "" {
+		return false
+	}
+	w.mu.Lock()
+	watched := w.watched[path]
+	w.mu.Unlock()
+	if watched {
+		return true
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // keysOf returns the keys of m as a slice, or nil if m is empty/nil.
