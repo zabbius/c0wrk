@@ -9,7 +9,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/research"
 )
@@ -47,10 +46,7 @@ func researchTwoProjectTestFrontend(t *testing.T) (api *FrontendAPI, projA, proj
 	mgr := project.NewManager(store, base, nil)
 	api = &FrontendAPI{
 		projectManager: mgr,
-		config: &config.Config{
-			Experimental: config.ExperimentalConfig{Enabled: true},
-		},
-		emitEvent: func(_ string, _ ...any) {},
+		emitEvent:      func(_ string, _ ...any) {},
 	}
 	return api, "proj-a", "proj-b", rootA, rootB
 }

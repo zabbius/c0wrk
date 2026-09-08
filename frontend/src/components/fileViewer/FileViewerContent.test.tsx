@@ -1,11 +1,10 @@
 // @vitest-environment jsdom
-// FileViewerContent — the experimental gate on the research viewer tab.
+// FileViewerContent — the research viewer tab is always available.
 //
-// The research pseudo-path (c0wrk:research) must render the ResearchWorkspace
-// ONLY while the experimental-features switch is on. When the switch is off
-// the pseudo-path renders nothing — a lingering tab (see the purge in
-// ResearchEventBridge.test.tsx) stays inert instead of showing a still
-// interactive workspace over frozen store data.
+// The research pseudo-path (c0wrk:research) renders the ResearchWorkspace
+// unconditionally — RESEARCH is not gated on the experimental-features
+// switch (which now controls only the Small-LLM profile), so the workspace
+// must render even while that switch is off.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
@@ -33,10 +32,10 @@ function renderContent(): void {
   })
 }
 
-describe('FileViewerContent — research tab experimental gate', () => {
+describe('FileViewerContent — research tab always available', () => {
   beforeEach(() => {
     // The research pseudo-path active with no other tabs. The experimental
-    // store is seeded loaded so useExperimentalFeatures never fetches.
+    // store is seeded explicitly by each test to pin the scenario.
     useFileViewerStore.setState({
       openTabs: [RESEARCH_TAB_PATH],
       activeFile: RESEARCH_TAB_PATH,
@@ -59,10 +58,9 @@ describe('FileViewerContent — research tab experimental gate', () => {
     expect(document.querySelector('[data-testid="research-workspace"]')).not.toBeNull()
   })
 
-  it('renders nothing for the research pseudo-path when the switch is off', () => {
+  it('renders the research workspace even with the experimental switch off', () => {
     useExperimentalStore.setState({ enabled: false, loaded: true })
     renderContent()
-    expect(document.querySelector('[data-testid="research-workspace"]')).toBeNull()
-    expect(container!.innerHTML).toBe('')
+    expect(document.querySelector('[data-testid="research-workspace"]')).not.toBeNull()
   })
 })

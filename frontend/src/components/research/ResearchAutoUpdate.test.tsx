@@ -130,8 +130,8 @@ describe('ResearchPanel — auto-update on research:file_changed', () => {
 
   it('appends new log entries to the visible panel without remount', async () => {
     // Initial mount: full status fetch (2 entries visible). The bridge is
-    // mounted alongside the panel exactly as App.tsx mounts it (gated on
-    // the experimental feature) — it owns the data sync.
+    // mounted alongside the panel exactly as App.tsx mounts it — it owns
+    // the data sync.
     await act(async () => {
       root.render(
         <>

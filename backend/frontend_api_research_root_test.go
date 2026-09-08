@@ -10,7 +10,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/research"
 )
@@ -113,7 +112,6 @@ func researchRootTestFrontend(t *testing.T, seedDirs []string, pins project.Rese
 	api = &FrontendAPI{
 		projectManager: project.NewManager(store, base, nil),
 		projStore:      store,
-		config:         &config.Config{Experimental: config.ExperimentalConfig{Enabled: true}},
 		emitEvent:      recorder.emit,
 	}
 	return api, "proj-1", researchRoot, recorder
@@ -153,7 +151,6 @@ func researchTwoRootTestFrontend(t *testing.T) (api *FrontendAPI, projA, projB, 
 	api = &FrontendAPI{
 		projectManager: project.NewManager(store, base, nil),
 		projStore:      store,
-		config:         &config.Config{Experimental: config.ExperimentalConfig{Enabled: true}},
 		emitEvent:      recorder.emit,
 	}
 	return api, "proj-a", "proj-b", rootA, rootB

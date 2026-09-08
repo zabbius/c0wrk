@@ -2,7 +2,7 @@
 
 ## Purpose
 
-RESEARCH mode is an experimental, project-scoped methodology workspace for maintaining research briefs, prior art, hypothesis cards, a hypothesis DAG, progress metrics, and synthesis reports. It parses Markdown/Mermaid artifacts under a workspace-contained research root, seeds versioned `research-*` skills, and exposes the same active-project graph to the orchestrator and frontend.
+RESEARCH mode is a project-scoped methodology workspace for maintaining research briefs, prior art, hypothesis cards, a hypothesis DAG, progress metrics, and synthesis reports. It parses Markdown/Mermaid artifacts under a workspace-contained research root, seeds versioned `research-*` skills, and exposes the same active-project graph to the orchestrator and frontend.
 
 ## Key Files
 
@@ -12,7 +12,7 @@ RESEARCH mode is an experimental, project-scoped methodology workspace for maint
 - `core/research/recommend.go` - pure next-step recommendation, project-wide and hypothesis-scoped
 - `core/research/skillpack.go` - embedded seven-skill research pack and non-destructive versioned seeding
 - `core/research/skills/` - embedded `research-*` skill sources
-- `backend/frontend_api_research.go` - experimental gate, enable/disable/status/graph RPC behavior, persistence, and skill rescan
+- `backend/frontend_api_research.go` - enable/disable/status/graph RPC behavior, persistence, and skill rescan
 - `backend/frontend_api_project.go` - recursive research-tree watcher integration and incremental file-change emission
 - `frontend/src/components/research/index.tsx` - Research panel and graph/status presentation
 
@@ -67,7 +67,6 @@ Hypothesis IDs normalize to `H-NNN`; research IDs normalize to `R-NNN`. `open` a
 
 ```
 User enables RESEARCH for a real project
-  -> experimental.enabled gate
   -> resolve root (default <workspace>/.research)
      and reject an explicit root outside the workspace
   -> create root and recursively watch its current/future directories
@@ -98,7 +97,7 @@ Research artifact changes
 ```
 
 Both frontend sync paths are mounted exactly once at the App root
-(`ResearchEventBridge`, gated on `experimental.enabled`); the Research panel
+(`ResearchEventBridge`); the Research panel
 and the workspace tab are pure views over `researchStore` and never mount the
 hooks themselves (a double mount would duplicate every watchdog and fallback
 refetch). The workspace's hypothesis selection is keyed to the research
@@ -133,7 +132,7 @@ Metrics are derived from the reconciled graph:
 
 ## Invariants
 
-- RESEARCH mode is available only for real projects and only while `experimental.enabled` is true.
+- RESEARCH mode is available only for real projects.
 - The persisted research root is absolute and contained within the project workspace; the default root is `<workspace>/.research`.
 - Enabling is idempotent: it may reparse, reseed, repersist, rescan, and re-emit without duplicating domain state.
 - Disabling clears the persisted toggle and recursive watch while preserving research artifacts and seeded skills.
@@ -160,7 +159,6 @@ Metrics are derived from the reconciled graph:
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
-| `experimental.enabled` | `false` | Master gate for RESEARCH and other experimental features |
 | `ProjectInfo.ResearchRoot` | empty (disabled) | Persisted per-project absolute research root |
 | Enable `rootPath` | `<workspace>/.research` | Optional explicit root; must remain inside the workspace |
 | Skill-pack seed version | `2` (`research.CurrentSeedVersion`) | Pack version stamped into `.seed-version` markers; agent-pack version (`research.AgentSeedVersion`, `1`) bumps independently |
@@ -178,5 +176,5 @@ Metrics are derived from the reconciled graph:
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) - RESEARCH RPC surface and DTO boundary
 - [../contracts/event-catalog.md](../contracts/event-catalog.md) - `research:changed` and `research:file_changed` events
 - [architecture/security-model.md](../architecture/security-model.md) - workspace containment and untrusted persisted artifacts
-- [small-llm.md](small-llm.md) - the other feature gated by `experimental.enabled`
+- [small-llm.md](small-llm.md) - the Small-LLM profile, the only feature gated by `experimental.enabled`
 - [frontend/README.md](frontend/README.md) - frontend panel architecture

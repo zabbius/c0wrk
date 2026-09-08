@@ -171,9 +171,6 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
-	if !f.experimentalFeaturesEnabled() {
-		return nil, errors.New("experimental features are disabled")
-	}
 	if f.projectManager == nil || f.projStore == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
@@ -408,12 +405,6 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
-	if !f.experimentalFeaturesEnabled() {
-		return &ResearchStatusDTO{
-			Enabled:   false,
-			ProjectID: projectID,
-		}, nil
-	}
 	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
@@ -458,11 +449,6 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 func (f *FrontendAPI) GetResearchGraph(projectID string) (*ResearchGraphDTO, error) {
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
-	}
-	if !f.experimentalFeaturesEnabled() {
-		return &ResearchGraphDTO{
-			ProjectID: projectID,
-		}, nil
 	}
 	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")
@@ -548,9 +534,6 @@ func (f *FrontendAPI) GetResearchNextStep(projectID, hypothesisID string) (*Rese
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
-	if !f.experimentalFeaturesEnabled() {
-		return f.setupNextStep(projectID), nil
-	}
 	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
@@ -585,8 +568,7 @@ func (f *FrontendAPI) GetResearchNextStep(projectID, hypothesisID string) (*Rese
 }
 
 // setupNextStep returns the research-init setup recommendation for a project
-// that has no active R-NNN yet (RESEARCH disabled, experimental features off,
-// or an empty research root).
+// that has no active R-NNN yet (RESEARCH disabled, or an empty research root).
 func (f *FrontendAPI) setupNextStep(projectID string) *ResearchNextStepDTO {
 	rec := research.RecommendNextStep(nil)
 	return &ResearchNextStepDTO{
@@ -1049,8 +1031,8 @@ func (f *FrontendAPI) researchMutationMu(researchRoot string) *sync.Mutex {
 	return mu
 }
 
-// researchRootForMutation loads the project, verifies experimental features are
-// on and RESEARCH is enabled, and returns the project's research root (with
+// researchRootForMutation loads the project, verifies RESEARCH is enabled, and
+// returns the project's research root (with
 // workspace containment enforced — SECURITY.md; defense in depth even though
 // the root was already validated at enable time) together with the loaded
 // project record, whose ResearchPins feed the RPC responses. Callers that
@@ -1059,9 +1041,6 @@ func (f *FrontendAPI) researchMutationMu(researchRoot string) *sync.Mutex {
 func (f *FrontendAPI) researchRootForMutation(projectID string) (string, *project.ProjectInfo, error) {
 	if projectID == "" {
 		return "", nil, errors.New("project_id is required")
-	}
-	if !f.experimentalFeaturesEnabled() {
-		return "", nil, errors.New("experimental features are disabled")
 	}
 	if f.projectManager == nil {
 		return "", nil, errors.New("project subsystem not initialized")

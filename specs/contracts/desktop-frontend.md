@@ -107,13 +107,13 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `SetLogLevel`            | level                    | error                             | Set log level dynamically      |
 | `ListProviderModels`     | provider                 | ([]string, error)                 | List models for a provider     |
 | `UpdateProxySettings`    | ProxySettingsRequest     | error                             | Update proxy configuration     |
-| `UpdateExperimentalFeatures` | enabled            | error                             | Toggle the master experimental-features switch. Persists the change, rebuilds the LLM router (so the gated Small-LLM profile applies immediately), and updates the session manager's Small-LLM snapshot. RESEARCH mode is gated at its own RPC boundary (`EnableResearch`/`GetResearchStatus`/`GetResearchGraph`) |
+| `UpdateExperimentalFeatures` | enabled            | error                             | Toggle the master experimental-features switch (it gates only the Small-LLM profile). Persists the change, rebuilds the LLM router (so the gated Small-LLM profile applies immediately), and updates the session manager's Small-LLM snapshot. RESEARCH mode is unaffected by this switch: it is activated per project via its own RPCs (`EnableResearch`/`GetResearchStatus`/`GetResearchGraph`) |
 | `GetSmallLLMConfig`      | —                        | SmallLLMConfigResponse            | Get the small-LLM profile (always_present normalized to non-nil; protected orchestration tools unioned in) |
 | `UpdateSmallLLMConfig`   | SmallLLMConfigResponse   | error                             | Validate + persist the small-LLM profile, then rebuild the LLM router. Validation runs before mutation; an invalid payload produces no partial write. |
 | `GetModelConfig`         | model                    | (ModelConfigResponse, error)      | Get per-model overrides (sampling/params) |
 | `SetModelConfig`         | model, ModelConfigRequest | error                            | Set per-model overrides |
 
-> **Experimental-features gate**: `ConfigResponse` carries `experimental.enabled` — a single, all-or-nothing switch for features under active development. When off, RESEARCH mode is treated as off for every project (`GetResearchStatus`/`GetResearchGraph` return the empty-state DTO and `EnableResearch` rejects) and the Small-LLM profile is forced off in `ToBuilderConfig` (the stored `small_llm.enabled` is preserved but never activates). The frontend hides the corresponding affordances reactively in the same session: the sidebar research icon/tab and the Small-LLM settings tab.
+> **Experimental-features gate**: `ConfigResponse` carries `experimental.enabled` — a single, all-or-nothing switch whose only gated feature is the Small-LLM profile. When off, the profile is forced off in `ToBuilderConfig` (the stored `small_llm.enabled` is preserved but never activates). The frontend hides the corresponding affordance reactively in the same session: the Small-LLM settings tab. RESEARCH mode is not gated by this switch — it is activated per project via `EnableResearch` and stays available.
 
 > **Network-free config read**: `GetConfig` performs no network I/O. `AllModels` metadata resolves through the sp4rk `ModelRegistry.ResolveLocal` (in-memory tiers: overrides, built-ins, fuzzy matches, lazy cache — including LM Studio probe results written via `SetRuntimeMetadata` to the runtime tier, which `ResolveLocal` also serves; fallback defaults for unknown models). `GetConfig` runs on every settings open, so it always returns from memory and never blocks behind an HTTP probe or timeout; `HasDefaultModel` exists so single-fact UI checks skip even the full response build.
 
@@ -286,7 +286,7 @@ Code-review authoring surface (human-in-the-loop review of agent changes). Revie
 
 ### Research (`backend/frontend_api_research.go`)
 
-RESEARCH mode toggle + hypothesis-graph view model. RESEARCH mode is available only for real projects (`loadProjectForResearch` rejects the No Project pseudo-project); the persisted toggle is `ProjectInfo.ResearchRoot`. RESEARCH mode is additionally gated by the experimental-features master switch: when experimental features are off, `EnableResearch` rejects and `GetResearchStatus`/`GetResearchGraph` return the empty-state DTO regardless of any persisted research root, so every project reports research=off.
+RESEARCH mode toggle + hypothesis-graph view model. RESEARCH mode is available only for real projects (`loadProjectForResearch` rejects the No Project pseudo-project); the persisted toggle is `ProjectInfo.ResearchRoot`. RESEARCH mode is independent of the experimental-features master switch: its availability is governed solely by the per-project persisted toggle.
 
 | Method | Parameters | Returns | Description |
 | ------ | ---------- | ------- | ----------- |

@@ -22,7 +22,6 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useWorkDirsStore } from '@/stores/workDirsStore'
-import { useExperimentalFeatures } from '@/hooks/useExperimentalFeatures'
 import { ResearchEventBridge } from '@/components/research/ResearchEventBridge'
 import type { ToolManagerToolInfo, ToolManagerProgressData } from '@/types/events'
 import { isStartupError, isRuntimeError, isVectorIndexPayload, isToolManagerStartData, isToolManagerProgressData } from '@/types/events'
@@ -65,7 +64,6 @@ function App() {
   useSessionEvents(activeSessionId)
   useBackgroundSessionWatcher()
   useUpdateChecker()
-  const experimentalEnabled = useExperimentalFeatures()
   // Close-guard subscription — mounted once at the root so app-phase
   // transitions never create an event gap; ExitConfirmDialog (rendered in
   // every phase branch) is a pure view over the store this hook writes.
@@ -282,10 +280,9 @@ function App() {
       <UpdateToast />
       <GitConfigRiskToast />
       {/* Research store sync (status + incremental graph updates), mounted
-          once here — gated on the experimental feature exactly like the
-          Research panel tab — so ResearchPanel and ResearchWorkspace stay
-          pure views and never double-mount the watchdog/full-refresh paths. */}
-      {experimentalEnabled && <ResearchEventBridge />}
+          once here — so ResearchPanel and ResearchWorkspace stay pure views
+          and never double-mount the watchdog/full-refresh paths. */}
+      <ResearchEventBridge />
       <ExitConfirmDialog />
     </TooltipProvider>
   )

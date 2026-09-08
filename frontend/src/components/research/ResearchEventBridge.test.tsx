@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-// ResearchEventBridge — the experimental-off purge of the research viewer
-// tab. App mounts the bridge exactly while the experimental switch is on, so
-// the bridge's UNMOUNT is the off-transition: an open research viewer tab
-// must be closed there, regardless of whether the file viewer is currently
-// mounted or collapsed (the viewer unmounts its content when collapsed, so
-// the purge cannot live there).
+// ResearchEventBridge — pure store-sync bridge semantics.
+//
+// App mounts the bridge unconditionally (RESEARCH is always available), so an
+// unmount is never an "experimental off" transition. The bridge must be a
+// pure side-effect host: it renders no DOM and never mutates the file viewer
+// — in particular it must NOT close an open research tab on unmount.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
@@ -42,15 +42,29 @@ async function mountBridge(): Promise<() => Promise<void>> {
   }
 }
 
-describe('ResearchEventBridge — experimental-off purge', () => {
+describe('ResearchEventBridge — pure store sync', () => {
   beforeEach(() => {
     // No active project → the status hook's initial refresh() resets the
     // research store and issues no RPCs; the behavior under test is the
-    // viewer purge alone.
+    // bridge's own (non-)interaction with the viewer.
     useProjectStore.setState({ activeProjectId: null })
   })
 
-  it('closes an open research viewer tab on unmount (the off-transition)', async () => {
+  it('renders no DOM', async () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root: Root = createRoot(container)
+    await act(async () => {
+      root.render(<ResearchEventBridge />)
+    })
+    expect(container.innerHTML).toBe('')
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+  })
+
+  it('leaves an open research viewer tab in place on unmount', async () => {
     useFileViewerStore.setState({
       openTabs: ['/ws/notes.md', RESEARCH_TAB_PATH],
       activeFile: RESEARCH_TAB_PATH,
@@ -63,23 +77,7 @@ describe('ResearchEventBridge — experimental-off purge', () => {
     await unmount()
 
     const s = useFileViewerStore.getState()
-    expect(s.openTabs).toEqual(['/ws/notes.md'])
-    // The neighbor tab becomes active — the research tab is gone, not just hidden.
-    expect(s.activeFile).toBe('/ws/notes.md')
-  })
-
-  it('leaves the viewer untouched on unmount when the research tab is not open', async () => {
-    useFileViewerStore.setState({
-      openTabs: ['/ws/a.md', '/ws/b.md'],
-      activeFile: '/ws/b.md',
-      files: {},
-    })
-
-    const unmount = await mountBridge()
-    await unmount()
-
-    const s = useFileViewerStore.getState()
-    expect(s.openTabs).toEqual(['/ws/a.md', '/ws/b.md'])
-    expect(s.activeFile).toBe('/ws/b.md')
+    expect(s.openTabs).toEqual(['/ws/notes.md', RESEARCH_TAB_PATH])
+    expect(s.activeFile).toBe(RESEARCH_TAB_PATH)
   })
 })

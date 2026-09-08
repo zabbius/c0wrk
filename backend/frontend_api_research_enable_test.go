@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 )
 
@@ -51,7 +50,6 @@ func TestEnableResearch_DoesNotRetargetNonActiveProject(t *testing.T) {
 	f := &FrontendAPI{
 		projectManager: project.NewManager(store, base, nil),
 		projStore:      store,
-		config:         &config.Config{Experimental: config.ExperimentalConfig{Enabled: true}},
 		emitEvent:      func(_ string, _ ...any) {},
 	}
 

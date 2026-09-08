@@ -114,7 +114,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [tool-manager.md](domains/tool-manager.md) - External binary dependency manager (rg/uv/markitdown): pinned-version reconciliation, SHA256 verification, no-auto-update supply-chain guarantee
 - [workspace.md](domains/workspace.md) - File tree, vector index, workspace watcher
 - [review.md](domains/review.md) - Code review feature (review sessions, diff parsing, hunk/file/general comments, clone-on-fork)
-- [research.md](domains/research.md) - Experimental project-scoped research workspace: briefs, versioned methodology skills, hypothesis DAG parsing, metrics, recursive watcher, and incremental frontend graph updates
+- [research.md](domains/research.md) - Project-scoped research workspace: briefs, versioned methodology skills, hypothesis DAG parsing, metrics, recursive watcher, and incremental frontend graph updates
 
 ### domains/frontend/
 

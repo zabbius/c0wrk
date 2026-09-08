@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/research"
 	"github.com/v0lka/c0wrk/core/workspace"
@@ -237,7 +236,7 @@ func seedResearchProjectDir(t *testing.T, root, dirName string) {
 }
 
 // researchMutationTestFrontend builds a FrontendAPI wired with a real project
-// manager (backed by an in-memory SQLite store, experimental features enabled)
+// manager (backed by an in-memory SQLite store)
 // and a project whose workspace contains a minimal nested research root
 // (R-001-test with one open hypothesis). It returns the API, the project ID,
 // and the research root path.
@@ -267,7 +266,6 @@ func researchMutationTestFrontend(t *testing.T) (api *FrontendAPI, projectID, ro
 	mgr := project.NewManager(store, base, nil)
 	f := &FrontendAPI{
 		projectManager: mgr,
-		config:         &config.Config{Experimental: config.ExperimentalConfig{Enabled: true}},
 		emitEvent:      func(_ string, _ ...any) {},
 	}
 	return f, "proj-1", researchRoot
@@ -483,7 +481,6 @@ func TestResearchRPC_RejectsOutOfWorkspaceRoot(t *testing.T) {
 	mgr := project.NewManager(store, base, nil)
 	f := &FrontendAPI{
 		projectManager: mgr,
-		config:         &config.Config{Experimental: config.ExperimentalConfig{Enabled: true}},
 		emitEvent:      func(_ string, _ ...any) {},
 	}
 
