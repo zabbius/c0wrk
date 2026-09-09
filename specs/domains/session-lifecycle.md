@@ -625,7 +625,7 @@ User picks a strategy in the status-bar compact menu (left of the fill indicator
       │    session_paused was suppressed while compacting)
       └─ Emit compaction_finished {strategy, success|cancelled|error, resumed,
                                   paused_without_resume?, nothing_compacted?,
-                                  deferred_to_resume?, compaction_noop?}
+                                  deferred_to_resume?, compaction_availability?}
 
 Cancel (CancelSessionCompaction):
   during pause-wait  → still waits for the checkpoint (unflipping the pause signal

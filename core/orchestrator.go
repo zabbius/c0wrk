@@ -24,6 +24,7 @@ import (
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
+	sdkmemory "github.com/v0lka/sp4rk/memory"
 	"github.com/v0lka/sp4rk/orchestration"
 	"github.com/v0lka/sp4rk/skills"
 	"github.com/v0lka/sp4rk/strutil"
@@ -322,7 +323,7 @@ type Orchestrator struct {
 	// the request goroutine (ApplyRequestOverrides / SetReasoningEffort,
 	// reached from HandleMessage and the resume path); readers include
 	// Wails-RPC goroutines — the runtime status poll (GetSessionRuntimeStatus
-	// → ManualCompactionWouldNoOp → contextBases) — and the
+	// → ManualCompactionAvailability → contextBases) — and the
 	// manual-compaction flow goroutine (contextBases, the summarize wiring).
 	// All access goes through currentModel / setCurrentModel /
 	// currentReasoningEffort / setCurrentReasoningEffort so no raw read or
@@ -334,7 +335,7 @@ type Orchestrator struct {
 	// recordResumeOutcome epilogues, CompactConversationHistory's swap) and
 	// on the session-restore path (SetConversationHistory, before the session
 	// accepts requests); readers include Wails-RPC goroutines — the runtime
-	// status poll (GetSessionRuntimeStatus → ManualCompactionWouldNoOp) and
+	// status poll (GetSessionRuntimeStatus → ManualCompactionAvailability) and
 	// the manual-compaction flow can observe the history while a request is
 	// finishing, the same cross-goroutine window liveMu covers for
 	// liveMessages. All access goes through historySnapshot /
@@ -344,11 +345,25 @@ type Orchestrator struct {
 	// conversationHistory holds prior user/assistant exchanges from the
 	// session. Guarded by historyMu.
 	conversationHistory []llm.Message
-	taskStore           TaskPersistence       // optional, for ContinueTask blackboard restoration
-	bbRestoreFunc       BlackboardRestoreFunc // optional, restores PersistableBlackboard from store
-	trackingCaller      *llm.TrackingCaller   // for per-step context tracker wiring
-	tokenCounter        llm.TokenCounter      // for token counting in planner history compaction
-	vectorSearchFunc    builtins.VectorSearchFunc
+	// forecastMu guards compactionForecast against cross-goroutine access:
+	// writers run on the manual-compaction flow goroutine (calibration after
+	// each compaction) and on the session-restore path (SetCompactionForecast);
+	// readers include Wails-RPC goroutines (the runtime status poll → the
+	// per-strategy prediction) and the manual-compaction flow itself (the
+	// Summarize wiring reads the forecast to build deps). All access goes
+	// through compactionForecastSnapshot / SetCompactionForecast.
+	forecastMu sync.Mutex
+	// compactionForecast holds the EWMA-calibrated compression-ratio forecasts
+	// for the LLM-backed manual-compaction strategies, seeded from
+	// config.Compaction.Forecast (zero fields fall back to sp4rk's defaults)
+	// and refined after each successful compaction using the observed
+	// before→after token ratio.
+	compactionForecast sdkmemory.CompactionForecast
+	taskStore          TaskPersistence       // optional, for ContinueTask blackboard restoration
+	bbRestoreFunc      BlackboardRestoreFunc // optional, restores PersistableBlackboard from store
+	trackingCaller     *llm.TrackingCaller   // for per-step context tracker wiring
+	tokenCounter       llm.TokenCounter      // for token counting in planner history compaction
+	vectorSearchFunc   builtins.VectorSearchFunc
 	// vectorSearchWaitFunc is the bounded readiness waiter paired with
 	// vectorSearchFunc (the desktop search wiring's waitFunc).
 	// injectVectorSearchHints calls it under the SAME deadline as the
@@ -843,6 +858,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		onCleanup:                  deps.OnCleanup,
 		verifyOnEdit:               deps.VerifyOnEdit,
 		verifyOnEditMaxOutputChars: deps.VerifyOnEditMaxOutputChars,
+		compactionForecast:         resolveCompactionForecast(cfg.Compaction.Forecast),
 	}
 
 	return o
@@ -1714,6 +1730,13 @@ func (o *Orchestrator) currentModel() string {
 	o.modelMu.RLock()
 	defer o.modelMu.RUnlock()
 	return o.config.Model
+}
+
+// CurrentModel returns the session's active model identity (the bare model
+// name), synchronized for cross-goroutine readers. The session layer uses it
+// to scope the persisted compaction forecast per model.
+func (o *Orchestrator) CurrentModel() string {
+	return o.currentModel()
 }
 
 // setCurrentModel records the session's active model identity (see modelMu).

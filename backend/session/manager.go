@@ -677,6 +677,11 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		}
 	}
 
+	// Restore the EWMA-calibrated compression-ratio forecast (persisted after
+	// each manual compaction) so the calibration survives restarts; a missing
+	// or unparsable state leaves the config seed untouched.
+	m.loadCompactionForecast(orchestrator)
+
 	// Restore the continuation anchor from the task store so the next user
 	// message continues the previous task via PlanContinuation (which receives
 	// the conversation history) instead of planning from scratch. Mirrors the

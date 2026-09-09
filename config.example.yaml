@@ -221,7 +221,16 @@ executor:
     maxSummarizeTokens: 16000 # Max tokens for summarization LLM calls
     observationTruncate: 500 # Characters to truncate observations in summaries
     safetyMarginPercent: 5 # % of context window reserved as safety margin
-    manualTargetPercent: 30 # Target context fill (%) user-triggered manual compaction aims to reach; 0/unset falls back to 30
+    # Compression-ratio forecast seeds for manual-compaction prediction. Each
+    # ratio is the expected fraction of a summarized block's input tokens that
+    # the summary occupies; they seed an EWMA refined after each real
+    # compaction. The forecast only affects the predicted reclaim number shown
+    # in the compact menu — never strategy availability (an exact verdict).
+    # 0/unset falls back to sp4rk's defaults (0.3 / 0.15 / 0.3).
+    forecast:
+      summarization_ratio: 0.3 # summarization + hierarchical middle zone
+      hierarchical_distant_ratio: 0.15 # hierarchical distant zone (one aggressive summary)
+      hierarchical_middle_ratio: 0.3 # hierarchical middle zone (per-block summaries)
 
   # --- Tool Result Budget ---------------------------------------------------
   tool_result_budget:

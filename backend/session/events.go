@@ -4,6 +4,7 @@ package session
 import (
 	"time"
 
+	"github.com/v0lka/c0wrk/core"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -266,25 +267,28 @@ type CompactionStartedEventData struct {
 // stolen — see Session.pauseOwner). A paused checkpoint remains, but
 // session_paused was suppressed while compacting — clients must re-apply the
 // paused state from this flag.
-// CompactionNoOp reports whether ANOTHER manual compaction right now would
-// still change nothing — recomputed by the orchestrator on the post-flow
-// history: true after a successful compaction (the compacted dialogue now
-// fits the target) and after the nothing_compacted outcome (nothing changed);
-// for a cancelled or failed flow it is simply the untouched history's own
-// verdict. The UI refreshes the compact button's disabled state from it
-// without a status refetch.
+// CompactionAvailability is the per-strategy manual-compaction prediction
+// recomputed by the orchestrator on the POST-flow history (see
+// Orchestrator.ManualCompactionAvailability): whether each strategy would
+// actually shrink the dialogue right now, how many tokens it would reclaim,
+// and whether that reclaim is exact (sliding_window) or a forecast
+// (LLM-backed). After a successful compaction or a no-op outcome the compacted
+// (unchanged) history is under every strategy's window, so all strategies
+// report available=false; for a cancelled or failed flow it is the untouched
+// history's own verdict. The UI refreshes the compact menu from it without a
+// status refetch.
 type CompactionFinishedEventData struct {
-	Strategy            string  `json:"strategy"`
-	Success             bool    `json:"success"`
-	Cancelled           bool    `json:"cancelled,omitempty"`
-	Error               string  `json:"error,omitempty"`
-	BeforePercent       float64 `json:"before_percent"`
-	AfterPercent        float64 `json:"after_percent"`
-	Resumed             bool    `json:"resumed,omitempty"`
-	PausedWithoutResume bool    `json:"paused_without_resume,omitempty"`
-	NothingCompacted    bool    `json:"nothing_compacted,omitempty"`
-	DeferredToResume    bool    `json:"deferred_to_resume,omitempty"`
-	CompactionNoOp      bool    `json:"compaction_noop"`
+	Strategy               string                        `json:"strategy"`
+	Success                bool                          `json:"success"`
+	Cancelled              bool                          `json:"cancelled,omitempty"`
+	Error                  string                        `json:"error,omitempty"`
+	BeforePercent          float64                       `json:"before_percent"`
+	AfterPercent           float64                       `json:"after_percent"`
+	Resumed                bool                          `json:"resumed,omitempty"`
+	PausedWithoutResume    bool                          `json:"paused_without_resume,omitempty"`
+	NothingCompacted       bool                          `json:"nothing_compacted,omitempty"`
+	DeferredToResume       bool                          `json:"deferred_to_resume,omitempty"`
+	CompactionAvailability []core.CompactionAvailability `json:"compaction_availability"`
 }
 
 // SkillsActivatedData is the typed Data payload for "skills_activated" events.

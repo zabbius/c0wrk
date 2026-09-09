@@ -416,14 +416,26 @@ type VerifyOnEditConfig struct {
 
 // CompactionConfig holds context compaction settings.
 type CompactionConfig struct {
-	SlidingWindow       SlidingWindowConfig  `yaml:"sliding_window"`
-	Summarization       SummarizationConfig  `yaml:"summarization"`
-	Hierarchical        HierarchicalConfig   `yaml:"hierarchical"`
-	Thresholds          CompactionThresholds `yaml:"thresholds"`
-	MaxSummarizeTokens  int                  `yaml:"maxSummarizeTokens"`  // max tokens for summarization LLM calls (default: 16000)
-	ObservationTruncate int                  `yaml:"observationTruncate"` // chars to truncate observations in summaries (default: 500)
-	SafetyMarginPercent int                  `yaml:"safetyMarginPercent"` // % of context window reserved as safety margin (default: 5)
-	ManualTargetPercent int                  `yaml:"manualTargetPercent"` // target context fill % user-triggered manual compaction aims to reach (default: 30)
+	SlidingWindow       SlidingWindowConfig      `yaml:"sliding_window"`
+	Summarization       SummarizationConfig      `yaml:"summarization"`
+	Hierarchical        HierarchicalConfig       `yaml:"hierarchical"`
+	Thresholds          CompactionThresholds     `yaml:"thresholds"`
+	MaxSummarizeTokens  int                      `yaml:"maxSummarizeTokens"`  // max tokens for summarization LLM calls (default: 16000)
+	ObservationTruncate int                      `yaml:"observationTruncate"` // chars to truncate observations in summaries (default: 500)
+	SafetyMarginPercent int                      `yaml:"safetyMarginPercent"` // % of context window reserved as safety margin (default: 5)
+	Forecast            CompactionForecastConfig `yaml:"forecast"`            // compression-ratio forecast seeds for manual-compaction prediction
+}
+
+// CompactionForecastConfig holds the compression-ratio forecast seeds used to
+// predict the effect of the LLM-backed manual-compaction strategies. They seed
+// an EWMA that is refined after each real compaction; the forecast affects only
+// the predicted reclaim number in the compact menu, never strategy availability
+// (which is an exact structural verdict). Zero values fall back to sp4rk's
+// conservative defaults.
+type CompactionForecastConfig struct {
+	SummarizationRatio       float64 `yaml:"summarization_ratio"`        // summarization + hierarchical middle (default: 0.3)
+	HierarchicalDistantRatio float64 `yaml:"hierarchical_distant_ratio"` // hierarchical distant zone (default: 0.15)
+	HierarchicalMiddleRatio  float64 `yaml:"hierarchical_middle_ratio"`  // hierarchical middle zone (default: 0.3)
 }
 
 // CompactionThresholds defines context window usage thresholds for compaction triggers.

@@ -128,12 +128,12 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Executor.Compaction.SafetyMarginPercent == 0 {
 		cfg.Executor.Compaction.SafetyMarginPercent = 5
 	}
-	// Manual compaction target: the fill % of the context window that a
-	// user-triggered compaction aims to compact the history down to. Unset
-	// (0) falls back to 30%.
-	if cfg.Executor.Compaction.ManualTargetPercent == 0 {
-		cfg.Executor.Compaction.ManualTargetPercent = 30
-	}
+	// Compression-ratio forecast seeds for manual-compaction prediction. Zero
+	// fields are left unset here: the core layer resolves them to sp4rk's
+	// conservative defaults (0.3 / 0.15 / 0.3) — mirroring what the prediction
+	// already does for a zero CompactionForecast. Applying them here would
+	// double-default and make an explicit "0" (an invalid ratio) indistinguishable
+	// from "unset".
 
 	// Compaction thresholds defaults
 	if cfg.Executor.Compaction.Thresholds.PredictivePercent == 0 {

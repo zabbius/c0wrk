@@ -179,15 +179,21 @@ describe('isCompactionFinishedData', () => {
         expect(isCompactionFinishedData({ ...valid, deferred_to_resume: 0 })).toBe(false)
     })
 
-    it('accepts compaction_noop as a boolean and as explicitly undefined', () => {
-        expect(isCompactionFinishedData({ ...valid, compaction_noop: true })).toBe(true)
-        expect(isCompactionFinishedData({ ...valid, compaction_noop: false })).toBe(true)
-        expect(isCompactionFinishedData({ ...valid, compaction_noop: undefined })).toBe(true)
+    it('accepts compaction_availability as a valid list and as explicitly undefined', () => {
+        const avail = [
+            { strategy: 'sliding_window', available: true, reclaim_tokens: 100, exact: true },
+            { strategy: 'summarization', available: false, reclaim_tokens: 0, exact: false },
+        ]
+        expect(isCompactionFinishedData({ ...valid, compaction_availability: avail })).toBe(true)
+        expect(isCompactionFinishedData({ ...valid, compaction_availability: [] })).toBe(true)
+        expect(isCompactionFinishedData({ ...valid, compaction_availability: undefined })).toBe(true)
     })
 
-    it('rejects compaction_noop with a non-boolean value', () => {
-        expect(isCompactionFinishedData({ ...valid, compaction_noop: 'yes' })).toBe(false)
-        expect(isCompactionFinishedData({ ...valid, compaction_noop: 1 })).toBe(false)
+    it('rejects compaction_availability with a malformed entry or non-array', () => {
+        expect(isCompactionFinishedData({ ...valid, compaction_availability: 'yes' })).toBe(false)
+        expect(isCompactionFinishedData({ ...valid, compaction_availability: 1 })).toBe(false)
+        expect(isCompactionFinishedData({ ...valid, compaction_availability: [{ strategy: 'x' }] })).toBe(false)
+        expect(isCompactionFinishedData({ ...valid, compaction_availability: [{ strategy: 'x', available: 'yes', reclaim_tokens: 0, exact: true }] })).toBe(false)
     })
 
     it('still rejects payloads missing required fields', () => {

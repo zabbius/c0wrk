@@ -52,6 +52,18 @@ export interface SessionInfo {
   readonly unfinished_task_status?: string
 }
 
+/** Per-strategy manual-compaction prediction (mirrors the backend's
+ *  core.CompactionAvailability): is this strategy currently available (would
+ *  it actually shrink the conversation history right now), how many tokens it
+ *  would reclaim, and whether that reclaim is exact (sliding_window — a dry
+ *  run) or a forecast (LLM-backed strategies). */
+export interface CompactionAvailability {
+  readonly strategy: string
+  readonly available: boolean
+  readonly reclaim_tokens: number
+  readonly exact: boolean
+}
+
 export interface ChatMessage {
   readonly id: number
   readonly session_id: string

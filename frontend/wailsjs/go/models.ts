@@ -1302,6 +1302,29 @@ export namespace backend {
 
 }
 
+export namespace core {
+	
+	export class CompactionAvailability {
+	    strategy: string;
+	    available: boolean;
+	    reclaim_tokens: number;
+	    exact: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CompactionAvailability(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.strategy = source["strategy"];
+	        this.available = source["available"];
+	        this.reclaim_tokens = source["reclaim_tokens"];
+	        this.exact = source["exact"];
+	    }
+	}
+
+}
+
 export namespace desktop {
 	
 	export class PendingGoalProposal {
@@ -2117,7 +2140,7 @@ export namespace session {
 	    unfinished_task_id?: string;
 	    paused: boolean;
 	    compacting: boolean;
-	    compaction_noop: boolean;
+	    compaction_availability: core.CompactionAvailability[];
 	    activity?: string;
 	    streaming: boolean;
 	
@@ -2132,10 +2155,28 @@ export namespace session {
 	        this.unfinished_task_id = source["unfinished_task_id"];
 	        this.paused = source["paused"];
 	        this.compacting = source["compacting"];
-	        this.compaction_noop = source["compaction_noop"];
+	        this.compaction_availability = this.convertValues(source["compaction_availability"], core.CompactionAvailability);
 	        this.activity = source["activity"];
 	        this.streaming = source["streaming"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class TerminalCommand {
 	    id: number;
