@@ -1119,7 +1119,6 @@ export namespace backend {
 	export class SmallLLMEssentialToolsResp {
 	    enabled: boolean;
 	    always_present: string[];
-	    max_tools: number;
 	    compact_descriptions: boolean;
 	    protected_tools: string[];
 	
@@ -1131,7 +1130,6 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
 	        this.always_present = source["always_present"];
-	        this.max_tools = source["max_tools"];
 	        this.compact_descriptions = source["compact_descriptions"];
 	        this.protected_tools = source["protected_tools"];
 	    }

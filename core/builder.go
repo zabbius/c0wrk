@@ -545,10 +545,8 @@ func (b *OrchestratorBuilder) Build(
 		SmallLLM: SmallLLMSettings{
 			Enabled: cfg.SmallLLM.Enabled,
 			EssentialTools: SmallLLMEssentialSettings{
-				Enabled:       cfg.SmallLLM.EssentialTools.Enabled,
-				AlwaysPresent: cfg.SmallLLM.EssentialTools.AlwaysPresent,
-				MaxTools:      cfg.SmallLLM.EssentialTools.MaxTools,
-
+				Enabled:             cfg.SmallLLM.EssentialTools.Enabled,
+				AlwaysPresent:       cfg.SmallLLM.EssentialTools.AlwaysPresent,
 				CompactDescriptions: cfg.SmallLLM.EssentialTools.CompactDescriptions,
 			},
 			SystemPrompt: SmallLLMSystemPromptSettings{
@@ -2083,13 +2081,6 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 
 	coreRouter.SetReasoningEffort(b.reasoningEffort)
 	coreReflector.SetReasoningEffort(b.reasoningEffort)
-
-	// Enable semantic tool selection in the router when the SmallLLM master
-	// toggle and the EssentialTools variant are both active. When enabled, the
-	// router prompt includes a tool-selection instruction and the matched_tools
-	// field in its JSON output schema; the conductor then narrows its advertised
-	// tool set accordingly.
-	coreRouter.SetToolMatching(cfg.SmallLLM.Enabled && cfg.SmallLLM.EssentialTools.Enabled)
 
 	return coreRouter, coreReflector, nil
 }

@@ -667,7 +667,6 @@ func (s *resumeCompactionSpyEmitter) GoalStatus(_ map[string]any)               
 func (s *resumeCompactionSpyEmitter) GoalProgress(_ map[string]any)                                {}
 func (s *resumeCompactionSpyEmitter) ReplanFailed(_ error)                                         {}
 func (s *resumeCompactionSpyEmitter) SkillsActivated(_ []string)                                   {}
-func (s *resumeCompactionSpyEmitter) ToolsAssigned(_ []string)                                     {}
 func (s *resumeCompactionSpyEmitter) StepTodoUpdate(_ string, _ []agent.TodoItem)                  {}
 func (s *resumeCompactionSpyEmitter) MemoryRead(_ int, _ string)                                   {}
 

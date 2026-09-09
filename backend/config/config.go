@@ -729,16 +729,10 @@ type EssentialToolsConfig struct {
 	Enabled bool `yaml:"enabled"`
 
 	// AlwaysPresent is the allow-list of tool names always exposed when this
-	// variant is active. Tools not in this list are hidden from the model
-	// unless the router matches them into a free slot.
+	// variant is active. Tools not in this list are hidden from the model.
+	// Protected orchestration tools and all MCP tools are always preserved
+	// regardless, and the selection is never trimmed.
 	AlwaysPresent []string `yaml:"always_present"`
-
-	// MaxTools caps the router-matched slots: at most
-	// maxTools − len(guaranteed) matched tools are kept, where guaranteed =
-	// always-present ∪ protected ∪ MCP. The guaranteed set itself is never
-	// trimmed (validateSmallLLMConfig rejects configs where it alone exceeds
-	// MaxTools).
-	MaxTools int `yaml:"max_tools"`
 
 	// CompactDescriptions replaces every known builtin's full rubric
 	// description with a one-line compact variant while this variant is

@@ -211,12 +211,6 @@ type BuilderSmallLLMEssentialConfig struct {
 	// always preserved regardless, and the guaranteed set is never trimmed.
 	AlwaysPresent []string
 
-	// MaxTools caps the router-matched slots: at most
-	// maxTools − len(guaranteed) matched tools are kept, where guaranteed =
-	// always-present ∪ protected ∪ MCP. The guaranteed set itself is never
-	// trimmed (validation rejects configs where it alone exceeds MaxTools).
-	MaxTools int
-
 	// CompactDescriptions swaps full builtin tool descriptions for one-line
 	// compact variants (small-LLM essential-tools extension).
 	CompactDescriptions bool

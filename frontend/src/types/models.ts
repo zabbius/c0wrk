@@ -490,7 +490,6 @@ export interface SecuritySettingsResponse {
 export interface SmallLLMEssentialTools {
   enabled: boolean
   always_present: string[]
-  max_tools: number
   /** Replace builtin tool descriptions with one-line compact variants. */
   compact_descriptions: boolean
   /**

@@ -422,14 +422,6 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.SmallLLM.EssentialTools.AlwaysPresent == nil {
 		cfg.SmallLLM.EssentialTools.AlwaysPresent = defaultSmallLLMAlwaysPresent
 	}
-	if cfg.SmallLLM.EssentialTools.MaxTools == 0 {
-		// Slot budget for router-matched tools on top of the never-trimmed
-		// guaranteed set: always_present (12) ∪ protected (5, 4 overlap) =
-		// 13 unique tools, MCP joins at runtime. 16 leaves 3 free slots with
-		// the default always-present list; validateSmallLLMConfig rejects
-		// configs where the guaranteed set alone exceeds the budget.
-		cfg.SmallLLM.EssentialTools.MaxTools = 16
-	}
 	// Sampling numeric parameters are deliberately NOT seeded: zero means
 	// "inherit the vendor preset" (see SmallLLMSamplingConfig). Seeding a
 	// constant temperature here previously forced 0.1/top_p 0.9 onto every

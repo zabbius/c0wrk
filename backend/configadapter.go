@@ -210,7 +210,6 @@ func ToBuilderConfig(cfg *config.Config) *core.BuilderConfig {
 			EssentialTools: core.BuilderSmallLLMEssentialConfig{
 				Enabled:             cfg.SmallLLM.EssentialTools.Enabled,
 				AlwaysPresent:       cfg.SmallLLM.EssentialTools.AlwaysPresent,
-				MaxTools:            cfg.SmallLLM.EssentialTools.MaxTools,
 				CompactDescriptions: cfg.SmallLLM.EssentialTools.CompactDescriptions,
 			},
 			Sampling: core.BuilderSmallLLMSampling{

@@ -1498,7 +1498,6 @@ func validSmallLLMConfig() SmallLLMConfigResponse {
 		EssentialTools: SmallLLMEssentialToolsResp{
 			Enabled:       true,
 			AlwaysPresent: []string{"read_file", "edit_file"},
-			MaxTools:      8,
 		},
 		SystemPrompt: SmallLLMSystemPromptResp{Lite: true},
 		Sampling: SmallLLMSamplingResp{
@@ -1533,7 +1532,6 @@ func TestGetSmallLLMConfig_ReturnsCurrentConfig(t *testing.T) {
 	// confirm they round-trip through the DTO.
 	f.config.SmallLLM.Enabled = true
 	f.config.SmallLLM.EssentialTools.Enabled = true
-	f.config.SmallLLM.EssentialTools.MaxTools = 7
 
 	got := f.GetSmallLLMConfig()
 
@@ -1542,9 +1540,6 @@ func TestGetSmallLLMConfig_ReturnsCurrentConfig(t *testing.T) {
 	}
 	if !got.EssentialTools.Enabled {
 		t.Error("EssentialTools.Enabled = false, want true")
-	}
-	if got.EssentialTools.MaxTools != 7 {
-		t.Errorf("MaxTools = %d, want 7", got.EssentialTools.MaxTools)
 	}
 	// AlwaysPresent should be a non-nil slice (JSON [] not null).
 	if got.EssentialTools.AlwaysPresent == nil {
@@ -1582,9 +1577,6 @@ func TestUpdateSmallLLMConfig_PersistsAndRebuilds(t *testing.T) {
 	if !f.config.SmallLLM.Enabled {
 		t.Error("SmallLLM.Enabled not applied")
 	}
-	if f.config.SmallLLM.EssentialTools.MaxTools != 8 {
-		t.Errorf("MaxTools = %d, want 8", f.config.SmallLLM.EssentialTools.MaxTools)
-	}
 }
 
 func TestUpdateSmallLLMConfig_NilConfig(t *testing.T) {
@@ -1604,7 +1596,7 @@ func TestUpdateSmallLLMConfig_PersistFailureRestoresInMemory(t *testing.T) {
 
 	// Establish a known baseline.
 	baseline := validSmallLLMConfig()
-	baseline.EssentialTools.MaxTools = 9
+	baseline.EssentialTools.AlwaysPresent = []string{"read_file"}
 	if err := f.UpdateSmallLLMConfig(baseline); err != nil {
 		t.Fatalf("baseline setup failed: %v", err)
 	}
@@ -1614,18 +1606,17 @@ func TestUpdateSmallLLMConfig_PersistFailureRestoresInMemory(t *testing.T) {
 	f.configPath = ""
 
 	change := validSmallLLMConfig()
-	// Must stay valid under validateSmallLLMConfig (guaranteed = 7 ≤ 10) so
-	// the persist step itself is what fails, not validation.
-	change.EssentialTools.MaxTools = 10
+	// Must stay valid under validateSmallLLMConfig so the persist step itself
+	// is what fails, not validation.
+	change.EssentialTools.AlwaysPresent = []string{"read_file", "edit_file"}
 	err := f.UpdateSmallLLMConfig(change)
 	if err == nil {
 		t.Fatal("expected error when persist fails")
 	}
 
 	// In-memory config must be restored to the baseline, not the rejected change.
-	if f.config.SmallLLM.EssentialTools.MaxTools != 9 {
-		t.Errorf("in-memory MaxTools = %d, want 9 (baseline restored on persist failure)",
-			f.config.SmallLLM.EssentialTools.MaxTools)
+	if got := f.config.SmallLLM.EssentialTools.AlwaysPresent; len(got) != 1 || got[0] != "read_file" {
+		t.Errorf("in-memory AlwaysPresent = %v, want [read_file] (baseline restored on persist failure)", got)
 	}
 	// RebuildRouter must not have been called for the failed update.
 	if mock.rebuildRouterCalls != baselineCalls {
@@ -1657,73 +1648,6 @@ func TestUpdateSmallLLMConfig_EmptyAlwaysPresentAllowed(t *testing.T) {
 	}
 	if _, statErr := os.Stat(cfgPath); statErr != nil {
 		t.Error("config file should have been written on success")
-	}
-}
-
-func TestUpdateSmallLLMConfig_NegativeMaxTools(t *testing.T) {
-	f, mock, _ := newTestAPI(t)
-
-	cfg := validSmallLLMConfig()
-	cfg.EssentialTools.MaxTools = -1
-
-	err := f.UpdateSmallLLMConfig(cfg)
-	if err == nil {
-		t.Fatal("expected error for negative max_tools")
-	}
-	if f.config.SmallLLM.Enabled {
-		t.Error("config was mutated despite validation error")
-	}
-	if mock.rebuildRouterCalls != 0 {
-		t.Errorf("RebuildRouter called %d times, want 0", mock.rebuildRouterCalls)
-	}
-}
-
-// TestUpdateSmallLLMConfig_SelfHealsMaxToolsBelowGuaranteed pins the
-// save-time reconciliation: a cap below the guaranteed set is unenforceable
-// (guaranteed tools are never trimmed), so instead of rejecting the save —
-// which locked the settings panel behind a hand-editable-only error — the
-// update path raises the cap to the guaranteed count. See
-// TestReconcileSmallLLMCap_Passthrough for the sentinel/negative guards and
-// TestValidateSmallLLMConfig_RejectsCapBelowGuaranteed for the retained
-// validator safety net.
-func TestUpdateSmallLLMConfig_SelfHealsMaxToolsBelowGuaranteed(t *testing.T) {
-	f, mock, _ := newTestAPI(t)
-
-	// validSmallLLMConfig pins 2 tools; the guaranteed set is
-	// 2 always-present ∪ 5 protected (no overlap) = 7. A cap of 6 would
-	// leave zero router-matched slots and the never-trimmed guaranteed set
-	// would exceed the budget — the save reconciles it to 7.
-	cfg := validSmallLLMConfig()
-	cfg.EssentialTools.MaxTools = 6
-
-	if err := f.UpdateSmallLLMConfig(cfg); err != nil {
-		t.Fatalf("save must succeed after reconciliation, got: %v", err)
-	}
-	if got := f.config.SmallLLM.EssentialTools.MaxTools; got != 7 {
-		t.Errorf("MaxTools = %d, want 7 (raised to the guaranteed count)", got)
-	}
-	if mock.rebuildRouterCalls != 1 {
-		t.Errorf("RebuildRouter called %d times, want 1", mock.rebuildRouterCalls)
-	}
-}
-
-// TestValidateSmallLLMConfig_RejectsCapBelowGuaranteed keeps the validator's
-// safety net covered: reconcileSmallLLMCap normally prevents this state from
-// reaching validation via UpdateSmallLLMConfig, but the validator remains the
-// invariant's single source of truth for any future caller.
-func TestValidateSmallLLMConfig_RejectsCapBelowGuaranteed(t *testing.T) {
-	cfg := validSmallLLMConfig()
-	cfg.EssentialTools.MaxTools = 6
-
-	err := validateSmallLLMConfig(cfg)
-	if err == nil {
-		t.Fatal("expected validator error when max_tools is below the guaranteed tool count")
-	}
-	if !strings.Contains(err.Error(), "guaranteed tool count") {
-		t.Errorf("error should explain the guaranteed-count constraint, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "max_tools") {
-		t.Errorf("error should name max_tools, got: %v", err)
 	}
 }
 
@@ -1960,7 +1884,6 @@ func TestSmallLLMConfig_RoundTrip_FullProfileLossless(t *testing.T) {
 		EssentialTools: SmallLLMEssentialToolsResp{
 			Enabled:       true,
 			AlwaysPresent: []string{"read_file", "edit_file", "bash_exec", "semantic_search"},
-			MaxTools:      11,
 		},
 		SystemPrompt: SmallLLMSystemPromptResp{
 			Lite:              true,
@@ -2013,9 +1936,6 @@ func TestSmallLLMConfig_RoundTrip_FullProfileLossless(t *testing.T) {
 	// Essential tools.
 	if got.EssentialTools.Enabled != want.EssentialTools.Enabled {
 		t.Errorf("EssentialTools.Enabled = %v, want %v", got.EssentialTools.Enabled, want.EssentialTools.Enabled)
-	}
-	if got.EssentialTools.MaxTools != want.EssentialTools.MaxTools {
-		t.Errorf("EssentialTools.MaxTools = %d, want %d", got.EssentialTools.MaxTools, want.EssentialTools.MaxTools)
 	}
 	// always_present round-trips the user-chosen tools losslessly AND carries
 	// the protected orchestration tools unioned in by smallLLMToResponse (so

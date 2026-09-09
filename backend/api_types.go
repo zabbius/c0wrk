@@ -220,7 +220,6 @@ type SmallLLMConfigResponse struct {
 type SmallLLMEssentialToolsResp struct {
 	Enabled             bool     `json:"enabled"`
 	AlwaysPresent       []string `json:"always_present"`
-	MaxTools            int      `json:"max_tools"`
 	CompactDescriptions bool     `json:"compact_descriptions"`
 	ProtectedTools      []string `json:"protected_tools"`
 }

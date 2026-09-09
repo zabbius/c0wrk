@@ -845,19 +845,20 @@ orchestration:
 #   enabled: false
 #
 #   # --- Essential Tools -----------------------------------------------------
-#   # Narrows the visible tool set for the model via semantic tool selection.
-#   # The router selects the tools relevant to the current task; this variant
-#   # exposes only that matched set (plus the user's always-present picks, the
-#   # protected base, and every MCP tool), reducing the JSON-schema/token
-#   # overhead injected into every prompt. There is no fixed allow-list and no
-#   # domain-specific narrowing — the router and the user decide relevance.
+#   # Narrows the visible tool set for the model via a static selection.
+#   # When active, the assigned set is a static union: the operator's
+#   # always-present picks below, the protected orchestration base
+#   # (finish, memory, ask_user), every connected MCP server's tools, and
+#   # any turn-scoped guarantees — emitted in registry order. There is no
+#   # router matching and no slot budget: nothing in the set is ever
+#   # trimmed, so a partially-exposed MCP server never happens.
 #   essential_tools:
 #     # Gates this variant in addition to the master `enabled` toggle above
 #     # (selection is applied only when both are on).
 #     enabled: false
-#     # Tools always kept regardless of router selection. Protected tools
-#     # (finish, memory, ask_user, MCP) are always included and cannot be
-#     # removed.
+#     # Tools always kept in the assigned set. Protected tools (finish,
+#     # memory, ask_user) and every MCP tool are always included as well and
+#     # cannot be removed.
 #     always_present:
 #       - read_file
 #       - write_file
@@ -871,22 +872,6 @@ orchestration:
 #       - search_facts
 #       - ask_user
 #       - finish
-#     # Slot budget for router-matched tools. The guaranteed set — always
-#     # present ∪ protected (finish, memory, ask_user) ∪ every MCP tool — is
-#     # NEVER trimmed: at most max_tools − len(guaranteed) router-matched
-#     # tools are kept, filled in registry order. Validation rejects a cap
-#     # smaller than the guaranteed set itself. 0 = unlimited. Default: 16.
-#     # A persisted cap below the guaranteed count (possible with configs
-#     # saved by older builds) is raised to it automatically on save, so a
-#     # stale config self-heals instead of rejecting every settings change.
-#     # WARNING: this budget cannot cap the guaranteed set — the 12 default
-#     # always-present tools ∪ 5 protected (4 overlap → 13 unique) plus
-#     # EVERY MCP-sourced tool are never trimmed. Several MCP servers can
-#     # push the tool set past the ~10–20-tool safe zone where tool-selection
-#     # accuracy measurably degrades. Trim always_present or the MCP server
-#     # list to compensate. See specs/domains/small-llm.md and
-#     # docs/small-llm-defaults-research.md.
-#     max_tools: 16
 #     # Replace every known builtin's full description (rubric:
 #     # purpose/when-to-use/inputs/outputs/example/anti-example, 480-1100
 #     # chars) with a one-line compact variant while this variant is active —

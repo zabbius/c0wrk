@@ -292,12 +292,6 @@ type SkillsActivatedData struct {
 	Skills []string `json:"skills"`
 }
 
-// ToolsAssignedData is the typed Data payload for "tools_assigned" events,
-// emitted when the Small-LLM domain narrowing curates the session's tool set.
-type ToolsAssignedData struct {
-	Tools []string `json:"tools"`
-}
-
 // AgentMetricsData is the typed Data payload for "agent_metrics" events,
 // emitted once per task finish or abort. It aggregates executor quality
 // counters collected over the whole session so the effect of Small-LLM (and

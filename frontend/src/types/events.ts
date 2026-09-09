@@ -148,7 +148,6 @@ export interface ToolJudgeResponseData { confirm_id: string; reasoning?: string;
 export interface ToolJudgePhaseData { tool: string }
 export interface TerminalOutputData { data: string }
 export interface SkillsActivatedData { skills: string[] }
-export interface ToolsAssignedData { tools: string[] }
 
 /** Per-run agent quality counters, as emitted in the `agent_metrics` event
  *  payload on task finish/abort. Mirrors the Go `AgentMetricsData` struct. */
@@ -400,7 +399,6 @@ export interface SessionEventMap {
    *  shutdown, StartTerminalInDir restarts). */
   readonly terminal_exited: void
   readonly skills_activated: SkillsActivatedData
-  readonly tools_assigned: ToolsAssignedData
   readonly agent_metrics: AgentMetricsData
   readonly blackboard_updated: BlackboardUpdatedData
   readonly step_todo_update: StepTodoUpdateData
@@ -674,7 +672,6 @@ export function isTaskFailedResumableData(d: unknown): d is TaskFailedResumableD
 }
 export function isTerminalOutputData(d: unknown): d is TerminalOutputData { return isObj(d) && typeof d.data === 'string' }
 export function isSkillsActivatedData(d: unknown): d is SkillsActivatedData { return isObj(d) && Array.isArray(d.skills) }
-export function isToolsAssignedData(d: unknown): d is ToolsAssignedData { return isObj(d) && Array.isArray(d.tools) }
 
 function isAgentMetricsCounters(v: unknown): v is AgentMetricsCounters {
   if (!isObj(v)) return false
