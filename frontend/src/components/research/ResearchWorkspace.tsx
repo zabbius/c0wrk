@@ -94,13 +94,15 @@ export function ResearchWorkspace() {
     useHypothesisEditor(graph, selectedNode, draft)
 
   // DAG ↔ card split: dragging (or arrow-keying) the horizontal divider
-  // between the canvas and the card panel resizes them. Bottom panel →
-  // drag down grows it (direction 1 on the y axis).
+  // between the canvas and the card panel resizes them. The divider IS the
+  // card's top edge, so it must follow the pointer/keys: dragging it up
+  // grows the card into the canvas area (direction -1 on the y axis —
+  // dragging down shrinks it back).
   const cardResize = useResize({
     initialWidth: cardHeight,
     min: RESEARCH_CARD_MIN_HEIGHT,
     max: RESEARCH_CARD_MAX_HEIGHT,
-    direction: 1,
+    direction: -1,
     axis: 'y',
     onChange: setCardHeight,
   })

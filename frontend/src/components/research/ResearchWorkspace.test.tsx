@@ -530,7 +530,7 @@ describe('ResearchWorkspace — remount survival (floating-viewer collapse)', ()
     const separator = first.container.querySelector<HTMLElement>('[role="separator"]')!
     await act(async () => {
       separator.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+        new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
       )
     })
 
@@ -563,7 +563,8 @@ describe('ResearchWorkspace — remount survival (floating-viewer collapse)', ()
     )!
     expect(save.disabled).toBe(false)
     // View state survived too: the filter still prunes the terminal node and
-    // the card panel keeps the keyboard-grown height (300 → 310).
+    // the card panel keeps the keyboard-grown height (300 → 310, ArrowUp on
+    // the divider moves it up = grow).
     expect(second.container.querySelector('[data-node-id="H-002"]')).toBeNull()
     expect(useResearchStore.getState().hideTerminal).toBe(true)
     expect(useResearchStore.getState().cardHeight).toBe(310)
@@ -713,17 +714,33 @@ describe('ResearchWorkspace — layout', () => {
     )!
     expect(cardPanel.style.height).toBe('300px')
 
-    // Keyboard resize: ArrowDown on the bottom panel's handle grows the
-    // card panel (direction +1 on the y axis).
+    // Keyboard resize: ArrowUp moves the divider up → the bottom card panel
+    // grows (direction -1 on the y axis); ArrowDown moves it down → shrink.
+    await act(async () => {
+      separator.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
+      )
+    })
+    expect(cardPanel.style.height).toBe('310px')
     await act(async () => {
       separator.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
       )
     })
-    expect(cardPanel.style.height).toBe('310px')
+    expect(cardPanel.style.height).toBe('300px')
 
-    // Drag resize: mousedown on the handle, then a document-level mousemove
-    // 100px down grows the card panel by 100px.
+    // Drag resize: the divider follows the pointer — mousedown on the handle,
+    // then a document-level mousemove 100px UP grows the card panel by 100px.
+    await act(async () => {
+      separator.dispatchEvent(
+        new MouseEvent('mousedown', { clientY: 400, bubbles: true }),
+      )
+      document.dispatchEvent(new MouseEvent('mousemove', { clientY: 300 }))
+      document.dispatchEvent(new MouseEvent('mouseup'))
+    })
+    expect(cardPanel.style.height).toBe('400px')
+
+    // And dragging the divider back DOWN 100px shrinks the card panel again.
     await act(async () => {
       separator.dispatchEvent(
         new MouseEvent('mousedown', { clientY: 400, bubbles: true }),
@@ -731,7 +748,7 @@ describe('ResearchWorkspace — layout', () => {
       document.dispatchEvent(new MouseEvent('mousemove', { clientY: 500 }))
       document.dispatchEvent(new MouseEvent('mouseup'))
     })
-    expect(cardPanel.style.height).toBe('410px')
+    expect(cardPanel.style.height).toBe('300px')
   })
 
   it('scrolls the whole card in the panel-owned custom-scrollbar region', async () => {

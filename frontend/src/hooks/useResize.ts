@@ -4,13 +4,20 @@ interface UseResizeOptions {
   initialWidth: number
   min: number
   max: number
-  /** Set to -1 for right-side panels where drag-right should shrink. Default: 1. */
+  /**
+   * Sign mapping drag-axis movement to panel size: with 1 (default) dragging
+   * in the positive axis direction grows the measured panel (left sidebar:
+   * drag-right grows it); with -1 it shrinks (right-side panel: drag-right
+   * shrinks it; bottom panel: drag-down shrinks it). Pick the sign that
+   * makes the divider FOLLOW the pointer/keys.
+   */
   direction?: 1 | -1
   /**
    * Which axis the handle drags along: 'x' (horizontal handle, resize by
    * width — the default) or 'y' (vertical handle, resize by height). The
-   * keyboard mapping follows the axis: on 'y', ArrowUp shrinks and
-   * ArrowDown grows (a bottom panel), mirroring the drag direction.
+   * keyboard mapping follows the axis: on 'x' the Left/Right pair and on
+   * 'y' the Up/Down pair move the divider along the drag axis — `direction`
+   * decides whether that movement grows or shrinks the measured panel.
    */
   axis?: 'x' | 'y'
   onChange: (width: number) => void
@@ -82,15 +89,16 @@ export function useResize({ initialWidth, min, max, direction = 1, axis = 'x', o
 
   const handleKeyDown = useCallback((e: ReactKeyboardEvent) => {
     const step = e.shiftKey ? 50 : 10
-    // Axis-aware keys: on 'x' the left/up pair shrinks; on 'y' (a bottom
-    // panel with a horizontal handle) up shrinks and down grows, matching
-    // the drag direction.
-    const shrinkKey = axis === 'y' ? 'ArrowUp' : 'ArrowLeft'
-    const growKey = axis === 'y' ? 'ArrowDown' : 'ArrowRight'
-    if (e.key === shrinkKey || (axis === 'x' && e.key === 'ArrowUp')) {
+    // Axis-aware keys: the Left/Up pair moves the divider up/left and the
+    // Right/Down pair moves it down/right along the drag axis; `direction`
+    // decides whether that grows or shrinks the measured panel — either
+    // way the divider follows the input, mirroring the drag.
+    const dividerUpKey = axis === 'y' ? 'ArrowUp' : 'ArrowLeft'
+    const dividerDownKey = axis === 'y' ? 'ArrowDown' : 'ArrowRight'
+    if (e.key === dividerUpKey || (axis === 'x' && e.key === 'ArrowUp')) {
       e.preventDefault()
       onChangeRef.current(clamp(initialWidth - step * direction, min, max))
-    } else if (e.key === growKey || (axis === 'x' && e.key === 'ArrowDown')) {
+    } else if (e.key === dividerDownKey || (axis === 'x' && e.key === 'ArrowDown')) {
       e.preventDefault()
       onChangeRef.current(clamp(initialWidth + step * direction, min, max))
     }
