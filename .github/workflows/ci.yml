@@ -130,6 +130,11 @@ jobs:
       # C toolchain (MinGW-w64 gcc, installed below) must be enabled for compile,
       # lint, test, and the wails build to succeed on Windows.
       CGO_ENABLED: "1"
+      # proxy.golang.org intermittently resets HTTP/2 streams with
+      # "stream error ... INTERNAL_ERROR; received from peer" when fetching
+      # modules (seen with the Windows-only conpty dependency). Disable HTTP/2
+      # so module downloads fall back to HTTP/1.1 and dodge that flake.
+      GODEBUG: "http2client=0"
     steps:
       # Preserve LF line endings: MSYS2/Git may otherwise CRLF-convert checked-out
       # sources, which breaks shell scripts and Go tooling that assume LF.
