@@ -984,16 +984,26 @@ func (m *Manager) NotReadyError() error {
 	return errors.New(NotReadyMessage(m.GetIndexStatus()))
 }
 
-// Reindex triggers a full rebuild of the vector index for the given
-// workspace. The caller is responsible for passing the active workspace
-// path. Returns an error if no indexer is currently configured.
-func (m *Manager) Reindex(ctx context.Context, workspacePath string) error {
+// Reindex triggers a full reindex of the vector index for the active project.
+// It reconciles the current index against the workspace, re-indexing only
+// changed/new/deleted files; when no index exists yet (empty collection) it
+// falls back to a full build from scratch. The workspace path is the one stored
+// during SwitchProject and is read together with the indexer so a pass always
+// targets the project the indexer belongs to.
+//
+// Returns an error if no indexer is currently configured (i.e. no project has
+// been activated yet).
+func (m *Manager) Reindex(ctx context.Context) error {
 	m.mu.RLock()
 	idx := m.indexer
+	workspacePath := m.workspacePath
 	m.mu.RUnlock()
 
 	if idx == nil {
 		return errors.New("no indexer configured; open a project first")
+	}
+	if workspacePath == "" {
+		return errors.New("no active workspace; open a project first")
 	}
 
 	// Cancel any in-flight indexing.
@@ -1007,7 +1017,8 @@ func (m *Manager) Reindex(ctx context.Context, workspacePath string) error {
 
 	m.stopDebounce()
 
-	// Reset the collection and run a full index.
+	// Start a fresh indexing pass: a full build when the collection is empty,
+	// otherwise a validation-based reconcile of the whole workspace.
 	indexCtx, indexCancel := context.WithCancel(ctx)
 	m.mu.Lock()
 	m.indexCancel = indexCancel

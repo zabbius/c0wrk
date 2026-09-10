@@ -163,3 +163,26 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 
 	return result
 }
+
+// ReindexVectorIndex forces a full reindex of the active project's vector
+// index. It reconciles the existing index against the workspace, re-indexing
+// changed/new/deleted files; when no index exists yet (empty collection) it
+// falls back to a full build from scratch. The pass runs in the background and
+// streams progress through vector_index:status events.
+//
+// It returns an error when the vector index is unavailable: No Project (CHAT
+// mode, indexing is disabled) or no wired vector manager (before startup's
+// background vector init completes).
+func (f *FrontendAPI) ReindexVectorIndex() error {
+	// No Project (CHAT mode): the vector index is disabled — nothing to reindex.
+	if f.isNoProject() {
+		return errors.New("vector index is unavailable in No Project mode")
+	}
+
+	vm := f.getVectorManager()
+	if vm == nil {
+		return errors.New("vector index not available")
+	}
+
+	return vm.Reindex(f.ctx())
+}

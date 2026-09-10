@@ -470,6 +470,10 @@ export function Rebase(arg1) {
   return window['go']['desktop']['App']['Rebase'](arg1);
 }
 
+export function ReindexVectorIndex() {
+  return window['go']['desktop']['App']['ReindexVectorIndex']();
+}
+
 export function RemoveAttachment(arg1, arg2) {
   return window['go']['desktop']['App']['RemoveAttachment'](arg1, arg2);
 }

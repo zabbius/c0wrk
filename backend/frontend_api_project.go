@@ -751,7 +751,7 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 				State:        string(state),
 				Phase:        string(phase),
 				Indices:      []string{"vector", "lexical"},
-				Progress:     progressPercent(indexed, total),
+				Progress:     progressFraction(indexed, total),
 				FilesIndexed: indexed,
 				TotalFiles:   total,
 				CurrentFile:  file,
@@ -773,12 +773,18 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 	return nil
 }
 
-// progressPercent calculates a percentage value for indexing progress.
-func progressPercent(indexed, total int) float64 {
+// progressFraction calculates indexing progress as a fraction in [0, 1].
+//
+// It deliberately mirrors the Progress value returned by GetVectorIndexStatus
+// (FilesIndexed / TotalFiles) and the frontend contract: IndexingStatus.tsx
+// renders the bar as `progress * 100` percent. Returning a 0–100 percentage
+// here would push the bar to 100% as soon as ~1% of files were indexed and
+// pin it there (the track clips an over-wide fill) until indexing finished.
+func progressFraction(indexed, total int) float64 {
 	if total == 0 {
 		return 0
 	}
-	return float64(indexed) / float64(total) * 100
+	return float64(indexed) / float64(total)
 }
 
 // SaveProjectSwitchState persists project-scoped UI switch state.

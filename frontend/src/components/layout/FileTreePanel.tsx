@@ -5,13 +5,15 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { listDirectory, getGitStatus, watchDirectory, unwatchDirectory, getSessionWorkspace } from '@/api/workspace'
+import { reindexVectorIndex } from '@/api/vector'
 import { subscribe } from '@/api/runtime'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { Button } from '@/components/ui/button'
 import { FileIcon } from './FileIcon'
 import { FileTreeContextMenu } from './FileTreeContextMenu'
-import { ChevronRight, Loader2, FolderTree, RotateCw, TriangleAlert } from 'lucide-react'
+import { ChevronRight, DatabaseZap, Loader2, FolderTree, RotateCw, TriangleAlert } from 'lucide-react'
 import { useFileSearch } from '@/hooks/useFileSearch'
+import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import type { FileEntry, GitStatusEntry } from '@/types/models'
 
 /** Propagate git status up to parent directories so folders show change indicators.
@@ -273,6 +275,51 @@ export function FileTreePanel() {
     return projects?.find((p) => p.id === activeProjectId)?.is_no_project === true
   }, [activeProjectId, projects])
 
+  // The explorer header hosts a force-full-reindex action (replacing the old
+  // manual file-tree refresh — the tree already reloads itself on
+  // `workspace:tree_changed`). The vector index state drives it: it is disabled
+  // and shown spinning while a pass is already in flight (or a request is
+  // pending — see the optimistic latch below), and unavailable for
+  // No Project (CHAT mode), where the vector index is disabled.
+  const indexState = useVectorIndexStore((s) => s.status.state)
+  const isIndexing = indexState === 'indexing' || indexState === 'reindexing'
+  const reindexUnavailable = isNoProject || !activeProjectId
+  // Optimistic latch: between the click and the arrival of the first
+  // `vector_index:status` event the store still reports the previous (non-busy)
+  // state, so without this flag a quick second click would fire a duplicate
+  // reindex RPC. It is released as soon as the store reflects the busy state
+  // (isIndexing) — from then on isIndexing owns the disabled state — or when
+  // the project becomes unavailable or the RPC rejects.
+  const [reindexRequested, setReindexRequested] = useState(false)
+  const reindexBusy = isIndexing || reindexRequested
+  const reindexDisabled = reindexUnavailable || reindexBusy
+  const reindexTitle = reindexBusy
+    ? 'Reindexing...'
+    : reindexUnavailable
+      ? 'Reindex unavailable'
+      : 'Force full project reindex'
+
+  useEffect(() => {
+    // The backend emits a busy status (indexing/reindexing) as the first event
+    // of a pass; once the store reflects it the latch is redundant. A switch to
+    // an unavailable project (No Project / no active project) also invalidates
+    // a pending request.
+    if (isIndexing || reindexUnavailable) setReindexRequested(false)
+  }, [isIndexing, reindexUnavailable])
+
+  const handleReindex = useCallback(() => {
+    // Fire-and-forget: the pass runs in the background and reports progress via
+    // vector_index:status. Guard against re-entry before the store has observed
+    // the busy status (see reindexRequested above).
+    if (isIndexing || reindexRequested) return
+    setReindexRequested(true)
+    reindexVectorIndex().catch(() => {
+      // The request never reached a running pass (No Project / no wired
+      // manager / transient failure) — release the latch so a retry is possible.
+      setReindexRequested(false)
+    })
+  }, [isIndexing, reindexRequested])
+
   // Project-level workspace path (correct for regular projects;
   // for No Project this is the empty placeholder directory).
   const projectWorkspacePath = activeProjectId && projects
@@ -395,10 +442,11 @@ export function FileTreePanel() {
             variant="ghost"
             size="sm"
             className="h-7 px-2"
-            title="Refresh file tree"
-            onClick={() => { void reloadWorkspaceTree() }}
+            title={reindexTitle}
+            disabled={reindexDisabled}
+            onClick={handleReindex}
           >
-            <RotateCw className="size-3.5" />
+            {reindexBusy ? <Loader2 className="size-3.5 animate-spin" /> : <DatabaseZap className="size-3.5" />}
           </Button>
         }
       />

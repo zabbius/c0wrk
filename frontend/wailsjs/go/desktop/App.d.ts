@@ -243,6 +243,8 @@ export function ReadFileAsDataURL(arg1:string):Promise<string>;
 
 export function Rebase(arg1:string):Promise<void>;
 
+export function ReindexVectorIndex():Promise<void>;
+
 export function RemoveAttachment(arg1:string,arg2:string):Promise<void>;
 
 export function RemoveHardenGitRepo(arg1:string):Promise<void>;

@@ -1168,3 +1168,35 @@ func TestSwitchProject_AcquireSwitchLockTimesOut(t *testing.T) {
 		t.Fatalf("second SwitchProject blocked for %v, want it bounded by the 200ms deadline", elapsed)
 	}
 }
+
+// TestProgressFraction pins the indexing-progress unit contract: the
+// vector_index:status event's Progress field MUST be a fraction in [0,1], not
+// a 0–100 percentage. The frontend renders the status-bar fill as
+// `progress * 100` percent (IndexingStatus.tsx), exactly like
+// GetVectorIndexStatus; regressing to a percentage makes the bar read full as
+// soon as ~1% of files are indexed and pin it there until indexing finishes.
+func TestProgressFraction(t *testing.T) {
+	tests := []struct {
+		name    string
+		indexed int
+		total   int
+		want    float64
+	}{
+		{"unknown total yields zero", 0, 0, 0},
+		{"nothing indexed", 0, 200, 0},
+		{"one percent is not full", 2, 200, 0.01},
+		{"halfway", 100, 200, 0.5},
+		{"complete", 200, 200, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := progressFraction(tt.indexed, tt.total)
+			if diff := got - tt.want; diff < -1e-9 || diff > 1e-9 {
+				t.Fatalf("progressFraction(%d, %d) = %v, want %v", tt.indexed, tt.total, got, tt.want)
+			}
+			if got > 1 {
+				t.Fatalf("progressFraction must never exceed 1 (fraction, not percent); got %v", got)
+			}
+		})
+	}
+}

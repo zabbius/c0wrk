@@ -160,6 +160,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | --------------------- | ------------------------------------------------------------- | ----------------------------- | --------------------------------------------------- |
 | `SearchVectorStore`   | `SearchRequest{query, top_k, file_pattern, must_match, mode}` | ([]VectorStoreEntry, error)   | Hybrid search/browse; mode= hybrid\|vector\|lexical |
 | `GetVectorIndexStatus`| —                                                             | VectorIndexStatus             | Get vector index state/progress (getter, no error)  |
+| `ReindexVectorIndex`  | —                                                             | error                         | Force a full reindex of the active project's index: reconciles changed/new/deleted files, falling back to a full build when no index exists yet. Rejected for No Project (CHAT) mode |
 
 ### Git (`backend/frontend_api_git.go`)
 
