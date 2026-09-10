@@ -132,13 +132,21 @@ type compositeTrajectoryStore struct {
 	store  TaskPersistence
 	logger *slog.Logger
 
+	// mu serializes the async-writer lifecycle. It guards the wg Add/Wait
+	// transitions (Flush must never Wait while a Sync Adds — the WaitGroup
+	// reuse rule) and keeps two full-snapshot upserts from interleaving on the
+	// same taskID. It is required because async subagents inherit this store
+	// through the context (see TrajectoryStore's concurrency contract in
+	// sp4rk), so Sync and Flush may run on different goroutines.
+	mu sync.Mutex
+
 	// sem limits concurrent DB writes to at most one. Send (non-blocking) to
 	// acquire a write slot; receive releases it from the writer goroutine.
 	sem chan struct{}
 
 	// wg tracks the in-flight async writer so Flush can drain it before
 	// performing a final synchronous write. Add(1) happens only when Sync
-	// acquires the slot; Done() fires when the write goroutine exits.
+	// acquires the slot while holding mu; Done() fires when the writer exits.
 	wg sync.WaitGroup
 }
 
@@ -195,12 +203,18 @@ func (c *compositeTrajectoryStore) Sync(steps []agent.Step) {
 		return
 	}
 
+	// Serialize the writer lifecycle against Flush: async subagents share this
+	// store, so a concurrent Flush may be draining wg — hold mu so our Add can
+	// never race its Wait.
+	c.mu.Lock()
+
 	// Acquire the single write slot without blocking. If a previous write is
 	// still in flight, skip — the next Sync (or the final Flush) persists a
 	// fresher snapshot.
 	select {
 	case c.sem <- struct{}{}:
 	default:
+		c.mu.Unlock()
 		return
 	}
 
@@ -211,6 +225,7 @@ func (c *compositeTrajectoryStore) Sync(steps []agent.Step) {
 	copy(snapshot, steps)
 
 	c.wg.Add(1)
+	c.mu.Unlock()
 	go func() {
 		defer c.wg.Done()
 		defer func() { <-c.sem }()
@@ -235,9 +250,15 @@ func (c *compositeTrajectoryStore) Flush() {
 		return
 	}
 
-	// Wait for the outstanding async write to finish before doing our own: two
-	// concurrent full-snapshot upserts on the same taskID could interleave and
-	// leave the DB with a stale ordering.
+	// Serialize against concurrent Syncs: async subagents share this store, so
+	// hold mu across the drain + snapshot + final write. This prevents an Add
+	// from racing the Wait (WaitGroup reuse rule) and keeps a second upsert
+	// from interleaving with ours (two full-snapshot writes on the same taskID
+	// could otherwise leave the DB with a stale ordering).
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Wait for the outstanding async write to finish before doing our own.
 	c.wg.Wait()
 
 	steps := c.memory.Steps()

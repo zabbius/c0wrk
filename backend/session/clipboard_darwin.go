@@ -23,6 +23,15 @@ func osa(ctx context.Context, script string, args ...string) (string, error) {
 	return strings.TrimRight(string(out), "\n"), nil
 }
 
+// pasteboardExpr is the JXA expression that resolves the NSPasteboard the
+// clipboard helpers below read from and write to. Production uses the general
+// (system) pasteboard. The darwin clipboard tests override it to a private,
+// uniquely-named pasteboard so they can exercise the real osascript/AppKit
+// path WITHOUT ever reading or writing the user's actual system clipboard (a
+// previous version staged its fixtures on the general pasteboard, which
+// silently overwrote — and could race — whatever the user had copied).
+var pasteboardExpr = "$.NSPasteboard.generalPasteboard"
+
 // clipboardImage reads image data from the macOS pasteboard. It prefers
 // public.png and falls back to public.tiff (the format used by screenshots),
 // converting TIFF to PNG via NSBitmapImageRep. ok is true only when image data
@@ -39,9 +48,9 @@ func clipboardImage(ctx context.Context) (data []byte, mediaType string, ok bool
 	_ = f.Close()
 	defer func() { _ = os.Remove(tmpPath) }()
 
-	const script = `function run(argv){
+	script := `function run(argv){
 		ObjC.import('AppKit');
-		var pb=$.NSPasteboard.generalPasteboard;
+		var pb=` + pasteboardExpr + `;
 		var png=pb.dataForType('public.png');
 		if(!png.isNil()){ png.writeToFileAtomically(argv[0],true); return 'png'; }
 		var tiff=pb.dataForType('public.tiff');
@@ -75,9 +84,9 @@ func clipboardImage(ctx context.Context) (data []byte, mediaType string, ok bool
 // link from a browser, exposed as a public.url NSURL) are skipped so they fall
 // through to the text path instead of being treated as non-existent file paths.
 func clipboardFiles(ctx context.Context) (paths []string, ok bool, err error) {
-	const script = `function run(){
+	script := `function run(){
 		ObjC.import('AppKit');
-		var pb=$.NSPasteboard.generalPasteboard;
+		var pb=` + pasteboardExpr + `;
 		var urls=pb.readObjectsForClassesOptions($.NSArray.arrayWithObject($.NSURL),$.NSDictionary.dictionary);
 		if(urls.isNil()){ return ''; }
 		var out=[];
@@ -112,9 +121,9 @@ func clipboardFiles(ctx context.Context) (paths []string, ok bool, err error) {
 // clipboardText reads plain text from the pasteboard. ok is true only when
 // non-empty text is present.
 func clipboardText(ctx context.Context) (text string, ok bool, err error) {
-	const script = `function run(){
+	script := `function run(){
 		ObjC.import('AppKit');
-		var pb=$.NSPasteboard.generalPasteboard;
+		var pb=` + pasteboardExpr + `;
 		var s=pb.stringForType('public.utf8-plain-text');
 		return s.isNil()?'':s.js;
 	}`
