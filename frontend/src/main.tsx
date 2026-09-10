@@ -6,12 +6,26 @@ import { registerLanguages } from './lib/hljsLanguages'
 import '@xterm/xterm/css/xterm.css'
 import './index.css'
 import { useThemeStore, applyThemeToDocument } from './stores/themeStore'
+import { useUiScaleStore, applyScaleToDocument } from './stores/uiScaleStore'
+import { installFloatingUiZoomCompensation } from './lib/floatingUiZoom'
 
 // Apply the persisted theme before first paint to avoid a flash of the
 // default (dark) theme. Accessing getState() rehydrates from localStorage
 // synchronously; applyThemeToDocument writes <html data-theme> so the CSS
 // token override is in place before React renders anything.
 applyThemeToDocument(useThemeStore.getState().theme)
+
+// Same first-paint contract as the theme above: apply the persisted UI scale
+// (<html style="zoom">) before React renders, so the layout never flashes at
+// 100% for users who changed the zoom level.
+applyScaleToDocument(useUiScaleStore.getState().scale)
+
+// Patch @floating-ui/dom's shared platform so popovers/tooltips/menus
+// position correctly under the zoom: floating-ui measures references in
+// visual px (getBoundingClientRect) but the caller writes its result into
+// style.left/top in layout px. Must run before any popover opens; the
+// wrappers read the live zoom factor on every call.
+installFloatingUiZoomCompensation()
 
 registerLanguages()
 

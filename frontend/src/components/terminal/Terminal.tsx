@@ -6,6 +6,7 @@ import { useTerminalEvents } from '@/hooks/events/useTerminalEvents'
 import { useXTermTheme } from '@/hooks/useXTermTheme'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useThemeStore } from '@/stores/themeStore'
+import { useUiScaleStore } from '@/stores/uiScaleStore'
 import { logger } from '@/lib/logger'
 
 interface TerminalProps {
@@ -193,6 +194,49 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
             termRef.current.options.theme = theme
         }
     }, [theme])
+
+    // Re-fit when the app-wide UI scale (CSS zoom on <html>) changes: zoom
+    // resizes the container's layout box, which the container's own
+    // ResizeObserver already reports — but the renderer's char measurement
+    // and the canvas refresh can lag the style application by a frame.
+    // Scheduling the fit on the next animation frame (with a timeout-0
+    // fallback for environments without rAF, e.g. tests) lets the zoomed
+    // layout settle first, preventing a stale rows/cols fit and the
+    // "terminal larger than its box" overflow the stale fit causes.
+    const uiScale = useUiScaleStore((s) => s.scale)
+    const fitScheduledRef = useRef(false)
+    useEffect(() => {
+        const scheduleFit = () => {
+            if (fitScheduledRef.current) return
+            fitScheduledRef.current = true
+            const runFit = () => {
+                fitScheduledRef.current = false
+                const fitAddon = fitAddonRef.current
+                const term = termRef.current
+                if (!fitAddon || !term) return
+                try {
+                    fitAddon.fit()
+                    const { cols, rows } = term
+                    if (cols > 0 && rows > 0) {
+                        terminalResize(sessionId, cols, rows).catch((err) => {
+                            logger.error('Terminal resize error:', err)
+                        })
+                    }
+                } catch {
+                    // FitAddon can throw if terminal is not fully initialized
+                }
+            }
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(runFit)
+            } else {
+                setTimeout(runFit, 0)
+            }
+        }
+        scheduleFit()
+        return () => {
+            fitScheduledRef.current = false
+        }
+    }, [uiScale, sessionId])
 
     // Watch for "Open in Terminal" requests from the file-tree context menu
     // that arrive after the terminal is already running. The initial mount
