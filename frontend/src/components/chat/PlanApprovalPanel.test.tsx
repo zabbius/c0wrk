@@ -160,4 +160,16 @@ describe('PlanApprovalPanel', () => {
       cleanup()
     }
   })
+
+  it('renders the plan body as Markdown instead of raw preformatted text', () => {
+    try {
+      // The plan is model-authored Markdown (SerializePlan) — it must be
+      // rendered to HTML like the plan-step tooltips, not shown as raw text.
+      expect(container.querySelector('pre')).toBeNull()
+      const heading = container.querySelector('h1')
+      expect(heading?.textContent).toBe('Plan')
+    } finally {
+      cleanup()
+    }
+  })
 })

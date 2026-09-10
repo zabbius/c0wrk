@@ -142,6 +142,26 @@ describe('reconstructContent (via chatMessageToUI)', () => {
     expect(result.content).toBe('')
   })
 
+  it('plan_review reconstructs plan_content Markdown from metadata', () => {
+    const payload = JSON.stringify({
+      request_id: 'req-1',
+      plan_path: '/ws/.agents/plans/plan.md',
+      plan_content: '# Plan\n\n## step_1 Init\n\n- do a thing',
+    })
+    const result = chatMessageToUI(makeMsg({ role: 'plan_review', content: payload, metadata: payload }))
+    expect(result.content).toBe('# Plan\n\n## step_1 Init\n\n- do a thing')
+    expect(result.id).toBe('plan-review-req-1')
+  })
+
+  it('plan_review falls back to parsing legacy JSON content when metadata lacks plan_content', () => {
+    const result = chatMessageToUI(makeMsg({
+      role: 'plan_review',
+      content: JSON.stringify({ request_id: 'req-2', plan_content: '# Legacy Plan' }),
+      metadata: JSON.stringify({ request_id: 'req-2' }),
+    }))
+    expect(result.content).toBe('# Legacy Plan')
+  })
+
   it('retry with attempt and max_attempts', () => {
     const result = chatMessageToUI(makeMsg({
       role: 'retry',

@@ -7,6 +7,7 @@ import { getPlanReviewResolution } from '@/types/messages'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { Markdown } from '@/lib/markdownConfig'
 
 interface PlanApprovalPanelProps {
   item: Extract<DisplayItem, { kind: 'plan_review' }>
@@ -139,7 +140,7 @@ export function PlanApprovalPanel({ item }: PlanApprovalPanelProps) {
         )}
         {item.message.content && (
           <div className="max-h-48 overflow-y-auto custom-scrollbar rounded-md border border-border bg-background p-2">
-            <pre className="text-xs whitespace-pre-wrap font-mono">{item.message.content}</pre>
+            <Markdown content={item.message.content} compact />
           </div>
         )}
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">

@@ -113,6 +113,10 @@ export function handlePlanReviewEvent(sessionId: string, data: PlanReviewReadyDa
     metadata: {
       request_id: data.request_id,
       plan_path: data.plan_path,
+      // Mirror the persisted metadata shape (the Go persister writes the full
+      // payload, including plan_content, as metadata) so live and reloaded
+      // rows carry the same fields.
+      plan_content: data.plan_content,
       resolved: false,
     } as Record<string, unknown>,
     timestamp: Date.now(),
