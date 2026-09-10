@@ -1172,6 +1172,11 @@ func (a *App) startVectorIndexBackground(
 		// this here instead of in a separate goroutine eliminates the race where
 		// Shutdown runs Cleanup before SetVectorManager completes (W3).
 		a.Lifecycle().SetVectorManager(vectorMgr)
+		// The frontend's first SwitchProject (fired on backend:ready) almost
+		// certainly ran before the line above and skipped vector setup because
+		// the manager was still nil. Apply that deferred setup now, so the
+		// startup project is indexed without a manual project switch.
+		a.Lifecycle().InitVectorIndexForActiveProject()
 		log.Info("background init complete", "phase", "vector_index", "elapsed_ms", time.Since(startTime).Milliseconds())
 	}()
 }

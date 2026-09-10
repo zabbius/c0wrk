@@ -150,6 +150,19 @@ type FrontendAPI struct {
 	vectorManager   *vectorindex.Manager
 	vectorManagerMu sync.RWMutex
 
+	// vectorSetupMu guards deferredVectorProject — the handshake that lets a
+	// project switch whose vector-index setup was skipped (the manager was
+	// still being built by the background ONNX init) be applied later, once the
+	// manager is wired in via SetVectorManager. Acquired OUTSIDE
+	// vectorManagerMu (vectorSetupMu → vectorManagerMu) and OUTSIDE switchMu
+	// (switchMu → vectorSetupMu) to keep one global lock order.
+	vectorSetupMu sync.Mutex
+	// deferredVectorProject is the project whose vector-index setup was
+	// skipped because getVectorManager() was nil (background ONNX init still
+	// in flight). Drained once by InitVectorIndexForActiveProject when the
+	// manager becomes available. Nil when no setup is pending.
+	deferredVectorProject *project.ProjectInfo
+
 	// Self-update state. updateMu guards lastCheckResult and
 	// downloadedArchivePath, which carry data across the stateful
 	// CheckForUpdates → DownloadUpdate → ApplyUpdate RPC sequence.
@@ -447,4 +460,53 @@ func (f *FrontendAPI) getVectorManager() *vectorindex.Manager {
 	f.vectorManagerMu.RLock()
 	defer f.vectorManagerMu.RUnlock()
 	return f.vectorManager
+}
+
+// InitVectorIndexForActiveProject applies a project-switch vector setup that was
+// skipped because the vector manager was not yet wired in. It is called by the
+// desktop background ONNX goroutine immediately after SetVectorManager.
+//
+// Why it is needed: the frontend issues its first SwitchProject on
+// backend:ready, which almost always arrives BEFORE the background ONNX init
+// finishes (embedder load + manager construction). switchProjectSetupVector then
+// sees getVectorManager() == nil and skips setup, so the startup project's index
+// is never built and semantic search stays unavailable until the user manually
+// switches projects. This drains the setup deferred by that skipped switch.
+//
+// It serializes with SwitchProject via switchMu, so it runs either entirely
+// before the in-flight switch (the deferred slot is then empty and the switch's
+// own setup observes the now-ready manager) or entirely after it (the deferred
+// slot holds the destination project and is applied here). It is a no-op when
+// nothing was deferred (the switch won the race and initialized the index
+// itself), for No Project (CHAT mode), and when no project is active.
+func (l *FrontendAPILifecycle) InitVectorIndexForActiveProject() {
+	f := l.f
+	if f == nil || f.getVectorManager() == nil {
+		return
+	}
+
+	f.switchMu.Lock()
+	defer f.switchMu.Unlock()
+
+	f.vectorSetupMu.Lock()
+	p := f.deferredVectorProject
+	f.deferredVectorProject = nil
+	f.vectorSetupMu.Unlock()
+	if p == nil {
+		return
+	}
+
+	// Only apply when the deferred project is still the active one. A
+	// superseding switch (serialized behind switchMu above) would have already
+	// run its own setup and cleared the deferred slot.
+	f.activeProjectMu.RLock()
+	activeID := f.activeProjectID
+	f.activeProjectMu.RUnlock()
+	if p.ID != activeID {
+		return
+	}
+
+	if err := f.switchProjectSetupVector(p); err != nil {
+		f.log().Warn("deferred vector index setup failed", "project", p.ID, "error", err)
+	}
 }

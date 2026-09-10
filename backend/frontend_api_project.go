@@ -714,10 +714,29 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 // is reset to an empty state (clearing any stale CODE-project collection) and
 // a disabled status is emitted, but no index is built and no embedder is loaded.
 func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
+	// Handshake with the background ONNX init. The vector manager is created
+	// asynchronously (its own goroutine, after EventBackendReady) and is usually
+	// NOT ready when the frontend fires its first SwitchProject on
+	// backend:ready. Rather than silently dropping the setup (which left the
+	// startup project unindexed until the user manually switched projects), record
+	// the project so InitVectorIndexForActiveProject applies it once the manager
+	// is wired in. The read-and-record is atomic under vectorSetupMu so it cannot
+	// race that drain.
+	f.vectorSetupMu.Lock()
 	vm := f.getVectorManager()
 	if vm == nil {
+		if p.IsNoProject {
+			// CHAT mode never indexes: drop any pending setup.
+			f.deferredVectorProject = nil
+		} else {
+			f.deferredVectorProject = p
+		}
+		f.vectorSetupMu.Unlock()
 		return nil
 	}
+	// Manager is ready: this switch supersedes any deferred setup.
+	f.deferredVectorProject = nil
+	f.vectorSetupMu.Unlock()
 
 	// No Project (CHAT mode): vector indexing is disabled. Delegate to the
 	// manager, which short-circuits without running git branch detection,

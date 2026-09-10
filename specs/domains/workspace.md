@@ -160,9 +160,12 @@ Lifecycle:
 App started
   → ONNX embedder loads in background goroutine (after EventBackendReady)
   → Vector index manager created and wired into FrontendAPI via SetVectorManager()
+  → InitVectorIndexForActiveProject applies any setup deferred by the frontend's
+    first SwitchProject (which fires on backend:ready, before the manager exists —
+    switchProjectSetupVector records the project instead of silently skipping it)
   → Emit vector_index:status event (state=ready)
 
-Project switched (after vector index ready)
+Project switched (manager ready)
   → No Project: switch to empty collection (clears stale CODE-project results)
   → vectorindex.CurrentBranch(ctx, workspacePath) via git CLI
   → core/vectorindex manager: SwitchBranch(branch) → Start indexing (background goroutine)
