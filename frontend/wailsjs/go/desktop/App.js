@@ -410,6 +410,10 @@ export function ListSkills() {
   return window['go']['desktop']['App']['ListSkills']();
 }
 
+export function ListVectorIndexGPUs() {
+  return window['go']['desktop']['App']['ListVectorIndexGPUs']();
+}
+
 export function Merge(arg1) {
   return window['go']['desktop']['App']['Merge'](arg1);
 }
@@ -692,6 +696,10 @@ export function UpdateSecuritySettings(arg1) {
 
 export function UpdateSmallLLMConfig(arg1) {
   return window['go']['desktop']['App']['UpdateSmallLLMConfig'](arg1);
+}
+
+export function UpdateVectorIndexSettings(arg1) {
+  return window['go']['desktop']['App']['UpdateVectorIndexSettings'](arg1);
 }
 
 export function UpdateWorkDirectoryDescription(arg1, arg2, arg3, arg4) {

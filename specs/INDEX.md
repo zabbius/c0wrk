@@ -29,6 +29,7 @@
 | Crash/exit diagnostics (panic capture, unclean-shutdown detection, why the app quit) | [domains/crash-logging.md](domains/crash-logging.md) |
 | Goal mode (multi-turn objective loop)    | [domains/goal-mode.md](domains/goal-mode.md), [decisions/019-goal-mode.md](decisions/019-goal-mode.md) |
 | Small-LLM profile (tuning for small/local models) | [domains/small-llm.md](domains/small-llm.md), [decisions/022-small-llm-profile.md](decisions/022-small-llm-profile.md) |
+| Test environment conventions (LC_ALL=C for locale-sensitive tests, isolated $HOME for whole-app test runs) | [domains/testing.md](domains/testing.md) |
 | File & image attachments (pending → blackboard / content blocks), vision-assisted document conversion & its egress  | [domains/session-lifecycle.md](domains/session-lifecycle.md), [domains/memory/blackboard.md](domains/memory/blackboard.md) |
 | File tree, vector index, workspace       | [domains/workspace.md](domains/workspace.md)                             |
 | Embedding execution provider (GPU/CUDA), `fetch-onnx-gpu` packaging, embedding fallback semantics | [decisions/036-gpu-embedding-provider.md](decisions/036-gpu-embedding-provider.md), [domains/workspace.md](domains/workspace.md) (Embedding Execution Provider section) |
@@ -111,6 +112,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [session-lifecycle.md](domains/session-lifecycle.md) - Session and task lifecycle
 - [goal-mode.md](domains/goal-mode.md) - Goal mode: multi-turn agent-driven loop over a user-approved success condition (derivation → approval → self-eval loop, budgets, anti-spin, pause/resume)
 - [small-llm.md](domains/small-llm.md) - Small-LLM profile: master-toggle + five variants (essential-tools narrowing, system-prompt Lite swap, sampling override, loop hardening, context management) for tuning c0wrk to small/local models
+- [testing.md](domains/testing.md) - Test environment conventions: LC_ALL=C for locale-sensitive test suites, isolated $HOME for manual whole-app test runs (stateless `~/.c0wrk/tools/` copy)
 - [verify-on-edit.md](domains/verify-on-edit.md) - Verify on edit: user-configured test/linter command runs after successful file edits, output injected as a system observation (edit → verify → result; config-only command, all hard security gates intact)
 - [tool-manager.md](domains/tool-manager.md) - External binary dependency manager (rg/uv/markitdown): pinned-version reconciliation, SHA256 verification, no-auto-update supply-chain guarantee
 - [workspace.md](domains/workspace.md) - File tree, vector index, workspace watcher
