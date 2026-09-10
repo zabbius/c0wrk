@@ -17,6 +17,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/openai/openai-go v1.12.0
 	github.com/philippgille/chromem-go v0.7.0
+	github.com/v0lka/c0wrk v0.0.0-00010101000000-000000000000
 	github.com/v0lka/sp4rk v0.0.0-20260909120503-5e2a0349d02d
 	github.com/wailsapp/wails/v2 v2.15.0
 	golang.org/x/image v0.45.0
@@ -88,7 +89,6 @@ require (
 	github.com/pkoukk/tiktoken-go v0.1.8 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/rogpeppe/go-internal v1.13.1 // indirect
 	github.com/samber/lo v1.49.1 // indirect
 	github.com/schollz/progressbar/v2 v2.15.0 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
@@ -117,4 +117,6 @@ require (
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
-replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk staging
+replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk v0.0.0-20260910210425-1c3aa3e9df74
+
+replace github.com/v0lka/c0wrk => github.com/zabbius/c0wrk v0.7.4-0.20260910230055-cdf01febc675
