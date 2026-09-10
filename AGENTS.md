@@ -52,7 +52,8 @@ Use the Makefile; it handles platform-specific ONNX Runtime bootstrap across the
 - `make vulncheck` — Go dependency vulnerability gate (`govulncheck`, version pinned in the Makefile). Fails when a vulnerability from the official Go vulnerability database is reachable from this module's code. The CI `security` job runs the exact same command. **Mandatory before every PR** — a stale Go toolchain (go.mod below the latest security patch) fails this gate even when lint and test are clean. On Windows (no make): `go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...`
 - `make fmt-check` — fails when `gofmt -l` reports any Go file under the root package, `internal/`, `core/`, `backend/`, or `desktop/`
 - `make build` — installs frontend deps, runs `wails build` with version ldflags, then `make fetch-onnx` + `make fetch-embedding-model`
-- `make dev-desktop` — Vite dev server only (`cd frontend && npm run dev`); for full hot-reload use `wails dev` from repo root
+- `make dev-desktop` — full desktop hot-reload loop (`wails dev` with the platform build tags; on Linux `-tags webkit2_41` is mandatory or the cgo build fails against webkit2gtk-4.0 and `wails dev` hangs without a window)
+- `make dev-frontend` — Vite dev server only (`cd frontend && npm run dev`); no Go bridge, so the UI stays on the startup splash
 - `make fetch-onnx` — downloads ONNX Runtime 1.28.1 into `.cache/` and copies it into the platform build output. **Required after every direct `wails build`** or the app won't launch.
 - `make bump` — resolves the latest `github.com/v0lka/sp4rk` remote commit and updates the module with `GOWORK=off`; use only at the release point of a cross-repo development cycle
 - `make clean` — removes `build/bin`, `.cache`, `frontend/dist`

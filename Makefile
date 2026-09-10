@@ -1,4 +1,4 @@
-.PHONY: build test bench-startup lint fmt-check vulncheck dev-desktop bump fetch-onnx fetch-onnx-gpu fetch-embedding-model clean-onnx clean frontend-deps
+.PHONY: build test bench-startup lint fmt-check vulncheck dev-desktop dev-frontend bump fetch-onnx fetch-onnx-gpu fetch-embedding-model clean-onnx clean frontend-deps
 
 # govulncheck version pinned for reproducible vulnerability scans (CI runs the
 # same `make vulncheck` command; upgrade deliberately, both repos in lockstep).
@@ -225,7 +225,20 @@ fmt-check:
 		exit 1; \
 	fi
 
+# Full desktop hot-reload loop: builds and runs the Wails app with the live
+# frontend dev server attached. WAILS_TAGS is required on Linux — without
+# `-tags webkit2_41` the cgo build fails against webkit2gtk-4.0 (absent on
+# Ubuntu 24.04+ and Arch) and `wails dev` does NOT exit: it prints the build
+# error, keeps the Vite watcher alive and waits for a file change, so the
+# session looks healthy while no window ever appears.
 dev-desktop:
+	wails dev $(WAILS_TAGS)
+
+# Frontend-only Vite server. No Go, no window: `window.runtime`/`window.go`
+# are absent, so the UI stays on the startup splash (backend:ready never
+# arrives and the listProjects safety-net RPC throws into a silent catch).
+# Useful for markup and HMR work, not for anything that calls into Go.
+dev-frontend:
 	cd frontend && npm run dev
 
 # Download and extract ONNX Runtime library next to the executable.
