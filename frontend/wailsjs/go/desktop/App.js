@@ -254,6 +254,10 @@ export function GetHardenGitRepos() {
   return window['go']['desktop']['App']['GetHardenGitRepos']();
 }
 
+export function GetIsGitRepo() {
+  return window['go']['desktop']['App']['GetIsGitRepo']();
+}
+
 export function GetLastActiveProjectID() {
   return window['go']['desktop']['App']['GetLastActiveProjectID']();
 }

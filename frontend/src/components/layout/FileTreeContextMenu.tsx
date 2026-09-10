@@ -6,6 +6,7 @@ import { emit, clipboardSetText } from '@/api/runtime'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { useUIStore } from '@/stores/uiStore'
 import { logger } from '@/lib/logger'
 import type { FileEntry } from '@/types/models'
@@ -37,7 +38,8 @@ function toRelativePath(path: string, workspaceRoot?: string | null): string {
 /**
  * Contextual menu for a file-tree entry: Open in Viewer (files only),
  * Open in Terminal (directories only), Copy Path, Copy Relative Path,
- * Add to .gitignore, and View History.
+ * Add to .gitignore, and View History. The two git-dependent actions are
+ * shown only when the active project's workspace is a git repository.
  * Self-contained — calls the API and stores directly, so no callback prop
  * threading is required.
  */
@@ -50,6 +52,15 @@ export function FileTreeContextMenu({
   const menuRef = useRef<HTMLDivElement>(null)
   const [isIgnoring, setIsIgnoring] = useState(false)
   const relativePath = toRelativePath(entry.path, workspaceRoot ?? undefined)
+
+  // Git-only actions ("Add to .gitignore", "View History") make no sense in
+  // a project whose workspace is not a git repository — the Git panel does
+  // not even exist there. The pairing with the checked project id keeps a
+  // stale answer from a previously active project from showing the items.
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const isGitRepo = useGitPanelStore(
+    (s) => s.isGitRepo && s.gitRepoProjectId === activeProjectId,
+  )
 
   // --- Open in Viewer (files only) ---
   const handleOpenInViewer = useCallback(() => {
@@ -201,24 +212,28 @@ export function FileTreeContextMenu({
             <Copy className="size-4" />
             Copy Relative Path
           </button>
-          <MenuSeparator />
-          <button
-            role="menuitem"
-            disabled={isIgnoring}
-            onClick={() => void handleAddToGitignore()}
-            className={menuItemClass}
-          >
-            {isIgnoring ? <Loader2 className="size-4 animate-spin" /> : <EyeOff className="size-4" />}
-            Add to .gitignore
-          </button>
-          <button
-            role="menuitem"
-            onClick={handleViewHistory}
-            className={menuItemClass}
-          >
-            <History className="size-4" />
-            View History
-          </button>
+          {isGitRepo && (
+            <>
+              <MenuSeparator />
+              <button
+                role="menuitem"
+                disabled={isIgnoring}
+                onClick={() => void handleAddToGitignore()}
+                className={menuItemClass}
+              >
+                {isIgnoring ? <Loader2 className="size-4 animate-spin" /> : <EyeOff className="size-4" />}
+                Add to .gitignore
+              </button>
+              <button
+                role="menuitem"
+                onClick={handleViewHistory}
+                className={menuItemClass}
+              >
+                <History className="size-4" />
+                View History
+              </button>
+            </>
+          )}
         </div>
       )}
     </>

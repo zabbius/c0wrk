@@ -184,6 +184,28 @@ export async function getCurrentBranch(): Promise<BranchInfo> {
   }
 }
 
+/**
+ * Report whether the ACTIVE project's workspace is inside a git work tree.
+ * Powers the workspace layout decision: a git repo gets the Git panel (with
+ * the file explorer as its first "files" section); a non-repo keeps the
+ * standalone Explorer tab. Rejections (no active project / No Project /
+ * git failure) propagate to the caller, which treats them fail-closed as
+ * "not a repository".
+ */
+export async function getIsGitRepo(): Promise<boolean> {
+  try {
+    const app = getApp()
+    const result = await app.GetIsGitRepo()
+    if (typeof result !== 'boolean') {
+      throw new Error('getIsGitRepo: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('getIsGitRepo failed:', err)
+    throw err
+  }
+}
+
 // --- Remote operations (Phase 5) ---
 // An empty `remote` argument lets git use the configured upstream.
 

@@ -114,11 +114,21 @@ interface GitPanelState {
   expandedDirs: Set<string>
   isLoading: boolean
   isGitRepo: boolean
+  /**
+   * The project id the current `isGitRepo` value was checked against. Null
+   * when no check has completed for any project. Consumers must pair the two
+   * fields (`isGitRepo && gitRepoProjectId === activeProjectId`) so a stale
+   * result from a previously active project never leaks into the layout
+   * decision during rapid project switches.
+   */
+  gitRepoProjectId: string | null
   error: string | null
   /** True while a pull/push/fetch is running — blocks parallel remote ops (Phase 5). */
   remoteOperationInProgress: boolean
-  /** Active GitPanel tab. 'graph' was merged into 'history' (unified view). */
-  activeTab: 'changes' | 'history'
+  /** Active GitPanel tab. 'graph' was merged into 'history' (unified view);
+   *  'files' hosts the workspace file explorer (FilterBar + tree) as the
+   *  first section, shown only for git-repository projects. */
+  activeTab: 'files' | 'changes' | 'history'
   /** Transient: whether a merge or rebase is currently in progress (Phase 6). Not persisted. */
   mergeRebaseState: MergeRebaseState
   /** Sort criterion for the Changes list, persisted across sessions (D8). */
@@ -164,14 +174,14 @@ interface GitPanelActions {
   setCommitSuccess: (projectId: string, sha: string | null) => void
   /** Drop a project's commit-box state entirely (project deleted). */
   dropProjectCommitState: (projectId: string) => void
-  setGitRepo: (isRepo: boolean) => void
+  setGitRepo: (isRepo: boolean, projectId: string | null) => void
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
   toggleExpandedDir: (dir: string) => void
   /** Replace the entire expanded-dirs set (used by expand-all / collapse-all). */
   setExpandedDirs: (dirs: Set<string>) => void
   setRemoteOperationInProgress: (inProgress: boolean) => void
-  setActiveTab: (tab: 'changes' | 'history') => void
+  setActiveTab: (tab: 'files' | 'changes' | 'history') => void
   setMergeRebaseState: (state: MergeRebaseState) => void
   setSortBy: (mode: SortBy) => void
   setGroupBy: (mode: GroupBy) => void
@@ -197,10 +207,11 @@ const initialState: GitPanelState = {
   expandedDirs: new Set<string>(),
   isLoading: false,
   isGitRepo: false,
+  gitRepoProjectId: null,
   isBranchPickerOpen: false,
   error: null,
   remoteOperationInProgress: false,
-  activeTab: 'changes',
+  activeTab: 'files',
   mergeRebaseState: EMPTY_MERGE_REBASE_STATE,
   sortBy: 'path',
   groupBy: 'none',
@@ -371,7 +382,7 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
         })
       },
 
-      setGitRepo: (isRepo) => set({ isGitRepo: isRepo }),
+      setGitRepo: (isRepo, projectId) => set({ isGitRepo: isRepo, gitRepoProjectId: projectId }),
 
       toggleExpandedDir: (dir) =>
         set((s) => {

@@ -13,6 +13,7 @@ import { CommitSection } from './CommitSection'
 import { BranchPicker } from './BranchPicker'
 import { GitHistoryTab } from './GitHistoryTab'
 import { GitPanelFooter } from './GitPanelFooter'
+import { FileTreePanel } from '@/components/layout/FileTreePanel'
 
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -89,9 +90,12 @@ export function GitPanel() {
   return (
     <div className="flex flex-col h-full min-h-0">
       <GitPanelToolbar />
-      {/* Changes | History tab switcher (graph merged into History) */}
+      {/* Files | Changes | History tab switcher. "files" hosts the workspace
+          file explorer (filter bar + tree) as the FIRST section — the
+          workspace-level Explorer tab does not exist for git projects, so
+          this is where the explorer lives. Graph was merged into History. */}
       <div className="flex shrink-0 border-b border-border bg-secondary/20">
-        {(['changes', 'history'] as const).map((tab) => (
+        {(['files', 'changes', 'history'] as const).map((tab) => (
           <button
             key={tab}
             type="button"
@@ -113,7 +117,9 @@ export function GitPanel() {
           <span className="truncate">{error}</span>
         </div>
       )}
-      {activeTab === 'changes' ? (
+      {activeTab === 'files' ? (
+        <FileTreePanel />
+      ) : activeTab === 'changes' ? (
         <>
           <ChangesList onToggleFile={onToggleFile} onOpenDiff={onOpenDiff} />
           <CommitSection />

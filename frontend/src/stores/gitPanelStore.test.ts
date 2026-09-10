@@ -47,9 +47,10 @@ describe('gitPanelStore', () => {
     expect(s.expandedDirs).toEqual(new Set())
     expect(s.isLoading).toBe(false)
     expect(s.isGitRepo).toBe(false)
+    expect(s.gitRepoProjectId).toBeNull()
     expect(s.isBranchPickerOpen).toBe(false)
     expect(s.remoteOperationInProgress).toBe(false)
-    expect(s.activeTab).toBe('changes')
+    expect(s.activeTab).toBe('files')
     expect(s.error).toBeNull()
   })
 
@@ -217,12 +218,17 @@ describe('gitPanelStore', () => {
 
   // ── setGitRepo ──
 
-  it('setGitRepo toggles isGitRepo', () => {
+  it('setGitRepo toggles isGitRepo and records the project id it belongs to', () => {
     const { setGitRepo } = useGitPanelStore.getState()
-    setGitRepo(true)
+    setGitRepo(true, 'proj-1')
     expect(useGitPanelStore.getState().isGitRepo).toBe(true)
-    setGitRepo(false)
+    expect(useGitPanelStore.getState().gitRepoProjectId).toBe('proj-1')
+    setGitRepo(false, 'proj-2')
     expect(useGitPanelStore.getState().isGitRepo).toBe(false)
+    expect(useGitPanelStore.getState().gitRepoProjectId).toBe('proj-2')
+    setGitRepo(false, null)
+    expect(useGitPanelStore.getState().isGitRepo).toBe(false)
+    expect(useGitPanelStore.getState().gitRepoProjectId).toBeNull()
   })
 
   // ── toggleExpandedDir ──
@@ -358,13 +364,15 @@ describe('gitPanelStore', () => {
 
   // ── setActiveTab ──
 
-  it('setActiveTab switches between changes and history', () => {
+  it('setActiveTab switches between files, changes and history', () => {
     const { setActiveTab } = useGitPanelStore.getState()
-    expect(useGitPanelStore.getState().activeTab).toBe('changes')
+    expect(useGitPanelStore.getState().activeTab).toBe('files')
     setActiveTab('history')
     expect(useGitPanelStore.getState().activeTab).toBe('history')
     setActiveTab('changes')
     expect(useGitPanelStore.getState().activeTab).toBe('changes')
+    setActiveTab('files')
+    expect(useGitPanelStore.getState().activeTab).toBe('files')
   })
 
   // ── GitPanelEntry carries index/worktree status ──
@@ -393,7 +401,7 @@ describe('gitPanelStore', () => {
     store.setCommitSuccess('proj-2', 'abc123def456')
     store.setBranch({ name: 'feature/x', upstream: '', ahead: 0, behind: 0 })
     store.setBranches([{ name: 'main', is_current: true, kind: 'local', upstream: 'origin/main' }])
-    store.setGitRepo(true)
+    store.setGitRepo(true, 'proj-1')
     store.setLoading(true)
     store.setError('some error')
     store.toggleExpandedDir('src')
@@ -410,9 +418,10 @@ describe('gitPanelStore', () => {
     expect(s.expandedDirs).toEqual(new Set())
     expect(s.isLoading).toBe(false)
     expect(s.isGitRepo).toBe(false)
+    expect(s.gitRepoProjectId).toBeNull()
     expect(s.isBranchPickerOpen).toBe(false)
     expect(s.remoteOperationInProgress).toBe(false)
-    expect(s.activeTab).toBe('changes')
+    expect(s.activeTab).toBe('files')
     expect(s.error).toBeNull()
   })
 
@@ -422,7 +431,7 @@ describe('gitPanelStore', () => {
     const store = useGitPanelStore.getState()
 
     // Initial load
-    store.setGitRepo(true)
+    store.setGitRepo(true, 'proj-1')
     store.setBranch({ name: 'main', upstream: '', ahead: 0, behind: 0 })
     store.loadEntries([
       makeEntry({ path: 'src/app.ts', status: 'M', staged: false }),
@@ -451,7 +460,7 @@ describe('gitPanelStore', () => {
     const store = useGitPanelStore.getState()
     store.setLoading(true)
     store.setError('Failed to load git status')
-    store.setGitRepo(false)
+    store.setGitRepo(false, 'proj-1')
     store.loadEntries([])
 
     const s = useGitPanelStore.getState()
@@ -503,15 +512,7 @@ describe('gitPanelStore — Phase 6 (merge/rebase state & history tab)', () => {
 
     const s = useGitPanelStore.getState()
     expect(s.mergeRebaseState).toEqual(EMPTY_MERGE_REBASE_STATE)
-    expect(s.activeTab).toBe('changes')
-  })
-
-  it('setActiveTab switches between changes and history', () => {
-    const { setActiveTab } = useGitPanelStore.getState()
-    setActiveTab('history')
-    expect(useGitPanelStore.getState().activeTab).toBe('history')
-    setActiveTab('changes')
-    expect(useGitPanelStore.getState().activeTab).toBe('changes')
+    expect(s.activeTab).toBe('files')
   })
 })
 

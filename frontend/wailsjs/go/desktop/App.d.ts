@@ -135,6 +135,8 @@ export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitSt
 
 export function GetHardenGitRepos():Promise<Array<string>>;
 
+export function GetIsGitRepo():Promise<boolean>;
+
 export function GetLastActiveProjectID():Promise<string>;
 
 export function GetLogLevel():Promise<string>;

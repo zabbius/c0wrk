@@ -1905,6 +1905,23 @@ func isRebaseActive(gitDir string) bool {
 	return false
 }
 
+// GetIsGitRepo reports whether the active project's workspace is inside a
+// git work tree. The UI uses this to decide whether the Git workspace panel
+// (which hosts the file explorer as its "Files" section) is available at
+// all. Delegates to the cached isGitRepo check (git rev-parse
+// --is-inside-work-tree, 30s TTL) so rapid re-checks do not spawn a git
+// process each time. Unscannable repo config is reported as not a repo
+// (fail closed, see IsGitRepo). Returns an error when no project is active
+// or the project is No Project; the frontend treats any rejection as
+// "not a repository".
+func (f *FrontendAPI) GetIsGitRepo() (bool, error) {
+	repoPath, err := f.resolveGitRepoRoot()
+	if err != nil {
+		return false, err
+	}
+	return f.isGitRepo(repoPath), nil
+}
+
 // ---------------------------------------------------------------------------
 // Commit graph RPC (Phase 6)
 // ---------------------------------------------------------------------------
