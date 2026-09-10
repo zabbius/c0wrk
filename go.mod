@@ -2,7 +2,7 @@
 // APIs; build via the parent-dir go.work. Release step: commit+push sp4rk,
 // then `GOWORK=off go get github.com/v0lka/sp4rk@main && go mod tidy` and
 // remove this note.
-module github.com/v0lka/c0wrk
+module github.com/zabbius/c0wrk
 
 go 1.27.1
 
@@ -116,3 +116,5 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
+
+replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk staging
