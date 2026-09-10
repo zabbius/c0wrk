@@ -146,6 +146,35 @@ describe('deriveSessionIndicatorStatus', () => {
       makeMsg({ type: 'ask_user', metadata: { request_id: 'r1' } }),
     ])).toBe('pending')
   })
+
+  it('returns failed (red) when the DB recorded a failed unfinished task', () => {
+    // The failure lives only in the persisted snapshot — no live chatStore
+    // flags and no HITL message — so the DB status is what surfaces the dot.
+    expect(deriveSessionIndicatorStatus(false, false, [], 'failed')).toBe('failed')
+  })
+
+  it('returns failed over a concurrently running flag', () => {
+    // Restart race: a stale running flag must not paint a failed session green.
+    expect(deriveSessionIndicatorStatus(true, false, [], 'failed')).toBe('failed')
+  })
+
+  it('returns active for a DB in_progress status with no live flags', () => {
+    expect(deriveSessionIndicatorStatus(false, false, [], 'in_progress')).toBe('active')
+  })
+
+  it('returns paused for a DB paused status with no live flags', () => {
+    expect(deriveSessionIndicatorStatus(false, false, [], 'paused')).toBe('paused')
+  })
+
+  it('treats an unknown non-empty DB status as active, never idle', () => {
+    expect(deriveSessionIndicatorStatus(false, false, [], 'future_status')).toBe('active')
+  })
+
+  it('lets a pending HITL prompt outrank a failed DB status', () => {
+    expect(deriveSessionIndicatorStatus(false, false, [
+      makeMsg({ type: 'tool_confirm', metadata: { confirm_id: 'c1' } }),
+    ], 'failed')).toBe('pending')
+  })
 })
 
 function makeSessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {

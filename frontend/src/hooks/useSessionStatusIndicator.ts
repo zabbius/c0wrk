@@ -20,13 +20,16 @@ import { hasUnresolvedHITL } from '@/lib/hitlTypes'
 // hooks → lib dependency inversion.
 export { hasUnresolvedHITL }
 
-/** Sidebar indicator state for a session. */
-export type SessionIndicatorStatus = 'pending' | 'active' | 'paused' | 'idle'
+/** Sidebar indicator state for a session. Mirrors the global badge's
+ *  SessionDisplayStatus (lib/activeSessions.ts) so both session-list surfaces
+ *  agree on colors; `failed` (red) surfaces a resumable failed task that the DB
+ *  recorded but the live chatStore signals alone cannot show. */
+export type SessionIndicatorStatus = 'pending' | 'failed' | 'active' | 'paused' | 'idle'
 
 /**
  * Pure derivation of the sidebar indicator from a session's running flag,
- * paused flag, and ordered messages. Exported for unit testing without React
- * rendering.
+ * paused flag, ordered messages, and persisted task status. Exported for unit
+ * testing without React rendering.
  *
  * Pending takes precedence because a task blocked on a HITL prompt is not
  * "actively processing" — the user's response is the next step, so the
@@ -35,21 +38,38 @@ export type SessionIndicatorStatus = 'pending' | 'active' | 'paused' | 'idle'
  * taskActive=false; the gray dot distinguishes it from a genuinely idle
  * session.
  */
-export function deriveSessionIndicatorStatus(isRunning: boolean, isPaused: boolean, messages: ChatMessageUI[]): SessionIndicatorStatus {
+export function deriveSessionIndicatorStatus(
+  isRunning: boolean,
+  isPaused: boolean,
+  messages: ChatMessageUI[],
+  dbStatus = '',
+): SessionIndicatorStatus {
   if (hasUnresolvedHITL(messages)) return 'pending'
+  // The DB snapshot is authoritative for states chatStore cannot see: a task
+  // that failed (or was interrupted) while the app was closed leaves the live
+  // flags untouched, yet must still surface. Priority mirrors
+  // sessionDisplayStatus: pending > failed > active > paused, with unknown
+  // non-empty statuses rendering as active (unfinished, never idle).
+  if (dbStatus === 'failed') return 'failed'
   if (isPaused) return 'paused'
-  return isRunning ? 'active' : 'idle'
+  if (isRunning || dbStatus === 'in_progress') return 'active'
+  if (dbStatus === 'paused') return 'paused'
+  if (dbStatus !== '') return 'active'
+  return 'idle'
 }
 
 /**
- * Derive the sidebar status indicator for a session from the chat store:
+ * Derive the sidebar status indicator for a session from the chat store,
+ * combined with the session's persisted task status (`dbStatus`, i.e.
+ * SessionInfo.unfinished_task_status):
  *
  * - `'pending'` (yellow) — an unresolved HITL prompt is awaiting the user.
- * - `'paused'`  (gray)   — a cooperatively paused task (suspended at a checkpoint).
- * - `'active'`  (green)  — a task is currently running.
+ * - `'failed'`  (red)    — the DB recorded a failed (resumable) task.
+ * - `'active'`  (green)  — a task is currently running (or the DB says in_progress).
+ * - `'paused'`  (gray)   — a cooperatively paused task (or the DB says paused).
  * - `'idle'`             — neither.
  */
-export function useSessionStatusIndicator(sessionId: string | null): SessionIndicatorStatus {
+export function useSessionStatusIndicator(sessionId: string | null, dbStatus = ''): SessionIndicatorStatus {
   const isRunning = useChatStore(s => (sessionId ? s.taskActive[sessionId] ?? false : false))
   const isPaused = useChatStore(s => (sessionId ? s.paused[sessionId] ?? false : false))
   const messageOrder = useChatStore(s => (sessionId ? s.messageOrder[sessionId] : undefined))
@@ -63,8 +83,8 @@ export function useSessionStatusIndicator(sessionId: string | null): SessionIndi
         if (m) messages.push(m)
       }
     }
-    return deriveSessionIndicatorStatus(isRunning, isPaused, messages)
-  }, [messageOrder, messageIndex, isRunning, isPaused])
+    return deriveSessionIndicatorStatus(isRunning, isPaused, messages, dbStatus)
+  }, [messageOrder, messageIndex, isRunning, isPaused, dbStatus])
 }
 
 /**

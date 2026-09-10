@@ -18,9 +18,11 @@ type AudioContextCtor = new (contextOptions?: AudioContextOptions) => AudioConte
 /** Lazily-created, reused AudioContext. Module-scoped so every tone shares one
  *  graph + thread pool. Stays null in non-browser (test) environments. */
 let audioCtx: AudioContext | null = null
-/** True once the first user-gesture unlock listener has been registered, so we
- *  never attach duplicate listeners. */
+/** True once the persistent user-gesture unlock listeners have been attached,
+ *  so we never attach duplicate listeners. */
 let unlockRegistered = false
+/** True once the context `statechange` recovery listener has been attached. */
+let stateChangeRegistered = false
 
 /** Resolve the AudioContext constructor (standard + legacy webkit prefix). */
 function getAudioContextCtor(): AudioContextCtor | null {
@@ -32,6 +34,57 @@ function getAudioContextCtor(): AudioContextCtor | null {
   return w.AudioContext ?? w.webkitAudioContext ?? null
 }
 
+/** True when the audio engine can actually render. Any other state means a cue
+ *  scheduled now would be dropped by the engine:
+ *  - `suspended`: autoplay policy, or the OS/webview paused rendering;
+ *  - `interrupted` (WebKit/Safari, non-standard): an OS-level audio
+ *    interruption — display sleep, another app taking audio focus, a call. It
+ *    is NOT covered by a `state === 'suspended'` check, which is why the old
+ *    check missed the periodic silent stretches on macOS WKWebView;
+ *  - `closed`: the context is gone for good. */
+function isRunning(ctx: AudioContext): boolean {
+  return ctx.state === 'running'
+}
+
+/** Best-effort resume of a non-running context. Never rejects; the returned
+ *  promise settles once the attempt completes so callers can sequence playback
+ *  after it. */
+function resumeCtx(ctx: AudioContext): Promise<void> {
+  if (isRunning(ctx)) return Promise.resolve()
+  try {
+    return Promise.resolve(ctx.resume()).then(
+      () => undefined,
+      (err) => {
+        logger.debug('[sound] context resume failed', err)
+      },
+    )
+  } catch (err) {
+    logger.debug('[sound] context resume threw', err)
+    return Promise.resolve()
+  }
+}
+
+/** Attach a one-time `statechange` recovery listener.
+ *
+ *  The webview/OS can move the context out of `running` at any time (an
+ *  autoplay suspend, display sleep, or an OS audio interruption). While it is
+ *  not running, cues scheduled on it are discarded, so when we notice it leave
+ *  `running` we try to bring it back immediately. A resume triggered by the
+ *  state change itself can succeed for OS-initiated suspensions; when it cannot
+ *  (WebKit only honors resume() from inside a gesture), the persistent gesture
+ *  listeners installed by `initSoundUnlock` recover it on the next
+ *  interaction. */
+function attachStateChangeRecovery(ctx: AudioContext): void {
+  if (stateChangeRegistered) return
+  stateChangeRegistered = true
+  ctx.addEventListener('statechange', () => {
+    if (!isRunning(ctx)) {
+      logger.debug('[sound] audio context left running', ctx.state)
+      void resumeCtx(ctx)
+    }
+  })
+}
+
 /** Lazily create (or return the cached) AudioContext. Returns null when the
  *  Web Audio API is unavailable (older webview / tests). */
 function getCtx(): AudioContext | null {
@@ -41,6 +94,7 @@ function getCtx(): AudioContext | null {
   if (!Ctor) return null
   try {
     audioCtx = new Ctor()
+    attachStateChangeRecovery(audioCtx)
   } catch (err) {
     logger.warn('[sound] failed to create AudioContext', err)
     return null
@@ -108,47 +162,65 @@ const PRESETS: Record<SoundKind, NoteSpec[]> = {
 
 /**
  * Play a notification cue. A no-op when the master toggle is off, when the Web
- * Audio API is unavailable, or when resuming a suspended context fails (sound
- * is best-effort: a silent cue must never break the task UI).
+ * Audio API is unavailable, or when the context cannot be brought back to
+ * `running` (sound is best-effort: a silent cue must never break the task UI).
  */
 export function playSound(kind: SoundKind): void {
   if (!useSoundStore.getState().enabled) return
   const ctx = getCtx()
   if (!ctx) return
-  if (ctx.state === 'suspended') {
-    void ctx.resume().catch((err) => {
-      logger.debug('[sound] context resume failed', err)
-    })
+  if (isRunning(ctx)) {
+    playCue(ctx, kind)
+    return
   }
+  // Scheduling notes on a non-running context is silently discarded by the
+  // engine, so resume FIRST and emit the cue only once the context is actually
+  // rendering. The previous implementation fired the resume without awaiting it
+  // and scheduled the notes straight away — which is exactly how cues went
+  // missing after the context was interrupted or suspended.
+  void resumeCtx(ctx).then(() => {
+    if (isRunning(ctx)) playCue(ctx, kind)
+  })
+}
+
+/** Schedule every note of a cue on a context that is known to be running. */
+function playCue(ctx: AudioContext, kind: SoundKind): void {
   for (const note of PRESETS[kind]) playNote(ctx, note)
 }
 
+/** Resume the shared context from inside a user-gesture callback. WebKit only
+ *  honors resume() when it is invoked from a gesture, so this is the only path
+ *  that can revive a context the OS suspended mid-session. */
+function unlockOnGesture(): void {
+  const ctx = getCtx()
+  if (ctx && !isRunning(ctx)) void resumeCtx(ctx)
+}
+
 /**
- * Unlock audio on the first user gesture.
+ * Unlock audio on user gestures, for the lifetime of the app.
  *
  * Desktop webviews (notably macOS WKWebView) start the AudioContext suspended
  * until a user gesture occurs. Notification cues are fired by backend events,
  * not gestures, so the context can stay locked and the first cues play
- * silently. Registering one-shot pointer/keyboard/touch listeners that create
- * + resume the context on the user's first interaction guarantees subsequent
- * event-driven cues are audible. Idempotent — safe to call repeatedly.
- */
+ * silently. Registering pointer/keyboard/touch listeners that resume the
+ * context on user interaction guarantees event-driven cues are audible.
+ *
+ * Crucially these listeners are PERSISTENT (not `{ once: true }`): the webview
+ * suspends/interrupts the context repeatedly (backgrounding, display sleep,
+ * audio focus theft), and every such interruption needs a fresh gesture to
+ * recover — a one-shot listener that was already consumed leaves no way back,
+ * which is the root cause of the periodic silent stretches. Idempotent. */
 export function initSoundUnlock(): void {
   if (typeof window === 'undefined' || unlockRegistered) return
   unlockRegistered = true
-  const unlock = (): void => {
-    const ctx = getCtx()
-    if (ctx && ctx.state === 'suspended') {
-      void ctx.resume().catch(() => { /* best-effort */ })
-    }
-  }
-  window.addEventListener('pointerdown', unlock, { once: true })
-  window.addEventListener('keydown', unlock, { once: true })
-  window.addEventListener('touchstart', unlock, { once: true })
+  window.addEventListener('pointerdown', unlockOnGesture)
+  window.addEventListener('keydown', unlockOnGesture)
+  window.addEventListener('touchstart', unlockOnGesture)
 }
 
 /** Test-only: reset module state so unit tests start from a clean slate. */
 export function __resetSoundModule(): void {
   audioCtx = null
   unlockRegistered = false
+  stateChangeRegistered = false
 }
