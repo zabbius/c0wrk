@@ -388,6 +388,9 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.VectorIndex.EmbeddingBatchSize == 0 {
 		cfg.VectorIndex.EmbeddingBatchSize = vectorindex.DefaultEmbeddingBatchSize
 	}
+	if cfg.VectorIndex.EmbeddingCacheMaxBytes == 0 {
+		cfg.VectorIndex.EmbeddingCacheMaxBytes = vectorindex.DefaultEmbeddingCacheMaxBytes
+	}
 	if cfg.VectorIndex.PrepWorkers == 0 {
 		cfg.VectorIndex.PrepWorkers = vectorindex.DefaultPrepWorkers
 	}
@@ -396,6 +399,45 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.VectorIndex.ChunkOverlap == 0 {
 		cfg.VectorIndex.ChunkOverlap = vectorindex.DefaultChunkOverlap
+	}
+	// Content-filter defaults are materialized so the resolved config the
+	// frontend inspects shows the effective policy. Pointer bools default
+	// to true; numeric thresholds to the package defaults. Explicit user
+	// values (including explicit false) are preserved.
+	filterDefaults := vectorindex.DefaultContentFilterConfig()
+	if cfg.VectorIndex.ContentFilter.Enabled == nil {
+		enabled := filterDefaults.Enabled
+		cfg.VectorIndex.ContentFilter.Enabled = &enabled
+	}
+	if cfg.VectorIndex.ContentFilter.DetectGenerated == nil {
+		v := filterDefaults.DetectGenerated
+		cfg.VectorIndex.ContentFilter.DetectGenerated = &v
+	}
+	if cfg.VectorIndex.ContentFilter.DetectMinified == nil {
+		v := filterDefaults.DetectMinified
+		cfg.VectorIndex.ContentFilter.DetectMinified = &v
+	}
+	if cfg.VectorIndex.ContentFilter.DetectPathological == nil {
+		v := filterDefaults.DetectPathological
+		cfg.VectorIndex.ContentFilter.DetectPathological = &v
+	}
+	if cfg.VectorIndex.ContentFilter.GeneratedHeaderBytes == 0 {
+		cfg.VectorIndex.ContentFilter.GeneratedHeaderBytes = filterDefaults.GeneratedHeaderBytes
+	}
+	if cfg.VectorIndex.ContentFilter.MinifiedMinBytes == 0 {
+		cfg.VectorIndex.ContentFilter.MinifiedMinBytes = filterDefaults.MinifiedMinBytes
+	}
+	if cfg.VectorIndex.ContentFilter.MinifiedMaxLineBytes == 0 {
+		cfg.VectorIndex.ContentFilter.MinifiedMaxLineBytes = filterDefaults.MinifiedMaxLineBytes
+	}
+	if cfg.VectorIndex.ContentFilter.MinifiedMaxWhitespaceRatio == 0 {
+		cfg.VectorIndex.ContentFilter.MinifiedMaxWhitespaceRatio = filterDefaults.MinifiedMaxWhitespaceRatio
+	}
+	if cfg.VectorIndex.ContentFilter.PathologicalMinBytes == 0 {
+		cfg.VectorIndex.ContentFilter.PathologicalMinBytes = filterDefaults.PathologicalMinBytes
+	}
+	if cfg.VectorIndex.ContentFilter.PathologicalMaxTokenBytes == 0 {
+		cfg.VectorIndex.ContentFilter.PathologicalMaxTokenBytes = filterDefaults.PathologicalMaxTokenBytes
 	}
 	if cfg.VectorIndex.SearchWaitTimeoutMs == nil {
 		v := int(vectorindex.DefaultSearchWaitTimeout.Milliseconds())

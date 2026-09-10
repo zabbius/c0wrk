@@ -81,6 +81,14 @@ func TestProjectVectorIndexPath(t *testing.T) {
 	}
 }
 
+func TestProjectEmbeddingCachePath(t *testing.T) {
+	got := ProjectEmbeddingCachePath(testAgentDir, "proj-123")
+	want := filepath.Join(testAgentDir, "projects", "proj-123", "vector_index", "embedding_cache")
+	if got != want {
+		t.Errorf("ProjectEmbeddingCachePath: got %q, want %q", got, want)
+	}
+}
+
 func TestSessionDir(t *testing.T) {
 	got := SessionDir(testAgentDir, "proj-123", "sess-456")
 	want := filepath.Join(testAgentDir, "projects", "proj-123", "sess-456")

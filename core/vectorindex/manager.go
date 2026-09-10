@@ -41,6 +41,10 @@ const (
 	// for index readiness (vector_index.search_wait_timeout_ms). The explicit
 	// 0 "fail fast" sentinel is applied only at the config layer, never here.
 	DefaultSearchWaitTimeout = 3 * time.Second
+
+	// DefaultEmbeddingCacheMaxBytes caps each project's branch-independent
+	// content-addressed embedding cache at 512 MiB.
+	DefaultEmbeddingCacheMaxBytes int64 = 512 << 20
 )
 
 // DefaultEmbeddingBatchSize mirrors sp4rk's embedding.DefaultBatchSize — the
@@ -76,6 +80,13 @@ type ManagerConfig struct {
 	MaxChunkSize     int                   // Optional: defaults to DefaultMaxChunkSize (1500 chars)
 	MaxChunksPerFile int                   // Optional: defaults to DefaultMaxChunksPerFile (4000)
 
+	// ContentFilter controls deterministic early rejection of generated,
+	// minified, and pathological files before chunking. Nil selects
+	// DefaultContentFilterConfig; a non-nil config is used exactly as
+	// supplied. The resolved policy feeds the chunker fingerprint, so
+	// policy changes invalidate sidecar entries like chunk-size changes.
+	ContentFilter *ContentFilterConfig
+
 	// EmbeddingBatchSize is the fixed row capacity of the embedder's batch
 	// ONNX session (sp4rk embedding.EmbedderConfig.BatchSize). The embedder
 	// itself is constructed by the caller (desktop startup), which sets the
@@ -84,6 +95,15 @@ type ManagerConfig struct {
 	// to DefaultEmbeddingBatchSize (32) — identical to the previous
 	// behaviour, where sp4rk applied its own default.
 	EmbeddingBatchSize int
+
+	// EmbeddingCacheFingerprint identifies model/tokenizer bytes and all
+	// vector-producing parameters. Empty disables persistent embedding reuse.
+	EmbeddingCacheFingerprint string
+	// EmbeddingDimension is checked against every cached vector.
+	EmbeddingDimension int
+	// EmbeddingCacheMaxBytes is the per-project disk cap. Non-positive disables
+	// the cache.
+	EmbeddingCacheMaxBytes int64
 
 	// PrepWorkers is the number of parallel file-preparation workers
 	// (read/hash/chunk) in the indexing pipeline, forwarded to the
@@ -110,7 +130,8 @@ type ManagerConfig struct {
 	// explicit value.
 	SearchWaitTimeout time.Duration
 
-	Logger *slog.Logger
+	Logger    *slog.Logger
+	Telemetry *Telemetry
 }
 
 // ProjectCallbacks holds callbacks for project-level indexing events.
@@ -157,7 +178,8 @@ type Manager struct {
 	// late-arriving changes into a single final run.
 	indexing atomic.Bool
 
-	logger *slog.Logger
+	logger    *slog.Logger
+	telemetry *Telemetry
 
 	// Index status tracking for the frontend GetVectorIndexStatus API.
 	statusMu     sync.RWMutex
@@ -181,6 +203,7 @@ type Manager struct {
 	maxFileSize      int64
 	maxChunkSize     int
 	maxChunksPerFile int
+	contentFilter    ContentFilterConfig
 
 	// chunkOverlap is the resolved character overlap between adjacent chunks
 	// (ManagerConfig.ChunkOverlap via vector_index.chunk_overlap), passed
@@ -286,20 +309,27 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	// sentinel for the search-path wiring.
 
 	// The chunker fingerprint is derived from the RESOLVED chunking
-	// configuration (maxChunkSize + chunkOverlap), the exact values the
-	// per-project Indexer chunks with, so sidecar entries record the
-	// configuration that produced their chunks. When the config later
-	// changes (vector_index.chunk_overlap / max_chunk_size), the
-	// fingerprint no longer matches and ValidateCollection re-chunks the
-	// affected files.
+	// configuration (maxChunkSize + chunkOverlap + the resolved content
+	// filter policy), the exact inputs the per-project Indexer chunks
+	// files with, so sidecar entries record the configuration that
+	// produced their chunks. When the config later changes
+	// (vector_index.chunk_overlap / max_chunk_size / content_filter.*),
+	// the fingerprint no longer matches and ValidateCollection re-chunks
+	// the affected files (or removes them, when the new content policy
+	// excludes a previously-indexed file).
 	svc, err := NewService(ServiceConfig{
-		EmbeddingFunc:      cfg.EmbeddingFunc,
-		BatchEmbedder:      cfg.BatchEmbedder,
-		Logger:             logger,
-		HybridConfig:       cfg.HybridConfig,
-		MaxFileSize:        cfg.MaxFileSize,
-		EmbeddingBatchSize: cfg.EmbeddingBatchSize,
-		ChunkerFingerprint: ChunkerFingerprint(maxChunkSize, chunkOverlap),
+		EmbeddingFunc:             cfg.EmbeddingFunc,
+		BatchEmbedder:             cfg.BatchEmbedder,
+		Logger:                    logger,
+		Telemetry:                 cfg.Telemetry,
+		HybridConfig:              cfg.HybridConfig,
+		MaxFileSize:               cfg.MaxFileSize,
+		EmbeddingBatchSize:        cfg.EmbeddingBatchSize,
+		EmbeddingCacheFingerprint: cfg.EmbeddingCacheFingerprint,
+		EmbeddingDimension:        cfg.EmbeddingDimension,
+		EmbeddingCacheMaxBytes:    cfg.EmbeddingCacheMaxBytes,
+		ChunkerFingerprint:        ChunkerFingerprint(maxChunkSize, chunkOverlap, resolveContentFilterConfig(cfg.ContentFilter).Fingerprint()),
+		ContentFilter:             cfg.ContentFilter,
 	})
 	if err != nil {
 		return nil, err
@@ -308,11 +338,13 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	return &Manager{
 		service:            svc,
 		logger:             logger,
+		telemetry:          cfg.Telemetry,
 		chunkFn:            chunkFn,
 		hashFn:             hashFn,
 		maxFileSize:        maxFileSize,
 		maxChunkSize:       maxChunkSize,
 		maxChunksPerFile:   maxChunksPerFile,
+		contentFilter:      resolveContentFilterConfig(cfg.ContentFilter),
 		chunkOverlap:       chunkOverlap,
 		embeddingBatchSize: embeddingBatchSize,
 		prepWorkers:        prepWorkers,
@@ -366,7 +398,7 @@ func (m *Manager) IsAnyIndexablePath(changedPaths []string) bool {
 // project is torn down and readiness is dropped; vector search then gates on
 // WaitReady until init + indexing settle. For No Project (CHAT mode) the
 // teardown + reset stays fully synchronous.
-func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath string, cbs ProjectCallbacks) error {
+func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath string, cbs ProjectCallbacks, embeddingCachePaths ...string) error {
 	// No Project (CHAT mode): the vector index subsystem is fully disabled.
 	// Tear down any previous project's in-flight indexing and reset the
 	// service to an empty in-memory state so stale documents from a
@@ -473,8 +505,12 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	m.mu.Lock()
 	m.initCancel = initCancel
 	m.mu.Unlock()
+	var embeddingCachePath string
+	if len(embeddingCachePaths) > 0 {
+		embeddingCachePath = embeddingCachePaths[0]
+	}
 	m.initWG.Add(1)
-	go m.initProject(initCtx, projectID, workspacePath, vectorIndexFullPath, cbs)
+	go m.initProject(initCtx, projectID, workspacePath, vectorIndexFullPath, embeddingCachePath, cbs)
 
 	return nil
 }
@@ -492,13 +528,13 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 // vector indexing is optional. On failure readiness is flipped to true so
 // WaitReady callers unblock and search returns a clear "no collection" error
 // instead of hanging.
-func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vectorIndexFullPath string, cbs ProjectCallbacks) {
+func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vectorIndexFullPath, embeddingCachePath string, cbs ProjectCallbacks) {
 	defer m.initWG.Done()
 
 	// SetProject loads the persistent chromem DB. This is the dominant cost
 	// (gob-decoding every document of every branch collection into RAM) and
 	// holds the service write lock for the duration.
-	if err := m.service.SetProject(projectID, vectorIndexFullPath); err != nil {
+	if err := m.service.SetProject(projectID, vectorIndexFullPath, embeddingCachePath); err != nil {
 		m.logger.Warn("vector index init failed; search disabled",
 			"project", projectID, "step", "open persistent DB", "error", err)
 		// Surface the soft failure so the backend can emit a terminal
@@ -547,10 +583,12 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 		MaxFileSize:      m.maxFileSize,
 		MaxChunkSize:     m.maxChunkSize,
 		MaxChunksPerFile: m.maxChunksPerFile,
+		ContentFilter:    &m.contentFilter,
 		Overlap:          m.chunkOverlap,
 		PrepWorkers:      m.prepWorkers,
 		OnProgress:       m.wrapProgress(cbs.OnProgress),
 		Logger:           m.logger,
+		Telemetry:        m.telemetry,
 	})
 
 	// Switch to branch collection (opens the per-branch bleve index).

@@ -14,6 +14,7 @@ import (
 	chromem "github.com/philippgille/chromem-go"
 
 	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
+	"github.com/v0lka/sp4rk/pathutil"
 )
 
 // ServiceConfig holds configuration for creating a Service.
@@ -58,6 +59,16 @@ type ServiceConfig struct {
 	// behaviour, where sp4rk applied its own default.
 	EmbeddingBatchSize int
 
+	// EmbeddingCacheFingerprint identifies the exact model, tokenizer,
+	// max-sequence length, output dimension, and chunk-normalization algorithm.
+	// Empty disables the persistent cache.
+	EmbeddingCacheFingerprint string
+	// EmbeddingDimension is validated on every cache read and write.
+	EmbeddingDimension int
+	// EmbeddingCacheMaxBytes caps persistent cache entries. Non-positive
+	// disables the cache.
+	EmbeddingCacheMaxBytes int64
+
 	// ChunkerFingerprint identifies the chunker configuration (max chunk
 	// size + overlap) that the per-project Indexer chunks files with. It is
 	// embedded as the 4th field of new file-hash sidecar entries; when the
@@ -69,8 +80,15 @@ type ServiceConfig struct {
 	// defaults (DefaultMaxChunkSize, DefaultChunkOverlap).
 	ChunkerFingerprint string
 
+	// ContentFilter controls the same deterministic pre-chunk content policy
+	// used by the Indexer. Nil selects DefaultContentFilterConfig.
+	ContentFilter *ContentFilterConfig
+
 	// Logger for structured logging.
 	Logger *slog.Logger
+
+	// Telemetry optionally collects bounded, content-free stage aggregates.
+	Telemetry *Telemetry
 }
 
 // Service manages chromem-go collections with git-branch awareness,
@@ -120,8 +138,9 @@ type Service struct {
 	// RestoreReady is a no-op. This prevents a stale indexer from an
 	// outgoing project — whose defer runs late after cancellation — from
 	// prematurely marking a freshly-switched project's service as ready.
-	readyGen int64
-	logger   *slog.Logger
+	readyGen  int64
+	logger    *slog.Logger
+	telemetry *Telemetry
 
 	// hybridConfig holds resolved RRF tuning + pre-fusion score
 	// thresholds. Threshold fields of 0 mean "disabled".
@@ -135,11 +154,23 @@ type Service struct {
 	// batched-embedding path. See ServiceConfig.EmbeddingBatchSize.
 	embeddingBatchSize int
 
+	// embeddingCache is branch-independent and rooted inside the active
+	// project's vector-index storage. It is recreated on project switch.
+	embeddingCache            *embeddingCache
+	embeddingCacheFingerprint string
+	embeddingDimension        int
+	embeddingCacheMaxBytes    int64
+
 	// chunkerFingerprint is the resolved chunker-configuration fingerprint
 	// embedded in new sidecar entries (see ServiceConfig.ChunkerFingerprint
 	// and the ChunkerFingerprint helper). Never empty: NewService defaults
 	// it to the package-default configuration.
 	chunkerFingerprint string
+
+	// contentFilter is the resolved pre-chunk content policy used by
+	// ValidateCollection to keep skipped files out of new/stale sets the
+	// same way processFile keeps them out of the collection.
+	contentFilter ContentFilterConfig
 
 	// validationsSinceFullHash counts ValidateCollection passes since the
 	// last pass that skipped the stat-based fast-path and re-read +
@@ -161,11 +192,15 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	}
 
 	s := &Service{
-		embeddingFunc: cfg.EmbeddingFunc,
-		batchEmbedder: cfg.BatchEmbedder,
-		readyCh:       make(chan struct{}),
-		logger:        logger,
-		hybridConfig:  ResolveHybridConfig(cfg.HybridConfig),
+		embeddingFunc:             cfg.EmbeddingFunc,
+		batchEmbedder:             cfg.BatchEmbedder,
+		readyCh:                   make(chan struct{}),
+		logger:                    logger,
+		telemetry:                 cfg.Telemetry,
+		hybridConfig:              ResolveHybridConfig(cfg.HybridConfig),
+		embeddingCacheFingerprint: cfg.EmbeddingCacheFingerprint,
+		embeddingDimension:        cfg.EmbeddingDimension,
+		embeddingCacheMaxBytes:    cfg.EmbeddingCacheMaxBytes,
 	}
 	if cfg.MaxFileSize > 0 {
 		s.maxFileSize = cfg.MaxFileSize
@@ -179,17 +214,32 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	}
 	s.chunkerFingerprint = cfg.ChunkerFingerprint
 	if s.chunkerFingerprint == "" {
-		s.chunkerFingerprint = ChunkerFingerprint(DefaultMaxChunkSize, DefaultChunkOverlap)
+		// Default fingerprint must describe the configuration this Service
+		// actually chunks with: when an explicit ContentFilter was supplied
+		// (but no fingerprint), derive it from that policy instead of the
+		// package default, so sidecar entries stay consistent with the
+		// effective skip rules. Production wiring (NewManager) always
+		// passes both fields derived from the same resolved config.
+		s.chunkerFingerprint = ChunkerFingerprint(
+			DefaultMaxChunkSize, DefaultChunkOverlap,
+			resolveContentFilterConfig(cfg.ContentFilter).Fingerprint(),
+		)
 	}
+	s.contentFilter = resolveContentFilterConfig(cfg.ContentFilter)
 
 	return s, nil
 }
 
 // SetProject switches to a project directory, creating a project-specific
 // subdirectory for persistence and initializing the chromem-go DB.
-func (s *Service) SetProject(projectID, fullPath string) error {
+func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	var embeddingCachePath string
+	if len(embeddingCachePaths) > 0 {
+		embeddingCachePath = embeddingCachePaths[0]
+	}
 
 	s.SetReady(false)
 
@@ -219,6 +269,7 @@ func (s *Service) SetProject(projectID, fullPath string) error {
 	s.projectID = projectID
 	s.projectPath = fullPath
 	s.db = nil
+	s.embeddingCache = nil
 	if s.lexical != nil {
 		if err := s.lexical.Close(); err != nil {
 			s.logger.Warn("failed to close previous lexical index", "error", err)
@@ -235,6 +286,21 @@ func (s *Service) SetProject(projectID, fullPath string) error {
 			return fmt.Errorf("opening persistent DB at %s: %w", fullPath, err)
 		}
 		s.db = db
+		if embeddingCachePath != "" {
+			within, containmentErr := pathutil.IsWithinPath(fullPath, embeddingCachePath)
+			if containmentErr != nil || !within {
+				s.logger.Warn("embedding cache disabled: path is outside vector-index storage", "error", containmentErr)
+				embeddingCachePath = ""
+			}
+		}
+		s.embeddingCache = newEmbeddingCache(
+			embeddingCachePath,
+			s.embeddingCacheFingerprint,
+			s.embeddingDimension,
+			s.embeddingCacheMaxBytes,
+			s.logger,
+		)
+		s.embeddingCache.prune()
 	} else {
 		s.db = chromem.NewDB()
 	}

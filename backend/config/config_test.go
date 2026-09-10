@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/v0lka/c0wrk/core/vectorindex"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -1652,6 +1654,9 @@ func TestVectorIndexConfig_TuningKnobs_Defaults(t *testing.T) {
 	if cfg.VectorIndex.EmbeddingBatchSize != 32 {
 		t.Errorf("default embedding_batch_size = %d, want 32 (sp4rk embedding.DefaultBatchSize)", cfg.VectorIndex.EmbeddingBatchSize)
 	}
+	if cfg.VectorIndex.EmbeddingCacheMaxBytes != 512<<20 {
+		t.Errorf("default embedding_cache_max_bytes = %d, want %d", cfg.VectorIndex.EmbeddingCacheMaxBytes, int64(512<<20))
+	}
 	if cfg.VectorIndex.PrepWorkers != 2 {
 		t.Errorf("default prep_workers = %d, want 2", cfg.VectorIndex.PrepWorkers)
 	}
@@ -1678,6 +1683,7 @@ func TestVectorIndexConfig_TuningKnobs_YAMLRoundTrip(t *testing.T) {
 	const src = `
 vector_index:
   embedding_batch_size: 16
+  embedding_cache_max_bytes: 1048576
   prep_workers: 4
   debounce_ms: 250
   chunk_overlap: 120
@@ -1689,6 +1695,9 @@ vector_index:
 	}
 	if cfg.VectorIndex.EmbeddingBatchSize != 16 {
 		t.Errorf("embedding_batch_size = %d, want 16", cfg.VectorIndex.EmbeddingBatchSize)
+	}
+	if cfg.VectorIndex.EmbeddingCacheMaxBytes != 1048576 {
+		t.Errorf("embedding_cache_max_bytes = %d, want 1048576", cfg.VectorIndex.EmbeddingCacheMaxBytes)
 	}
 	if cfg.VectorIndex.PrepWorkers != 4 {
 		t.Errorf("prep_workers = %d, want 4", cfg.VectorIndex.PrepWorkers)
@@ -1710,6 +1719,9 @@ vector_index:
 	if cfg.VectorIndex.EmbeddingBatchSize != 16 {
 		t.Errorf("ApplyDefaults clobbered explicit embedding_batch_size: got %d, want 16", cfg.VectorIndex.EmbeddingBatchSize)
 	}
+	if cfg.VectorIndex.EmbeddingCacheMaxBytes != 1048576 {
+		t.Errorf("ApplyDefaults clobbered explicit embedding_cache_max_bytes: got %d, want 1048576", cfg.VectorIndex.EmbeddingCacheMaxBytes)
+	}
 	if cfg.VectorIndex.SearchWaitTimeoutMs == nil || *cfg.VectorIndex.SearchWaitTimeoutMs != 0 {
 		t.Errorf("ApplyDefaults must not overwrite an explicit search_wait_timeout_ms: 0, got %v", cfg.VectorIndex.SearchWaitTimeoutMs)
 	}
@@ -1726,6 +1738,9 @@ vector_index:
 	if restored.VectorIndex.EmbeddingBatchSize != 16 {
 		t.Errorf("round-tripped embedding_batch_size = %d, want 16", restored.VectorIndex.EmbeddingBatchSize)
 	}
+	if restored.VectorIndex.EmbeddingCacheMaxBytes != 1048576 {
+		t.Errorf("round-tripped embedding_cache_max_bytes = %d, want 1048576", restored.VectorIndex.EmbeddingCacheMaxBytes)
+	}
 	if restored.VectorIndex.PrepWorkers != 4 {
 		t.Errorf("round-tripped prep_workers = %d, want 4", restored.VectorIndex.PrepWorkers)
 	}
@@ -1737,6 +1752,58 @@ vector_index:
 	}
 	if restored.VectorIndex.SearchWaitTimeoutMs == nil || *restored.VectorIndex.SearchWaitTimeoutMs != 0 {
 		t.Errorf("round-tripped search_wait_timeout_ms must stay the fail-fast sentinel (pointer to 0), got %v", restored.VectorIndex.SearchWaitTimeoutMs)
+	}
+}
+
+// TestVectorIndexConfig_LegacyYAMLCompat pins that a config written before the
+// embedding-optimization cycle (no embedding_cache_max_bytes / content_filter
+// keys) still loads through the full Load path (defaults + validation) and
+// resolves to behavior-compatible values: the legacy inference knobs keep
+// their historical meaning, the embedding cache is additive, and the content
+// filter resolves to the package-default policy.
+func TestVectorIndexConfig_LegacyYAMLCompat(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+vector_index:
+  hybrid: true
+  max_file_size: 4194304
+  max_chunk_size: 1500
+  max_chunks_per_file: 4000
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() of a pre-cycle config failed: %v", err)
+	}
+
+	vi := cfg.VectorIndex
+	// Inference defaults identical to the legacy pipeline: the sp4rk
+	// historical batch capacity and the "all cores" thread policy.
+	if vi.EmbeddingBatchSize != 32 {
+		t.Errorf("legacy config embedding_batch_size = %d, want 32 (sp4rk embedding.DefaultBatchSize)", vi.EmbeddingBatchSize)
+	}
+	if vi.EmbeddingThreads != 0 {
+		t.Errorf("legacy config embedding_threads = %d, want 0 (all cores)", vi.EmbeddingThreads)
+	}
+	// The embedding cache is additive: a default cap, never a load failure.
+	if vi.EmbeddingCacheMaxBytes != 512<<20 {
+		t.Errorf("legacy config embedding_cache_max_bytes = %d, want %d (default cap)", vi.EmbeddingCacheMaxBytes, int64(512<<20))
+	}
+	// The absent content_filter block resolves to exactly the package
+	// default policy (enabled with default thresholds) — no partial
+	// zero-value leakage from the YAML layer struct.
+	resolved := vi.ContentFilter.ResolveContentFilter()
+	if !resolved.Enabled {
+		t.Errorf("legacy config content filter = disabled, want the default-on package policy")
+	}
+	if !reflect.DeepEqual(resolved, vectorindex.DefaultContentFilterConfig()) {
+		t.Errorf("legacy config content filter = %+v, want %+v", resolved, vectorindex.DefaultContentFilterConfig())
 	}
 }
 
@@ -2467,5 +2534,138 @@ func TestResolveAndLoad_LegacyConfig_StartsWithoutErrors(t *testing.T) {
 	}
 	if got := resolved.Config.Security.Groups[ToolGroupExecute].Policy; got != GroupPolicyUserConfirm {
 		t.Errorf("execute policy = %q, want default %q", got, GroupPolicyUserConfirm)
+	}
+}
+
+// TestVectorIndexConfig_ContentFilter_Defaults pins the content-filter
+// compatibility contract: a config without a content_filter block resolves to
+// the vectorindex package defaults (policy on, all detectors on, package
+// thresholds), so existing configs gain the skip rules with no YAML change.
+func TestVectorIndexConfig_ContentFilter_Defaults(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	want := vectorindex.DefaultContentFilterConfig()
+	checkBool := func(name string, got *bool, want bool) {
+		if got == nil || *got != want {
+			t.Errorf("default content_filter.%s = %v, want %v", name, got, want)
+		}
+	}
+	checkBool("enabled", cfg.VectorIndex.ContentFilter.Enabled, want.Enabled)
+	checkBool("detect_generated", cfg.VectorIndex.ContentFilter.DetectGenerated, want.DetectGenerated)
+	checkBool("detect_minified", cfg.VectorIndex.ContentFilter.DetectMinified, want.DetectMinified)
+	checkBool("detect_pathological", cfg.VectorIndex.ContentFilter.DetectPathological, want.DetectPathological)
+
+	cf := cfg.VectorIndex.ContentFilter
+	if cf.GeneratedHeaderBytes != want.GeneratedHeaderBytes ||
+		cf.MinifiedMinBytes != want.MinifiedMinBytes ||
+		cf.MinifiedMaxLineBytes != want.MinifiedMaxLineBytes ||
+		cf.MinifiedMaxWhitespaceRatio != want.MinifiedMaxWhitespaceRatio ||
+		cf.PathologicalMinBytes != want.PathologicalMinBytes ||
+		cf.PathologicalMaxTokenBytes != want.PathologicalMaxTokenBytes {
+		t.Errorf("default content_filter thresholds = %+v, want %+v", cf, want)
+	}
+
+	// ResolveContentFilter must reproduce the package defaults exactly.
+	if resolved := cf.ResolveContentFilter(); resolved != want {
+		t.Errorf("ResolveContentFilter(defaults) = %+v, want %+v", resolved, want)
+	}
+}
+
+// TestVectorIndexConfig_ContentFilter_YAMLRoundTrip covers parsing an
+// explicit content_filter block, the interaction with ApplyDefaults (an
+// explicit false must be preserved, never re-enabled), and the marshal
+// round-trip.
+func TestVectorIndexConfig_ContentFilter_YAMLRoundTrip(t *testing.T) {
+	const src = `
+vector_index:
+  content_filter:
+    enabled: false
+    detect_generated: false
+    detect_minified: true
+    detect_pathological: true
+    generated_header_bytes: 4096
+    minified_min_bytes: 32768
+    minified_max_line_bytes: 8192
+    minified_max_whitespace_ratio: 0.05
+    pathological_min_bytes: 65536
+    pathological_max_token_bytes: 16384
+`
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(src), &cfg); err != nil {
+		t.Fatalf("yaml.Unmarshal() failed: %v", err)
+	}
+	cf := cfg.VectorIndex.ContentFilter
+	if cf.Enabled == nil || *cf.Enabled {
+		t.Errorf("enabled = %v, want explicit false", cf.Enabled)
+	}
+	if cf.DetectGenerated == nil || *cf.DetectGenerated {
+		t.Errorf("detect_generated = %v, want explicit false", cf.DetectGenerated)
+	}
+	if cf.MinifiedMaxWhitespaceRatio != 0.05 {
+		t.Errorf("minified_max_whitespace_ratio = %v, want 0.05", cf.MinifiedMaxWhitespaceRatio)
+	}
+
+	// ApplyDefaults fills the unset pointer bools but preserves explicit
+	// false values and explicit thresholds.
+	ApplyDefaults(&cfg)
+	if *cfg.VectorIndex.ContentFilter.Enabled {
+		t.Error("ApplyDefaults must preserve explicit content_filter.enabled: false")
+	}
+	if *cfg.VectorIndex.ContentFilter.DetectGenerated {
+		t.Error("ApplyDefaults must preserve explicit detect_generated: false")
+	}
+	if cfg.VectorIndex.ContentFilter.DetectMinified == nil || !*cfg.VectorIndex.ContentFilter.DetectMinified {
+		t.Error("ApplyDefaults must default unset detect_minified to true")
+	}
+	if cfg.VectorIndex.ContentFilter.GeneratedHeaderBytes != 4096 {
+		t.Errorf("ApplyDefaults clobbered explicit generated_header_bytes: %d", cfg.VectorIndex.ContentFilter.GeneratedHeaderBytes)
+	}
+
+	// The resolved policy reflects the explicit values.
+	resolved := cfg.VectorIndex.ContentFilter.ResolveContentFilter()
+	if resolved.Enabled || resolved.DetectGenerated {
+		t.Errorf("resolved policy = %+v, want enabled=false detect_generated=false", resolved)
+	}
+	if resolved.GeneratedHeaderBytes != 4096 || resolved.MinifiedMaxLineBytes != 8192 {
+		t.Errorf("resolved thresholds = %+v, want explicit values", resolved)
+	}
+
+	data, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal() failed: %v", err)
+	}
+	var restored Config
+	if err := yaml.Unmarshal(data, &restored); err != nil {
+		t.Fatalf("round-trip yaml.Unmarshal() failed: %v", err)
+	}
+	if restored.VectorIndex.ContentFilter.Enabled == nil || *restored.VectorIndex.ContentFilter.Enabled {
+		t.Error("round-tripped content_filter.enabled must stay false")
+	}
+	if restored.VectorIndex.ContentFilter.MinifiedMaxWhitespaceRatio != 0.05 {
+		t.Errorf("round-tripped minified_max_whitespace_ratio = %v, want 0.05", restored.VectorIndex.ContentFilter.MinifiedMaxWhitespaceRatio)
+	}
+}
+
+// TestVectorIndexConfig_ContentFilter_Validation verifies that negative
+// thresholds and out-of-range ratios fail fast at load time.
+func TestVectorIndexConfig_ContentFilter_Validation(t *testing.T) {
+	bad := []string{
+		"vector_index:\n  content_filter:\n    generated_header_bytes: -1\n",
+		"vector_index:\n  content_filter:\n    minified_min_bytes: -100\n",
+		"vector_index:\n  content_filter:\n    minified_max_line_bytes: -5\n",
+		"vector_index:\n  content_filter:\n    pathological_min_bytes: -1\n",
+		"vector_index:\n  content_filter:\n    pathological_max_token_bytes: -1\n",
+		"vector_index:\n  content_filter:\n    minified_max_whitespace_ratio: 1.5\n",
+		"vector_index:\n  content_filter:\n    minified_max_whitespace_ratio: -0.1\n",
+	}
+	for _, src := range bad {
+		var cfg Config
+		if err := yaml.Unmarshal([]byte(src), &cfg); err != nil {
+			t.Fatalf("yaml.Unmarshal() failed: %v", err)
+		}
+		if err := validate(&cfg); err == nil {
+			t.Errorf("validate() must reject %q", strings.TrimSpace(src))
+		}
 	}
 }

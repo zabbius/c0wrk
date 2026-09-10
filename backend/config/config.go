@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/sp4rk/llm"
 
 	"gopkg.in/yaml.v3"
@@ -187,6 +188,11 @@ type VectorIndexConfig struct {
 	// applied its own default.
 	EmbeddingBatchSize int `yaml:"embedding_batch_size"`
 
+	// EmbeddingCacheMaxBytes caps the branch-independent content-addressed
+	// embedding cache stored under each project's vector-index directory.
+	// 0 (or unset) defaults to 512 MiB; a negative value disables it.
+	EmbeddingCacheMaxBytes int64 `yaml:"embedding_cache_max_bytes"`
+
 	// PrepWorkers is the number of parallel file-preparation workers
 	// (read/hash/chunk) overlapping ONNX inference in the indexing
 	// pipeline. 1 reproduces the historical serial behaviour; higher
@@ -210,6 +216,14 @@ type VectorIndexConfig struct {
 	// re-chunked — no manual Reindex required.
 	ChunkOverlap int `yaml:"chunk_overlap"`
 
+	// ContentFilter configures deterministic early rejection of generated,
+	// minified, and pathological files before chunking (see
+	// VectorIndexContentFilterConfig). Unset fields fall back to the
+	// vectorindex package defaults; the resolved policy participates in
+	// the chunker fingerprint, so policy changes re-validate affected
+	// files automatically.
+	ContentFilter VectorIndexContentFilterConfig `yaml:"content_filter"`
+
 	// SearchWaitTimeoutMs bounds, in milliseconds, how long a consumer may
 	// WAIT for the vector index to become ready (e.g. right after a project
 	// switch while the initial index pass is still running). It is a
@@ -226,6 +240,67 @@ type VectorIndexConfig struct {
 	// execution is separately bounded by the same value as
 	// defense-in-depth.
 	SearchWaitTimeoutMs *int `yaml:"search_wait_timeout_ms"`
+}
+
+// VectorIndexContentFilterConfig is the YAML surface of the pre-chunk content
+// policy (see vectorindex.ContentFilterConfig). Every field is optional:
+// pointer bools distinguish "unset" (package default) from an explicit false;
+// zero numeric thresholds fall back to the package defaults, matching the
+// rest of the vector_index knobs.
+type VectorIndexContentFilterConfig struct {
+	// Enabled gates the whole policy. Nil (unset) resolves to true.
+	Enabled *bool `yaml:"enabled"`
+	// DetectGenerated / DetectMinified / DetectPathological toggle the
+	// individual heuristics. Nil (unset) resolves to true.
+	DetectGenerated    *bool `yaml:"detect_generated"`
+	DetectMinified     *bool `yaml:"detect_minified"`
+	DetectPathological *bool `yaml:"detect_pathological"`
+
+	// Numeric thresholds; 0 (or unset) keeps the package default.
+	GeneratedHeaderBytes       int     `yaml:"generated_header_bytes"`
+	MinifiedMinBytes           int     `yaml:"minified_min_bytes"`
+	MinifiedMaxLineBytes       int     `yaml:"minified_max_line_bytes"`
+	MinifiedMaxWhitespaceRatio float64 `yaml:"minified_max_whitespace_ratio"`
+	PathologicalMinBytes       int     `yaml:"pathological_min_bytes"`
+	PathologicalMaxTokenBytes  int     `yaml:"pathological_max_token_bytes"`
+}
+
+// ResolveContentFilter converts the YAML layer struct into the resolved
+// vectorindex policy. Absent fields inherit DefaultContentFilterConfig, so a
+// missing content_filter block behaves exactly like the package default.
+func (c VectorIndexContentFilterConfig) ResolveContentFilter() vectorindex.ContentFilterConfig {
+	resolved := vectorindex.DefaultContentFilterConfig()
+	if c.Enabled != nil {
+		resolved.Enabled = *c.Enabled
+	}
+	if c.DetectGenerated != nil {
+		resolved.DetectGenerated = *c.DetectGenerated
+	}
+	if c.DetectMinified != nil {
+		resolved.DetectMinified = *c.DetectMinified
+	}
+	if c.DetectPathological != nil {
+		resolved.DetectPathological = *c.DetectPathological
+	}
+	if c.GeneratedHeaderBytes > 0 {
+		resolved.GeneratedHeaderBytes = c.GeneratedHeaderBytes
+	}
+	if c.MinifiedMinBytes > 0 {
+		resolved.MinifiedMinBytes = c.MinifiedMinBytes
+	}
+	if c.MinifiedMaxLineBytes > 0 {
+		resolved.MinifiedMaxLineBytes = c.MinifiedMaxLineBytes
+	}
+	if c.MinifiedMaxWhitespaceRatio > 0 {
+		resolved.MinifiedMaxWhitespaceRatio = c.MinifiedMaxWhitespaceRatio
+	}
+	if c.PathologicalMinBytes > 0 {
+		resolved.PathologicalMinBytes = c.PathologicalMinBytes
+	}
+	if c.PathologicalMaxTokenBytes > 0 {
+		resolved.PathologicalMaxTokenBytes = c.PathologicalMaxTokenBytes
+	}
+	return resolved
 }
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.
@@ -1170,6 +1245,27 @@ func validate(cfg *Config) error {
 				)
 			}
 		}
+	}
+
+	// Validate vector_index.content_filter thresholds: explicit values must
+	// be non-negative and the whitespace ratio within [0, 1]. A mis-typed
+	// threshold (negative bytes, ratio > 1) would silently disable a
+	// heuristic in the detector, so it fails fast at load time instead.
+	cf := cfg.VectorIndex.ContentFilter
+	for name, v := range map[string]int{
+		"generated_header_bytes":       cf.GeneratedHeaderBytes,
+		"minified_min_bytes":           cf.MinifiedMinBytes,
+		"minified_max_line_bytes":      cf.MinifiedMaxLineBytes,
+		"pathological_min_bytes":       cf.PathologicalMinBytes,
+		"pathological_max_token_bytes": cf.PathologicalMaxTokenBytes,
+	} {
+		if v < 0 {
+			return fmt.Errorf("vector_index.content_filter.%s must be >= 0, got %d", name, v)
+		}
+	}
+	if cf.MinifiedMaxWhitespaceRatio < 0 || cf.MinifiedMaxWhitespaceRatio > 1 {
+		return fmt.Errorf("vector_index.content_filter.minified_max_whitespace_ratio must be within [0, 1], got %v",
+			cf.MinifiedMaxWhitespaceRatio)
 	}
 
 	// Validate and normalize security.trusted_git_repos and

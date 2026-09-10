@@ -1072,12 +1072,28 @@ func (a *App) startVectorIndexBackground(
 			a.emit("vector_index:status", map[string]any{"available": false, "reason": "model files not found"})
 			return
 		}
+		const (
+			maxSeqLength = embedding.DefaultMaxSeqLength
+			hiddenDim    = embedding.DefaultHiddenDim
+		)
+		cacheFingerprint, fingerprintErr := vectorindex.EmbeddingFingerprint(modelPath, tokenizerPath, vectorindex.EmbeddingFingerprintParams{
+			MaxSeqLength:           maxSeqLength,
+			Dimension:              hiddenDim,
+			NormalizationAlgorithm: vectorindex.EmbeddingNormalizationAlgorithm,
+		})
+		if fingerprintErr != nil {
+			// Cache is an optimization: fingerprint I/O failure must not disable
+			// vector search or indexing.
+			log.Warn("embedding cache disabled: artifact fingerprint failed", "error", fingerprintErr)
+			cacheFingerprint = ""
+		}
+
 		emb, embErr := embedding.NewEmbedder(embedding.EmbedderConfig{
 			ModelPath:      modelPath,
 			TokenizerPath:  tokenizerPath,
 			LibraryPath:    libraryPath,
-			MaxSeqLength:   512,
-			HiddenDim:      512,
+			MaxSeqLength:   maxSeqLength,
+			HiddenDim:      hiddenDim,
 			BatchSize:      cfg.VectorIndex.EmbeddingBatchSize,
 			IntraOpThreads: cfg.VectorIndex.EmbeddingThreads,
 			Logger:         log,
@@ -1088,6 +1104,12 @@ func (a *App) startVectorIndexBackground(
 			return
 		}
 
+		// Content filter: deterministic early rejection of generated /
+		// minified / pathological files before chunking. Resolved from
+		// vector_index.content_filter (defaults materialized by
+		// ApplyDefaults); the resolved policy participates in the chunker
+		// fingerprint, so policy changes re-validate sidecars.
+		contentFilter := cfg.VectorIndex.ContentFilter.ResolveContentFilter()
 		vectorMgr, err := vectorindex.NewManager(vectorindex.ManagerConfig{
 			EmbeddingFunc: emb.EmbeddingFunc(),
 			// BatchEmbedder enables the batched document-embedding path in
@@ -1108,16 +1130,20 @@ func (a *App) startVectorIndexBackground(
 			MaxFileSize:      cfg.VectorIndex.MaxFileSize,
 			MaxChunkSize:     cfg.VectorIndex.MaxChunkSize,
 			MaxChunksPerFile: cfg.VectorIndex.MaxChunksPerFile,
+			ContentFilter:    &contentFilter,
 			// Indexing/search tuning knobs (vector_index.*). The config is
 			// resolved (ApplyDefaults ran), so every value carries an
 			// explicit default here; EmbeddingBatchSize must match the
 			// EmbedderConfig value above — the Manager stores it for the
 			// batched-embedding path, the embedder uses it as its ONNX
 			// batch session capacity.
-			EmbeddingBatchSize: cfg.VectorIndex.EmbeddingBatchSize,
-			PrepWorkers:        cfg.VectorIndex.PrepWorkers,
-			Debounce:           time.Duration(cfg.VectorIndex.DebounceMs) * time.Millisecond,
-			ChunkOverlap:       cfg.VectorIndex.ChunkOverlap,
+			EmbeddingBatchSize:        cfg.VectorIndex.EmbeddingBatchSize,
+			EmbeddingCacheFingerprint: cacheFingerprint,
+			EmbeddingDimension:        hiddenDim,
+			EmbeddingCacheMaxBytes:    cfg.VectorIndex.EmbeddingCacheMaxBytes,
+			PrepWorkers:               cfg.VectorIndex.PrepWorkers,
+			Debounce:                  time.Duration(cfg.VectorIndex.DebounceMs) * time.Millisecond,
+			ChunkOverlap:              cfg.VectorIndex.ChunkOverlap,
 			// SearchWaitTimeout: 0 = "fail fast" (explicit sentinel from
 			// config, never defaulted); stored on the Manager for the
 			// search-path wiring.
