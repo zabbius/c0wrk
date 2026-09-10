@@ -657,7 +657,9 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 		if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, config.ProjectVectorIndexPath(f.agentDir, p.ID), vectorindex.ProjectCallbacks{}); switchErr != nil {
 			return fmt.Errorf("switching vector index project: %w", switchErr)
 		}
-		f.emitEvent(EventVectorIndexStatus, VectorIndexStatus{State: "unavailable", Indices: []string{}})
+		st := VectorIndexStatus{State: "unavailable", Indices: []string{}}
+		f.applyEmbedderInfo(&st)
+		f.emitEvent(EventVectorIndexStatus, st)
 		return nil
 	}
 
@@ -676,7 +678,7 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 	// already uses.
 	if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, config.ProjectVectorIndexPath(f.agentDir, p.ID), vectorindex.ProjectCallbacks{
 		OnProgress: func(phase vectorindex.IndexPhase, state vectorindex.IndexState, indexed, total int, file string) {
-			f.emitEvent(EventVectorIndexStatus, VectorIndexStatus{
+			st := VectorIndexStatus{
 				State:        string(state),
 				Phase:        string(phase),
 				Indices:      []string{"vector", "lexical"},
@@ -685,15 +687,19 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 				TotalFiles:   total,
 				CurrentFile:  file,
 				Branch:       vm.GetIndexStatus().Branch,
-			})
+			}
+			f.applyEmbedderInfo(&st)
+			f.emitEvent(EventVectorIndexStatus, st)
 		},
 		OnFailure: func(err error) {
 			f.log().Warn("vector index init failed for project; search unavailable",
 				"project", p.ID, "error", err)
-			f.emitEvent(EventVectorIndexStatus, VectorIndexStatus{
+			st := VectorIndexStatus{
 				State:   string(vectorindex.IndexStateUnavailable),
 				Indices: []string{},
-			})
+			}
+			f.applyEmbedderInfo(&st)
+			f.emitEvent(EventVectorIndexStatus, st)
 		},
 	}); switchErr != nil {
 		return fmt.Errorf("switching vector index project: %w", switchErr)
