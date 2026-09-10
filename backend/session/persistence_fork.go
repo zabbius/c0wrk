@@ -22,9 +22,9 @@ type ForkReviewCloner func(ctx context.Context, tx *sql.Tx, srcSessionID, dstSes
 
 // ForkSession creates a deep, independent copy of a session and all of its
 // associated data — messages, terminal commands, work directories, tasks and
-// their steps/facts/attachments/trajectory — with freshly generated
-// identifiers (new session id, new task ids, regenerated work-directory UUIDs)
-// so the fork shares no rows with the original.
+// their steps/facts/attachments/trajectory/goal state/delegation specs — with
+// freshly generated identifiers (new session id, new task ids, regenerated
+// work-directory UUIDs) so the fork shares no rows with the original.
 //
 // Runtime counters (tokens, fill percent) and the model/family fields are
 // reset: the fork keeps the conversation history but starts with fresh runtime
@@ -166,7 +166,10 @@ func (s *SQLiteSessionStore) forkSessionWorkDirs(ctx context.Context, tx *sql.Tx
 
 // forkTasks copies every task of the source session into the fork, generating a
 // fresh task id for each and remapping the dependent rows (steps, facts,
-// attachments, trajectory, goal state) onto it. completed_at NULL is preserved
+// attachments, trajectory, goal state, delegation specs) onto it. Step-level
+// identifiers (step ids, delegation ids) are preserved verbatim — only the
+// task id is remapped — so the fork's own resume wave can still correlate
+// delegation specs with step results. completed_at NULL is preserved
 // naturally via INSERT ... SELECT.
 func (s *SQLiteSessionStore) forkTasks(ctx context.Context, tx *sql.Tx, srcID, newSessionID string) error {
 	rows, err := tx.QueryContext(ctx,
@@ -245,6 +248,21 @@ func (s *SQLiteSessionStore) forkTasks(ctx context.Context, tx *sql.Tx, srcID, n
 			newTaskID, oldTaskID,
 		); err != nil {
 			return fmt.Errorf("failed to copy task goal state for %q: %w", oldTaskID, err)
+		}
+
+		// task_delegations — persisted delegation specs, the input of the
+		// system auto-resume wave. delegation_id/parent_id reference step
+		// ids, which this fork preserves verbatim, so a plain row copy keeps
+		// the fork's own Resume able to rebuild paused subagents. Without
+		// this copy a forked task could carry paused steps whose specs are
+		// gone — the wave would silently find nothing to relaunch.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO task_delegations (task_id, delegation_id, parent_id, depth, spec, created_at)
+			SELECT ?, delegation_id, parent_id, depth, spec, created_at
+			FROM task_delegations WHERE task_id = ?`,
+			newTaskID, oldTaskID,
+		); err != nil {
+			return fmt.Errorf("failed to copy task delegations for %q: %w", oldTaskID, err)
 		}
 	}
 	if err := rows.Err(); err != nil {

@@ -12,8 +12,8 @@ import (
 )
 
 // seedSessionForFork populates a session with messages, terminal commands, work
-// directories, a completed task (with steps/facts/attachments/trajectory) and
-// returns the source session id and the source task id.
+// directories, a completed task (with steps/facts/attachments/trajectory/
+// delegation spec) and returns the source session id and the source task id.
 func seedSessionForFork(t *testing.T, store *SQLiteSessionStore, name string) (sessionID, taskID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -85,6 +85,13 @@ func seedSessionForFork(t *testing.T, store *SQLiteSessionStore, name string) (s
 	}
 	if err := store.SaveGoalState(ctx, taskID, json.RawMessage(`{"condition":"make tests green"}`)); err != nil {
 		t.Fatalf("SaveGoalState: %v", err)
+	}
+	if err := store.SaveDelegationSpec(ctx, taskID, TaskDelegationRecord{
+		DelegationID: "del_1", TaskID: taskID, ParentID: "", Depth: 0,
+		Spec:      json.RawMessage(`{"task":{"id":"del_1","summary":"s","task":"do the delegated thing"}}`),
+		CreatedAt: completedAt,
+	}); err != nil {
+		t.Fatalf("SaveDelegationSpec: %v", err)
 	}
 
 	return sessionID, taskID
@@ -232,6 +239,18 @@ func TestForkSession_FullCopyAndRemapping(t *testing.T) {
 	goal, err := store.LoadGoalState(ctx, newTaskID)
 	if err != nil || goal == nil || string(goal) != `{"condition":"make tests green"}` {
 		t.Errorf("forked goal state not remapped: %s (err %v)", string(goal), err)
+	}
+	// Delegation specs remapped onto the new task id; delegation ids are
+	// preserved verbatim (they reference step ids, which the fork keeps).
+	delegs, err := store.LoadDelegationSpecs(ctx, newTaskID)
+	if err != nil || len(delegs) != 1 {
+		t.Fatalf("forked delegation specs = %+v (err %v), want exactly 1", delegs, err)
+	}
+	if delegs[0].TaskID != newTaskID || delegs[0].DelegationID != "del_1" || delegs[0].ParentID != "" || delegs[0].Depth != 0 {
+		t.Errorf("forked delegation spec not remapped: %+v", delegs[0])
+	}
+	if string(delegs[0].Spec) != `{"task":{"id":"del_1","summary":"s","task":"do the delegated thing"}}` {
+		t.Errorf("forked delegation spec content mismatch: %s", string(delegs[0].Spec))
 	}
 }
 

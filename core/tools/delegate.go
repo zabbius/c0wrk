@@ -10,6 +10,7 @@ import (
 
 	sdktools "github.com/v0lka/sp4rk/tools"
 
+	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agents"
 )
 
@@ -113,6 +114,20 @@ type DelegationResult struct {
 // an Executor, ContextManager, scoped emitter, and tool set for each task.
 type DelegationLauncher interface {
 	Launch(ctx context.Context, tasks []DelegationTask, registry *DelegationRegistry) []DelegationResult
+	// CompletedStep reports the blackboard's successful StepResult for a
+	// delegation id, when one exists. The delegate tool uses it for its
+	// duplicate guard: a task id that already settled must be refused and
+	// replayed instead of re-run as a fresh subagent.
+	CompletedStep(id string) (DelegationCompletedStep, bool)
+}
+
+// DelegationCompletedStep is the settled outcome of a delegation id that
+// already carries a successful StepResult on the blackboard (settled by the
+// auto-resume wave or an earlier leg of the task): enough to replay the entry
+// in a registry so co-launched dependents still resolve.
+type DelegationCompletedStep struct {
+	Output string
+	Steps  []agent.Step
 }
 
 // AgentResolver looks up a Subagent Profile by name. It is injected into the
@@ -189,17 +204,45 @@ func (t *DelegateTool) Execute(ctx context.Context, input json.RawMessage) (sdkt
 		return sdktools.ErrorResult("delegate validation failed: %v", err), nil
 	}
 
+	// Duplicate guard — BEFORE registration, so a refusal never re-fires the
+	// spec sink (RegisterTask) and shifts the persisted created_at ordering:
+	// a task id that already carries a SUCCESSFUL StepResult on the
+	// blackboard (e.g. settled by the auto-resume wave before this run
+	// started, or completed in a prior leg of the task) must not silently
+	// re-run as a fresh subagent — that would duplicate the work. The settled
+	// result is replayed into the registry via Register (which carries no
+	// spec sink) so co-launched dependents still resolve, and the caller gets
+	// a factual refusal pointing at the existing output.
+	results := make([]DelegationResult, 0, len(params.Tasks))
+	runnable := make([]DelegationTask, 0, len(params.Tasks))
 	for _, task := range params.Tasks {
-		mode := task.Mode
-		if mode == "" {
-			mode = "blocking"
+		if done, ok := launcher.CompletedStep(task.ID); ok {
+			mode := task.Mode
+			if mode == "" {
+				mode = "blocking"
+			}
+			if err := registry.Register(task.ID, task.Summary, task.DependsOn, mode); err == nil {
+				registry.Complete(task.ID, done.Output, nil, done.Steps)
+			}
+			results = append(results, DelegationResult{
+				ID:     task.ID,
+				Status: DelegationStatusFailed,
+				Error:  fmt.Errorf("delegation %q already completed earlier in this task — its output is on the blackboard (read_step_output); delegate fresh work under a new id", task.ID),
+			})
+			continue
 		}
-		if err := registry.Register(task.ID, task.Summary, task.DependsOn, mode); err != nil {
+		runnable = append(runnable, task)
+	}
+
+	for _, task := range runnable {
+		if err := registry.RegisterTask(task); err != nil {
 			return sdktools.ErrorResult("delegate registration failed: %v", err), nil
 		}
 	}
 
-	results := launcher.Launch(ctx, params.Tasks, registry)
+	if len(runnable) > 0 {
+		results = append(results, launcher.Launch(ctx, runnable, registry)...)
+	}
 	return buildDelegateToolResult(results), nil
 }
 
@@ -244,7 +287,7 @@ func buildDelegateToolResult(results []DelegationResult) sdktools.ToolResult {
 	if len(paused) > 0 {
 		sb.WriteString("## Delegations paused\n\n")
 		for _, id := range paused {
-			fmt.Fprintf(&sb, "- %s (paused at a step boundary; its partial trajectory is checkpointed. Re-invoke delegate with the same task id to resume.)\n", id)
+			fmt.Fprintf(&sb, "- %s (paused by the user at a step boundary; its partial trajectory is checkpointed and the system resumes it automatically when the task resumes)\n", id)
 		}
 		sb.WriteString("\n")
 	}

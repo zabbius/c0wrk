@@ -2,17 +2,20 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/v0lka/c0wrk/core/goal"
 	"github.com/v0lka/c0wrk/core/markitdown"
@@ -912,6 +915,13 @@ func (o *Orchestrator) logInfo(msg string, args ...any) {
 	}
 }
 
+// logWarn logs a WARN level message if logger is not nil.
+func (o *Orchestrator) logWarn(msg string, args ...any) {
+	if o.logger != nil {
+		o.logger.Warn(msg, args...)
+	}
+}
+
 // mergeSkillNames combines router-matched skill names with user-specified skill names,
 // deduplicating by name. Router-matched names come first, user names add any extras.
 func mergeSkillNames(routerMatched, userSpecified []string) []string {
@@ -1038,10 +1048,14 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 // Resume continues execution of a previously interrupted task from its checkpoint state.
 // The blackboard must be pre-loaded with the task's persisted state (via RestoreBlackboard).
 //
-// nudge is an optional user message injected on resume (resume-with-nudge):
-// when non-empty it is threaded to the Conductor's PendingUserInterjection so
-// it lands as the final user message next to the pending tool result in the
-// very first resumed LLM call. Empty resumes silently from the checkpoint.
+// nudge is an optional user message injected on resume (resume-with-nudge).
+// On the plain Conductor path it rides on the task message (ahead of the
+// auto-resume wave summary), and it is also threaded into every subagent the
+// wave relaunches — so the system-driven wave honors the user's latest
+// steering instead of acting on it only after the fact. On the goal-loop path
+// it keeps the historical mechanism: threaded to the first resumed turn's
+// PendingUserInterjection so it lands as the final user message next to the
+// pending tool result. Empty resumes silently from the checkpoint.
 //
 // Error semantics: when the sp4rk engine returns orchestration.ErrExecutionIncomplete with
 // a non-nil ExecutionResult, Resume returns a valid *HandleResult alongside the error.
@@ -1120,6 +1134,47 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 
 	o.logInfo("resume_task", "reflections", len(bb.GetReflections()), "domain", domain, "complexity", complexity)
 
+	// AUTO-RESUME WAVE (system-driven, no LLM): settle everything that was
+	// paused before the first conductor LLM call — paused plan steps continue
+	// via the plan DAG engine, paused delegates are rebuilt from their
+	// persisted specs and re-launched with the SAME ids (their chat blocks
+	// continue). A pause that re-trips mid-wave checkpoints cleanly and ends
+	// the Resume here, without a single LLM call. The wave returns a factual
+	// summary of settled outcomes that rides on the task message below. The
+	// resume nudge is threaded in so the relaunched subagents honor the
+	// user's latest steering — without it, the nudge would first reach the
+	// conductor's LLM call, i.e. only AFTER the wave has already done work.
+	wave, err := o.resumePausedWork(ctx, bb, nudge)
+	waveFallbackNote := ""
+	if err != nil {
+		// The wave is best-effort scaffolding: a failure to even START the
+		// resume (wiring error) must not doom the whole task — fall through
+		// to the plain conductor path, which still works via the seeded
+		// trajectory. Truly failed subagents surface in their results, not
+		// as a wave error.
+		o.logWarn("resume_task: auto-resume wave skipped", "error", err)
+		// The plan-continuation context must not degrade silently: without
+		// the wave, execute_plan's own soft hints still work, but the
+		// explicit "continue the approved plan" framing would be gone. Tell
+		// the conductor factually when the approved plan has unreached steps.
+		if planHasUnreachedSteps(bb) {
+			waveFallbackNote = "\n\n[Auto-resume note: the system resume wave could not run and the approved plan still has unreached steps; continue it via execute_plan.]"
+		}
+	}
+	if wave.pausedAgain {
+		o.logInfo("resume_task: auto-resume wave paused again — checkpointing without an LLM call")
+		o.emitSessionPaused()
+		if pbb, ok := bb.(PersistableBlackboard); ok {
+			persistTaskOutcome(pbb, &orchestration.ExecutionResult{Status: orchestration.ExecutionStatusPaused})
+		}
+		return &HandleResult{
+			Output:          "",
+			RoutingDecision: routing,
+			Blackboard:      bb,
+			Status:          orchestration.ExecutionStatusPaused,
+		}, nil
+	}
+
 	// Delegate to the Conductor. The restored blackboard carries facts and
 	// step results from the prior run; the Conductor reads them via tools
 	// (search_facts, read_step_output) and continues toward completion. The
@@ -1136,7 +1191,14 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// terminal goal state falls through to the normal resume path.
 	if goalState != nil && !goalState.Status.IsTerminal() {
 		o.logInfo("resume_task: resuming goal loop", "status", goalState.Status, "turn", goalState.TurnCount)
-		return o.resumeGoalLoop(ctx, bb.GetOriginalRequest(), bb, availableTools, plansDir, routing, goalState, resumeSteps, nudge, forceCompactionStrategy)
+		goalMessage := bb.GetOriginalRequest()
+		if wave.summary != "" {
+			goalMessage += wave.summary
+		}
+		if waveFallbackNote != "" {
+			goalMessage += waveFallbackNote
+		}
+		return o.resumeGoalLoop(ctx, goalMessage, bb, availableTools, plansDir, routing, goalState, resumeSteps, nudge, forceCompactionStrategy)
 	}
 
 	// Goal-mode-only tools exist solely for goal mode and must not reach a
@@ -1154,16 +1216,28 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	resumedWithPlan := planHasUnreachedSteps(bb)
 	o.logInfo("resume_task", "resumedWithPlan", resumedWithPlan)
 
-	// Task message for the resumed Conductor: the original request, plus — on
-	// a continuable resume — an unambiguous continuation directive so the
-	// model does not have to guess resume semantics (re-declare the plan,
-	// re-delegate from scratch, or treat the pause as a failure). The
-	// directive travels with the resumed task only: recordResumeOutcome
-	// appends just the assistant side to history, so the stored conversation
-	// user message keeps the clean original request.
+	// Task message for the resumed Conductor: the original request. The
+	// auto-resume wave (resumePausedWork, run above) settles everything that
+	// was paused before this run starts and appends a FACTUAL summary of the
+	// settled outcomes to the message below (see resumePausedWork) — data,
+	// never instructions. The stored conversation user message keeps the clean
+	// original request either way (recordResumeOutcome appends just the
+	// assistant side to history).
 	taskMessage := bb.GetOriginalRequest()
-	if resumedWithPlan {
-		taskMessage += resumeContinuationDirective
+	// Resume-with-nudge rides on the task message (ahead of the wave summary)
+	// rather than arriving separately as the conductor's first-call
+	// interjection: the model sees the user's follow-up together with the
+	// request and the wave data, exactly once. runConductor therefore gets an
+	// empty nudge below. The goal-loop branch keeps its own first-turn
+	// interjection mechanism (see resumeGoalLoop).
+	if nudge != "" {
+		taskMessage += "\n\n## User follow-up on resume\n\n" + nudge
+	}
+	if wave.summary != "" {
+		taskMessage += wave.summary
+	}
+	if waveFallbackNote != "" {
+		taskMessage += waveFallbackNote
 	}
 
 	// Reconstruct image content blocks from the conversation history so the
@@ -1199,7 +1273,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// (dropFailedExchangeTail).
 	conversationHistory := truncateHistory(dropFailedExchangeTail(o.historySnapshot(), bb.GetOriginalRequest()), o.config.ConductorHistoryWindow)
 
-	execResult, err := o.runConductor(ctx, taskMessage, bb, availableTools, plansDir, conversationHistory, resumeSteps, resumeContentBlocks, nudge, forceCompactionStrategy, resumedWithPlan)
+	execResult, err := o.runConductor(ctx, taskMessage, bb, availableTools, plansDir, conversationHistory, resumeSteps, resumeContentBlocks, "", forceCompactionStrategy, resumedWithPlan)
 	// Cooperative pause: a clean, recoverable checkpoint — not a failure.
 	// Surface it, persist the task as resumable (persistTaskOutcome below),
 	// and return the paused result with a nil error so the backend treats it
@@ -1242,25 +1316,320 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	return result, incompleteErr
 }
 
-// resumeContinuationDirective is appended to the resumed Conductor's task
-// message when the task was paused with an approved plan that still has
-// unreached steps (resumedWithPlan). It removes resume-semantic ambiguity the
-// model could otherwise guess wrong: the approved plan must be continued via
-// execute_plan (never re-declared), paused delegations are resumed by
-// re-invoking delegate with the same task id so their checkpointed partial
-// trajectories are picked up, and a pause is a clean checkpoint — never an
-// error. This mirrors the tool-level signals the resumed run already sees
-// (declare_plan's "already approved" soft hint, the delegate result's
-// "Re-invoke delegate with the same task id" note) at the message level,
-// right where the first resumed decision is made.
-const resumeContinuationDirective = `
+// resumeWaveOutcome reports what the auto-resume wave settled. summary is a
+// factual, bounded digest of the settled subagent outcomes (empty when the
+// wave had nothing to do); pausedAgain is true when the universal pause
+// signal re-tripped mid-wave, checkpointing the wave's in-flight subagents.
+type resumeWaveOutcome struct {
+	summary     string
+	pausedAgain bool
+}
 
-## Resume Continuation
+// waveSummaryOutputCap bounds each subagent's output excerpt inside the wave
+// summary so a huge delegation result cannot flood the resumed task message.
+const waveSummaryOutputCap = 300
 
-This task was paused at a step boundary — a clean checkpoint, not an error — and is now resuming with its approved plan intact.
-- The plan is already approved: do NOT call declare_plan. Call execute_plan to continue the remaining steps (already-completed steps are skipped automatically).
-- Delegations that were paused mid-flight are not errors: re-invoke delegate with the same task id to resume each one — its checkpointed partial trajectory is picked up where it left off.
-`
+// resumePausedWork is the system-driven half of the pause invariant: before
+// the resumed task's first LLM call, everything that was paused is settled
+// formally — no model decision involved.
+//
+//   - A plan with unreached steps (paused OR crash-interrupted — uniform
+//     policy) continues through the same DAG engine execute_plan uses:
+//     already-successful steps are replayed, paused steps re-dispatch with
+//     their checkpointed trajectories seeded, unstarted steps run.
+//   - Paused delegates are rebuilt from their persisted specs and re-launched
+//     with the SAME ids (so their chat blocks continue), depth-ordered so a
+//     re-delegating parent resumes only after its children settled, with the
+//     children's outcomes appended to the parent's task text.
+//
+// A pause that re-trips mid-wave checkpoints cleanly (pausedAgain=true) and
+// the caller ends the Resume without any LLM call. Settled outcomes are
+// returned as a factual summary for the task message — data, never
+// instructions. Wiring failures are returned as errors for the caller to log
+// and fall through to the plain conductor path; individual subagent failures
+// surface in their results, not as wave errors.
+//
+// nudge is the optional resume-with-nudge user message: it is threaded into
+// every relaunched subagent's task text so the wave's work honors the user's
+// latest steering (the wave runs before the conductor's first LLM call, so
+// the nudge would otherwise arrive too late to steer it).
+func (o *Orchestrator) resumePausedWork(ctx context.Context, bb orchestration.Blackboard, nudge string) (resumeWaveOutcome, error) {
+	specs := delegationSpecsFromBlackboard(bb)
+	planStepIDs := planStepIDSet(bb)
+
+	hasPausedDelegates := false
+	for _, spec := range specs {
+		if planStepIDs[spec.Task.ID] {
+			continue // the plan branch owns plan-step checkpoints
+		}
+		if sr, ok := bb.GetStepResult(spec.Task.ID); ok && isPaused(sr.Error) {
+			hasPausedDelegates = true
+			break
+		}
+	}
+	continuablePlan := planHasUnreachedSteps(bb)
+	if !continuablePlan && !hasPausedDelegates {
+		return resumeWaveOutcome{}, nil
+	}
+
+	o.logInfo("resume_task: auto-resume wave starting", "continuable_plan", continuablePlan, "paused_delegates", hasPausedDelegates)
+
+	deps := o.buildConductorDeps(nil, nil)
+	planState := newPlanRunState(true)
+	inlineLifecycle := newInlineStepLifecycle(deps.emitter, bb)
+	inlineLifecycle.planState = planState
+	deps.lifecycle = inlineLifecycle
+	launcher := &conductorLauncher{deps: deps, bb: bb, planState: planState}
+
+	var sb strings.Builder
+	outcome := resumeWaveOutcome{}
+
+	// Branch 1 — continue the plan through the DAG engine.
+	if continuablePlan {
+		results, err := launcher.Execute(ctx, nil)
+		if err != nil {
+			if ctx.Err() != nil {
+				return outcome, ctx.Err()
+			}
+			return outcome, fmt.Errorf("auto-resume plan continuation failed: %w", err)
+		}
+		for _, r := range results {
+			if r.Status == "paused" {
+				outcome.pausedAgain = true
+			}
+			writeWaveSummaryLine(&sb, r.StepID, r.Status, r.Output, r.Error)
+		}
+	}
+
+	// Branch 2 — rebuild and re-launch paused delegates (depth-ordered).
+	if hasPausedDelegates && !outcome.pausedAgain {
+		pausedAgain, err := o.resumePausedDelegates(ctx, bb, launcher, specs, planStepIDs, nudge, &sb)
+		if err != nil {
+			return outcome, err
+		}
+		outcome.pausedAgain = pausedAgain
+	}
+
+	if sb.Len() > 0 {
+		outcome.summary = "\n\n## Auto-resumed subagents\n\nThe subagents below were paused or interrupted before this run and have been settled by the system; their full outputs are on the blackboard (read_step_output):\n\n" + sb.String()
+	}
+	return outcome, nil
+}
+
+// settledDelegation is a spec whose outcome is already terminal: either it
+// settled in the prior run (completed/failed) or it never checkpointed
+// (crash-interrupted, represented as a failed entry with a factual reason).
+// These are replayed into each wave registry as terminal states — they are
+// never relaunched.
+type settledDelegation struct {
+	task    tools.DelegationTask
+	output  string
+	execErr error
+	steps   []agent.Step
+}
+
+// resumePausedDelegates re-launches the paused delegations recorded in specs,
+// depth-ordered (children before parents), settling their results on the
+// blackboard through the launcher's normal completion paths.
+//
+// Each depth group gets its OWN registry created at that depth
+// (NewDelegationRegistryWithDepth): a relaunched delegation resumes at its
+// real position in the re-delegation hierarchy, so the maxRedelegDepth cap is
+// measured from the original depth rather than being reset to 0 — a
+// pause/resume cycle must not grant extra re-delegation levels. Already
+// settled specs are replayed into that registry (via Register — no spec sink:
+// the wave registry never persists, the specs are already in the store, and
+// re-firing the sink would shift created_at ordering) so dependency
+// resolution sees them.
+func (o *Orchestrator) resumePausedDelegates(
+	ctx context.Context,
+	bb orchestration.Blackboard,
+	launcher *conductorLauncher,
+	specs []tools.DelegationSpec,
+	planStepIDs map[string]bool,
+	nudge string,
+	sb *strings.Builder,
+) (bool, error) {
+	pausedByDepth := make(map[int][]tools.DelegationSpec)
+	var settled []settledDelegation
+	for _, spec := range specs {
+		if planStepIDs[spec.Task.ID] {
+			continue
+		}
+		sr, ok := bb.GetStepResult(spec.Task.ID)
+		switch {
+		case !ok:
+			// The delegation never settled (crashed mid-flight — no
+			// checkpoint). Deterministically mark it failed so dependents
+			// unblock with a clear reason instead of hanging; the conductor
+			// re-delegates it as fresh work. The failure is also surfaced in
+			// the wave summary so the model knows the work never ran —
+			// dependents would otherwise only see "dependencies could not
+			// be satisfied" with no cause.
+			err := fmt.Errorf("delegation %q did not checkpoint (interrupted); re-delegate the work if still needed", spec.Task.ID)
+			settled = append(settled, settledDelegation{task: spec.Task, execErr: err})
+			writeWaveSummaryLine(sb, spec.Task.ID, "interrupted", "", err)
+		case isPaused(sr.Error):
+			pausedByDepth[spec.Depth] = append(pausedByDepth[spec.Depth], spec)
+		default:
+			// Settled in the prior run: replayed into the wave registries so
+			// this wave's dependency resolution sees it as
+			// completed/failed.
+			settled = append(settled, settledDelegation{task: spec.Task, output: sr.FullOutput, execErr: sr.Error, steps: sr.Steps})
+		}
+	}
+
+	depths := make([]int, 0, len(pausedByDepth))
+	for d := range pausedByDepth {
+		depths = append(depths, d)
+	}
+	// Descending: children live in deeper registries (a redelegating parent's
+	// child registry is registry.Depth()+1), so they must settle BEFORE the
+	// parents that consume their outcomes.
+	slices.SortFunc(depths, func(a, b int) int { return cmp.Compare(b, a) })
+
+	pausedAgain := false
+	for _, depth := range depths {
+		registry := tools.NewDelegationRegistryWithDepth(depth)
+		for _, s := range settled {
+			if err := registry.RegisterTask(s.task); err == nil {
+				registry.Complete(s.task.ID, s.output, s.execErr, s.steps)
+			}
+		}
+
+		waveSpecs := pausedByDepth[depth]
+		tasks := make([]tools.DelegationTask, 0, len(waveSpecs))
+		for _, spec := range waveSpecs {
+			t := spec.Task
+			// The wave settles everything deterministically before the
+			// conductor's first LLM call: even an originally-async delegation
+			// re-launches blocking-in-wave (its async-ness was a property of
+			// the original run's context, not of the work itself).
+			t.Mode = "blocking"
+			// A re-delegating parent resumes only after its children settled
+			// (deeper registries first). Surface their outcomes in the
+			// parent's task text so its first LLM call sees them without
+			// extra discovery.
+			if childSummary := childDelegationOutcomes(bb, specs, spec.Task.ID); childSummary != "" {
+				t.Task += childSummary
+			}
+			// Resume-with-nudge: the user's steering must reach the
+			// relaunched subagent BEFORE it does wave work — the conductor
+			// only sees the nudge at its first LLM call, after the wave.
+			if nudge != "" {
+				t.Task += "\n\n## User follow-up provided on resume\n\n" + nudge
+			}
+			tasks = append(tasks, t)
+			// Register the relaunched task itself so its lifecycle
+			// transitions (Start/Complete from Launch) are not silent no-ops
+			// and the registry state matches what actually runs. Safe against
+			// the settled replay above: classification is exclusive per id.
+			// Invariant: a paused spec's own dependencies were already
+			// terminal in the prior run — a dependency that paused left the
+			// dependent never-started (crash-interrupted, classified above) —
+			// so registration order within the group cannot matter.
+			_ = registry.RegisterTask(t)
+		}
+		results := launcher.Launch(ctx, tasks, registry)
+		for _, r := range results {
+			if r.Status == tools.DelegationStatusPaused {
+				pausedAgain = true
+			}
+			writeWaveSummaryLine(sb, r.ID, string(r.Status), r.Output, r.Error)
+		}
+		if pausedAgain {
+			break
+		}
+	}
+	return pausedAgain, nil
+}
+
+// childDelegationOutcomes builds a bounded factual digest of the settled
+// sub-delegations spawned by the given parent step (specs with ParentID ==
+// parentID), for injection into the parent's resumed task text.
+func childDelegationOutcomes(bb orchestration.Blackboard, specs []tools.DelegationSpec, parentID string) string {
+	var sb strings.Builder
+	for _, spec := range specs {
+		if spec.ParentID != parentID {
+			continue
+		}
+		sr, ok := bb.GetStepResult(spec.Task.ID)
+		if !ok {
+			continue
+		}
+		status := "completed"
+		if sr.Error != nil {
+			status = "failed"
+		}
+		var line strings.Builder
+		fmt.Fprintf(&line, "- %s: %s", spec.Task.ID, status)
+		if detail := waveDetail(sr.FullOutput, sr.Error); detail != "" {
+			line.WriteString(" — " + detail)
+		}
+		sb.WriteString(line.String() + "\n")
+	}
+	if sb.Len() == 0 {
+		return ""
+	}
+	return "\n\n## Auto-resumed sub-delegations\n\nThese sub-delegations you launched were paused or interrupted and have been settled by the system; their full outputs are on the blackboard (read_step_output):\n\n" + sb.String()
+}
+
+// writeWaveSummaryLine appends one bounded outcome line to the wave summary.
+func writeWaveSummaryLine(sb *strings.Builder, id, status, output string, execErr error) {
+	var line strings.Builder
+	fmt.Fprintf(&line, "- %s: %s", id, status)
+	if detail := waveDetail(output, execErr); detail != "" {
+		line.WriteString(" — " + detail)
+	}
+	sb.WriteString(line.String() + "\n")
+}
+
+// waveDetail flattens and caps an outcome detail: the error text when the
+// outcome failed, otherwise the output excerpt.
+func waveDetail(output string, execErr error) string {
+	detail := output
+	if execErr != nil {
+		detail = execErr.Error()
+	}
+	detail = strings.Join(strings.Fields(detail), " ")
+	if len(detail) > waveSummaryOutputCap {
+		// Back the cut up to a rune boundary so a multi-byte character is
+		// never sliced in half — a broken rune would surface as U+FFFD
+		// replacement characters after JSON marshaling.
+		end := waveSummaryOutputCap
+		for end > 0 && !utf8.RuneStart(detail[end]) {
+			end--
+		}
+		detail = detail[:end] + "…"
+	}
+	return detail
+}
+
+// delegationSpecsFromBlackboard reads the task's persisted delegation specs
+// via the optional DelegationSpecReader capability. Blackboards without the
+// capability (plain MapBlackboard, test fakes) have no resumable delegates.
+func delegationSpecsFromBlackboard(bb orchestration.Blackboard) []tools.DelegationSpec {
+	reader, ok := bb.(DelegationSpecReader)
+	if !ok {
+		return nil
+	}
+	return reader.DelegationSpecs()
+}
+
+// planStepIDSet returns the set of step IDs of the blackboard's declared plan
+// (nil map when no plan). Membership disambiguates plan-step checkpoints
+// (owned by the plan branch) from delegate checkpoints.
+func planStepIDSet(bb orchestration.Blackboard) map[string]bool {
+	plan := bb.GetPlan()
+	if plan == nil || len(plan.Steps) == 0 {
+		return nil
+	}
+	ids := make(map[string]bool, len(plan.Steps))
+	for _, step := range plan.Steps {
+		ids[step.ID] = true
+	}
+	return ids
+}
 
 // planHasUnreachedSteps reports whether the blackboard carries a declared plan
 // with at least one step that has not completed successfully — i.e. a plan

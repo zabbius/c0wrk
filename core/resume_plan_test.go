@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
 )
 
@@ -280,92 +279,9 @@ func TestInlineStepLifecycle_CompleteAll_ContinuableReplaysRestoredSuccess(t *te
 	}
 }
 
-// TestResumeContinuationDirective_Content pins the semantic payload of the
-// message-level directive Resume appends on a continuable resume: continue the
-// approved plan via execute_plan (never a re-declare), resume paused
-// delegations by re-invoking delegate with the same task id, and frame the
-// pause as a clean checkpoint — not an error.
-func TestResumeContinuationDirective_Content(t *testing.T) {
-	for _, want := range []string{
-		"execute_plan", // continue the plan via the executor tool…
-		"declare_plan", // …never re-declare it
-		"delegate",     // resume paused delegations…
-		"same task id", // …by their original id (checkpoints picked up)
-		"not an error", // a pause is a clean checkpoint
-	} {
-		if !strings.Contains(resumeContinuationDirective, want) {
-			t.Errorf("resumeContinuationDirective must mention %q\ndirective:\n%s", want, resumeContinuationDirective)
-		}
-	}
-}
-
-// TestResume_ContinuationDirective_TogglesWithPlanState proves end-to-end
-// (Resume → runConductor → Conductor.SetTask) that the continuation directive
-// rides on the resumed Conductor's task message exactly when the plan is
-// continuable: present for a paused-with-unreached-steps resume (with the
-// original request still intact), absent for plan-less and fully-completed
-// resumes, and never leaked into the stored conversation history.
-func TestResume_ContinuationDirective_TogglesWithPlanState(t *testing.T) {
-	run := func(t *testing.T, bb orchestration.Blackboard) (*seedableRecordingCM, *Orchestrator) {
-		t.Helper()
-		mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{
-			executorFinishResponse("resumed output"),
-		}}
-		var cm *seedableRecordingCM
-		orch := newResumeTestOrchestrator(t, mockLLM, &spyEmitter{}, &cm)
-		if _, err := orch.Resume(context.Background(), bb, nil, "", nil, nil, ""); err != nil {
-			t.Fatalf("Resume failed: %v", err)
-		}
-		if cm == nil {
-			t.Fatal("context manager was never created")
-		}
-		return cm, orch
-	}
-
-	continuableBB := func() orchestration.Blackboard {
-		bb := orchestration.NewMapBlackboard()
-		bb.SetOriginalRequest("long running task")
-		bb.SetPlan(&orchestration.Plan{Steps: []orchestration.PlanStep{
-			{ID: "s1", Summary: "done earlier"},
-			{ID: "s2", Summary: "still pending"},
-		}})
-		// s1 succeeded in the PREVIOUS run; s2 never ran → continuable.
-		bb.SetStepResult("s1", "s1 output", nil, nil)
-		return bb
-	}
-
-	t.Run("continuable resume attaches the directive", func(t *testing.T) {
-		cm, orch := run(t, continuableBB())
-		if !strings.Contains(cm.taskDefinition, "Resume Continuation") {
-			t.Errorf("continuable resume must append the continuation directive, task = %q", cm.taskDefinition)
-		}
-		if !strings.Contains(cm.taskDefinition, "long running task") {
-			t.Errorf("task message must keep the original request, task = %q", cm.taskDefinition)
-		}
-		// The directive is per-run message decoration, not conversation
-		// history: no history message may carry it.
-		for _, msg := range orch.historySnapshot() {
-			if strings.Contains(msg.Content, "Resume Continuation") {
-				t.Errorf("continuation directive leaked into history message (role=%s): %q", msg.Role, msg.Content)
-			}
-		}
-	})
-
-	t.Run("plan-less resume carries no directive", func(t *testing.T) {
-		bb := orchestration.NewMapBlackboard()
-		bb.SetOriginalRequest("long running task")
-		cm, _ := run(t, bb)
-		if strings.Contains(cm.taskDefinition, "Resume Continuation") {
-			t.Errorf("plan-less resume must not carry the directive, task = %q", cm.taskDefinition)
-		}
-	})
-
-	t.Run("fully-completed plan carries no directive", func(t *testing.T) {
-		bb := continuableBB()
-		bb.SetStepResult("s2", "s2 output", nil, nil) // all steps succeeded
-		cm, _ := run(t, bb)
-		if strings.Contains(cm.taskDefinition, "Resume Continuation") {
-			t.Errorf("completed-plan resume must not carry the directive, task = %q", cm.taskDefinition)
-		}
-	})
-}
+// TestResumeContinuationDirective_Content and
+// TestResume_ContinuationDirective_TogglesWithPlanState were removed together
+// with resumeContinuationDirective: resumption is now system-driven — the
+// Resume auto-resume wave settles paused work before the first LLM call and
+// appends a factual summary (covered by the wave tests) instead of instructing
+// the model to re-invoke delegate/execute_plan.

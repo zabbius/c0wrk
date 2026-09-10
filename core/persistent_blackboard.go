@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/v0lka/c0wrk/core/goal"
+	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -36,6 +37,14 @@ type PersistableBlackboard interface {
 // BlackboardRestoreFunc restores a PersistableBlackboard from persistence.
 // Returns nil, nil if the task is not found.
 type BlackboardRestoreFunc func(taskID, sessionID string, store TaskPersistence, logger *slog.Logger, opts ...orchestration.MapBlackboardOption) (PersistableBlackboard, error)
+
+// DelegationSpecReader is an optional PersistableBlackboard capability
+// exposing the task's persisted delegation specs. The Resume auto-resume wave
+// type-asserts against it to rebuild paused delegates; blackboards without
+// the capability simply have no resumable delegates (plan-only tasks).
+type DelegationSpecReader interface {
+	DelegationSpecs() []tools.DelegationSpec
+}
 
 // ---------------------------------------------------------------------------
 // TaskPersistence — core-side abstraction for task storage
@@ -72,6 +81,14 @@ type TaskPersistence interface {
 	// LoadGoalState restores the goal-loop's *goal.GoalState for a task.
 	// Returns nil, nil when no goal state has been persisted.
 	LoadGoalState(taskID string) (*goal.GoalState, error)
+	// PersistDelegationSpec persists a delegation's full task spec (everything
+	// needed to rebuild the subagent) so a paused delegation survives the end
+	// of its Conductor run and can be resumed by the system without any LLM
+	// decision.
+	PersistDelegationSpec(taskID string, spec tools.DelegationSpec) error
+	// LoadDelegationSpecs restores all delegation specs persisted for a task.
+	// Returns nil, nil when none have been persisted.
+	LoadDelegationSpecs(taskID string) ([]tools.DelegationSpec, error)
 	// Restoration
 	LoadTaskState(taskID string) (*TaskState, error)
 	GetUnfinishedTaskID(sessionID string) (string, error) // returns "" if none
@@ -96,5 +113,9 @@ type TaskState struct {
 	Facts           []orchestration.Fact       // keyword-tagged facts
 	Attachments     []orchestration.Attachment // user-attached files converted to markdown
 	GoalState       *goal.GoalState            // goal-loop state (nil for non-goal tasks)
-	Status          string                     // "in_progress", "completed", "failed", "cancelled", "paused"
+	// Delegations holds the persisted delegation specs (task text, tools,
+	// agent profile, mode, deps, parent/depth) so the system can rebuild and
+	// auto-resume paused delegates on Resume. Empty for plan-only tasks.
+	Delegations []tools.DelegationSpec
+	Status      string // "in_progress", "completed", "failed", "cancelled", "paused"
 }

@@ -974,6 +974,7 @@ type inMemoryTaskStore struct {
 	facts        map[string]json.RawMessage
 	attachments  map[string]json.RawMessage
 	goalStates   map[string]json.RawMessage
+	delegSpecs   map[string][]TaskDelegationRecord // taskID → records (replace by DelegationID)
 
 	pauseCalls      int
 	reactivateCalls int
@@ -988,6 +989,7 @@ func newInMemoryTaskStore() *inMemoryTaskStore {
 		facts:        make(map[string]json.RawMessage),
 		attachments:  make(map[string]json.RawMessage),
 		goalStates:   make(map[string]json.RawMessage),
+		delegSpecs:   make(map[string][]TaskDelegationRecord),
 	}
 }
 
@@ -1193,6 +1195,33 @@ func (s *inMemoryTaskStore) LoadGoalState(_ context.Context, taskID string) (jso
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.goalStates[taskID], nil
+}
+
+func (s *inMemoryTaskStore) SaveDelegationSpec(_ context.Context, taskID string, rec TaskDelegationRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing := s.delegSpecs[taskID]
+	replaced := false
+	for i := range existing {
+		if existing[i].DelegationID == rec.DelegationID {
+			existing[i] = rec
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		existing = append(existing, rec)
+	}
+	s.delegSpecs[taskID] = existing
+	return nil
+}
+
+func (s *inMemoryTaskStore) LoadDelegationSpecs(_ context.Context, taskID string) ([]TaskDelegationRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]TaskDelegationRecord, len(s.delegSpecs[taskID]))
+	copy(out, s.delegSpecs[taskID])
+	return out, nil
 }
 
 func (s *inMemoryTaskStore) GetUnfinishedTask(_ context.Context, sessionID string) (*TaskRecord, error) {

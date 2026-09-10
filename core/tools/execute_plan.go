@@ -123,7 +123,7 @@ func buildExecutePlanResult(results []PlanStepResult) sdktools.ToolResult {
 	var b string
 	switch {
 	case len(paused) > 0:
-		b = fmt.Sprintf("Plan execution paused — %d succeeded, %d failed, %d paused.\n\n%s\n\nRe-invoke execute_plan to resume the paused steps.",
+		b = fmt.Sprintf("Plan execution paused by the user — %d succeeded, %d failed, %d paused.\n\n%s\n\nPaused steps are checkpointed; the system continues the plan automatically when the task resumes.",
 			len(completed), len(failed), len(paused), joinResults(summaries))
 	case len(failed) > 0:
 		b = fmt.Sprintf("Plan execution completed with %d succeeded, %d failed.\n\n%s",

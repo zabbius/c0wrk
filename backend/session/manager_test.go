@@ -1422,6 +1422,12 @@ func (m *mockTaskStoreForResumable) SaveGoalState(_ context.Context, _ string, _
 func (m *mockTaskStoreForResumable) LoadGoalState(_ context.Context, _ string) (json.RawMessage, error) {
 	return nil, nil
 }
+func (m *mockTaskStoreForResumable) SaveDelegationSpec(_ context.Context, _ string, _ TaskDelegationRecord) error {
+	return nil
+}
+func (m *mockTaskStoreForResumable) LoadDelegationSpecs(_ context.Context, _ string) ([]TaskDelegationRecord, error) {
+	return nil, nil
+}
 func (m *mockTaskStoreForResumable) GetUnfinishedTask(_ context.Context, _ string) (*TaskRecord, error) {
 	return m.unfinished, nil
 }
