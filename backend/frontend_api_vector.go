@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/v0lka/c0wrk/core/vectorindex"
+	"github.com/v0lka/sp4rk/embedding"
 )
 
 const defaultVectorBrowseTopK = 50
@@ -122,7 +123,9 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 	// unavailable state so the frontend UI reflects the dormant subsystem
 	// (neither "building" nor "ready").
 	if f.isNoProject() {
-		return VectorIndexStatus{State: "unavailable", Indices: []string{}}
+		st := VectorIndexStatus{State: "unavailable", Indices: []string{}}
+		f.applyEmbedderInfo(&st)
+		return st
 	}
 
 	result := VectorIndexStatus{}
@@ -130,6 +133,7 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 	vm := f.getVectorManager()
 	if vm == nil {
 		result.State = "unavailable"
+		f.applyEmbedderInfo(&result)
 		return result
 	}
 
@@ -151,6 +155,7 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 	indices := make([]string, 0, 2)
 	if svc == nil {
 		result.Indices = indices
+		f.applyEmbedderInfo(&result)
 		return result
 	}
 	if svc.GetCollection() != nil {
@@ -161,5 +166,44 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 	}
 	result.Indices = indices
 
+	f.applyEmbedderInfo(&result)
 	return result
+}
+
+// ListVectorIndexGPUs enumerates the NVIDIA GPUs visible on the machine for
+// the vector-index settings UI (populating the execution-provider device
+// picker). It is the lazy, on-demand counterpart to the startup GPU probe:
+// the UI calls it when the picker is opened, instead of the backend probing
+// unconditionally at startup.
+//
+// The call delegates to embedding.ListGPUDevices, which shells out to
+// nvidia-smi under the same bounded probe budget (gpuProbeTimeout, 2s) as
+// GPUInUse — so the RPC can never block the UI thread indefinitely on a
+// wedged driver.
+//
+// Semantics:
+//   - nvidia-smi not found in PATH → an empty, non-nil slice with a nil
+//     error. Absence of the NVIDIA userspace means "no GPUs to offer", not
+//     a failure — the picker renders an empty/CPU-only state.
+//   - nvidia-smi found but the invocation fails (driver down, non-zero
+//     exit, probe timeout) → nil slice with the wrapped error, so the UI
+//     can distinguish "no hardware" from "hardware present, probe failed".
+//
+// The result is independent of the running embedder: it reflects what the
+// driver reports right now, not what the embedder was created with (the
+// embedder's facts travel in VectorIndexStatus via applyEmbedderInfo).
+func (f *FrontendAPI) ListVectorIndexGPUs() ([]GPUDeviceResponse, error) {
+	devices, err := embedding.ListGPUDevices()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]GPUDeviceResponse, len(devices))
+	for i, d := range devices {
+		out[i] = GPUDeviceResponse{
+			Index: d.Index,
+			Name:  d.Name,
+		}
+	}
+	return out, nil
 }

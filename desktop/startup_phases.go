@@ -1072,21 +1072,100 @@ func (a *App) startVectorIndexBackground(
 			a.emit("vector_index:status", map[string]any{"available": false, "reason": "model files not found"})
 			return
 		}
-		emb, embErr := embedding.NewEmbedder(embedding.EmbedderConfig{
-			ModelPath:      modelPath,
-			TokenizerPath:  tokenizerPath,
-			LibraryPath:    libraryPath,
-			MaxSeqLength:   512,
-			HiddenDim:      512,
-			BatchSize:      cfg.VectorIndex.EmbeddingBatchSize,
-			IntraOpThreads: cfg.VectorIndex.EmbeddingThreads,
-			Logger:         log,
-		})
+		// ONNX execution provider, driven by config
+		// (vector_index.execution_provider / device_id) — the former
+		// environment-only proof-of-concept knobs are gone. The provider is
+		// resolved exactly ONCE here and the embedder (plus its ONNX session)
+		// is created once per process and never re-created: changing either
+		// knob therefore requires an app restart. All three values pass
+		// through to sp4rk verbatim — "auto" tries CUDA and falls back to
+		// CPU with a WARN inside NewEmbedder, "cpu" forces the CPU provider,
+		// "cuda" demands the GPU.
+		requestedProvider := cfg.VectorIndex.ExecutionProvider
+		if requestedProvider == "" {
+			requestedProvider = config.VectorIndexProviderAuto
+		}
+		onnxDevice := cfg.VectorIndex.DeviceID
+		embCfg := embedding.EmbedderConfig{
+			ModelPath:         modelPath,
+			TokenizerPath:     tokenizerPath,
+			LibraryPath:       libraryPath,
+			MaxSeqLength:      512,
+			HiddenDim:         512,
+			BatchSize:         cfg.VectorIndex.EmbeddingBatchSize,
+			IntraOpThreads:    cfg.VectorIndex.EmbeddingThreads,
+			ExecutionProvider: requestedProvider,
+			DeviceID:          onnxDevice,
+			Logger:            log,
+		}
+		emb, embErr := embedding.NewEmbedder(embCfg)
+		// embedderInfo feeds the execution-provider facts into every
+		// vector-index status payload; the explicit-cuda→cpu fallback (the
+		// only true fallback — an "auto" request always resolves to a
+		// winner, so auto→cuda is a success and auto→cpu is Auto's expected
+		// degradation) is what the settings UI renders from the
+		// requested/effective pair (ADR-036 observability contract).
+		embedderInfo := backend.VectorEmbedderInfo{RequestedProvider: requestedProvider, DeviceID: onnxDevice}
+		if embErr != nil && requestedProvider == config.VectorIndexProviderCUDA {
+			// Explicit "cuda" that cannot come up must not silently kill
+			// vector search: continue on the CPU provider so search stays
+			// available — but the user explicitly asked for the GPU, so the
+			// fallback is made unmissable: WARN log + runtime_error toast +
+			// the requested/effective mismatch recorded in every status.
+			log.Warn("CUDA execution provider unavailable, falling back to CPU",
+				"error", embErr,
+				"deviceID", onnxDevice,
+				"library", libraryPath)
+			a.emit(backend.EventRuntimeError, map[string]string{
+				"id":         uuid.New().String(),
+				"message":    "Vector index: CUDA execution provider is unavailable — running on the CPU, embeddings will be slower. Cause: " + embErr.Error() + " Fix the GPU setup (make fetch-onnx-gpu + CUDA driver) or set vector_index.execution_provider: auto|cpu.",
+				"error_code": "vector_cuda_fallback",
+			})
+			embedderInfo.FallbackReason = embErr.Error()
+			embCfg.ExecutionProvider = embedding.ExecutionProviderCPU
+			emb, embErr = embedding.NewEmbedder(embCfg)
+		}
 		if embErr != nil {
-			log.Warn("vector search unavailable", "error", embErr)
-			a.emit("vector_index:status", map[string]any{"available": false, "reason": embErr.Error()})
+			log.Warn("vector search unavailable",
+				"error", embErr,
+				"executionProvider", requestedProvider,
+				"deviceID", onnxDevice,
+				"library", libraryPath)
+			embedderInfo.FallbackReason = embErr.Error()
+			a.Lifecycle().SetVectorEmbedderInfo(embedderInfo)
+			a.emit("vector_index:status", map[string]any{
+				"available":                    false,
+				"reason":                       embErr.Error(),
+				"requested_execution_provider": requestedProvider,
+			})
 			return
 		}
+		embedderInfo.EffectiveProvider = emb.ExecutionProvider()
+		if embedderInfo.EffectiveProvider == requestedProvider && embedderInfo.FallbackReason != "" {
+			// Unreachable combination today (reason set ⇒ divergence); guard
+			// keeps the invariant explicit for future editors.
+			embedderInfo.FallbackReason = ""
+		}
+		if embedderInfo.EffectiveProvider == embedding.ExecutionProviderCPU &&
+			requestedProvider == config.VectorIndexProviderAuto {
+			// "auto" degraded to the CPU provider inside sp4rk (the WARN with
+			// the concrete cause is logged there); keep one app-level line
+			// tying the divergence to vector search. The status payload
+			// carries requested vs effective for the same reason. An "auto"
+			// request that WON with CUDA (effective=cuda) is not a fallback —
+			// only effective=cpu under an auto request is.
+			log.Warn("vector index embedder running on CPU provider",
+				"requestedExecutionProvider", requestedProvider,
+				"effectiveExecutionProvider", embedderInfo.EffectiveProvider,
+				"hint", "CUDA unavailable; see the WARN above for the cause")
+		}
+		if embedderInfo.EffectiveProvider == embedding.ExecutionProviderCUDA {
+			// External verification that the process really runs on the GPU —
+			// diagnostics only, never blocks or fails startup.
+			verified := a.verifyEmbedderGPU(emb, log)
+			embedderInfo.CUDAVerified = &verified
+		}
+		a.Lifecycle().SetVectorEmbedderInfo(embedderInfo)
 
 		vectorMgr, err := vectorindex.NewManager(vectorindex.ManagerConfig{
 			EmbeddingFunc: emb.EmbeddingFunc(),
@@ -1144,6 +1223,45 @@ func (a *App) startVectorIndexBackground(
 		a.Lifecycle().SetVectorManager(vectorMgr)
 		log.Info("background init complete", "phase", "vector_index", "elapsed_ms", time.Since(startTime).Milliseconds())
 	}()
+}
+
+// verifyEmbedderGPU performs the one-shot external GPU verification after a
+// successful CUDA embedder init: it runs a single warmup inference (the CUDA
+// context is created lazily — probing right after session creation would see
+// a process the driver does not yet know about) and then asks the NVIDIA
+// driver, via nvidia-smi, whether THIS process is registered as a CUDA
+// compute app. Diagnostics only: the result never blocks startup, never fails
+// the embedder, and probe errors are treated as "unverified", not as failure.
+// Returns whether the process was found among the driver's compute apps.
+func (a *App) verifyEmbedderGPU(emb *embedding.Embedder, log *slog.Logger) bool {
+	// Warmup inference materializes the CUDA context. A failure here is a
+	// strong signal the GPU path is broken end-to-end (later real searches
+	// would fail too): WARN loudly and let the probe answer.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := emb.EmbedQuery(ctx, "warmup"); err != nil {
+		log.Warn("CUDA embedder warmup inference failed",
+			"error", err,
+			"hint", "embedder stays enabled; real searches may fail if this persists")
+	}
+	inUse, err := embedding.GPUInUse()
+	if err != nil {
+		// Probe failure ≠ "not on GPU": treated as unverified, cuda_verified
+		// stays false, and the user still gets a WARN — a missing verdict is
+		// suspicious enough to be visible, never silent.
+		log.Warn("CUDA GPU verification probe failed",
+			"error", err,
+			"hint", "treated as unverified, not as CPU fallback")
+	}
+	if inUse {
+		log.Info("CUDA verified via nvidia-smi",
+			"pid", os.Getpid())
+		return true
+	}
+	log.Warn("process absent from GPU compute apps — possible silent CPU fallback",
+		"pid", os.Getpid(),
+		"hint", "nvidia-smi did not list this PID; the CUDA-capable build may be sliding to the CPU provider")
+	return false
 }
 
 // derefFloat returns *p when p is non-nil, else 0. Used to convert the

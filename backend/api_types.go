@@ -17,6 +17,7 @@ type ConfigResponse struct {
 	ConfigErrors []string                     `json:"config_errors"`
 	LLM          ConfigLLMResponse            `json:"llm"`
 	Search       ConfigSearchResp             `json:"search"`
+	VectorIndex  VectorIndexSettingsResponse  `json:"vector_index"`
 	Proxy        ProxySettingsResponse        `json:"proxy"`
 	Experimental ExperimentalSettingsResponse `json:"experimental"`
 }
@@ -70,6 +71,17 @@ type ConfigProviderFull struct {
 type ConfigSearchResp struct {
 	Provider string `json:"provider"`
 	APIKey   string `json:"api_key"`
+}
+
+// VectorIndexSettingsResponse holds the vector-index embedding settings for
+// the frontend: which ONNX Runtime execution provider the embedder runs on
+// ("auto" | "cpu" | "cuda") and the GPU device index used when the provider
+// resolves to CUDA. Changing these requires an app restart to take effect —
+// the embedder is created once per process — so the update path only
+// validates and persists them; it never touches the vector manager.
+type VectorIndexSettingsResponse struct {
+	ExecutionProvider string `json:"execution_provider"`
+	DeviceID          int    `json:"device_id"`
 }
 
 // LLMSettingsRequest holds LLM settings from the frontend.
@@ -390,6 +402,57 @@ type ToolInfo struct {
 	Policy string `json:"policy"`
 }
 
+// VectorEmbedderInfo carries the embedder's execution-provider facts from the
+// one-shot desktop background init into every VectorIndexStatus payload. It is
+// written once (embedder creation outcome) and never mutated afterwards, so the
+// values stay consistent across all subsequent status emissions.
+type VectorEmbedderInfo struct {
+	// EffectiveProvider is the provider inference actually runs on: "cpu" or
+	// "cuda" — "auto" is resolved at embedder creation and never leaks here.
+	EffectiveProvider string
+
+	// RequestedProvider is the config value passed to the embedder:
+	// "auto" | "cpu" | "cuda". Diverges from EffectiveProvider for every
+	// "auto" request (auto is resolved to the winner at creation —
+	// auto→cuda is a success, auto→cpu is Auto's expected degradation)
+	// and for an explicit "cuda" degrading to CPU after init failure —
+	// only the latter is a fallback, and only that path sets
+	// FallbackReason.
+	RequestedProvider string
+
+	// FallbackReason carries why an explicit "cuda" request degraded to
+	// the CPU provider (CUDA init failure text). Empty otherwise — the
+	// "auto" degradation cause is WARN-logged at startup and is not part
+	// of the status payload. Surfaced in the status for diagnostics.
+	FallbackReason string
+
+	// CUDAVerified is the external nvidia-smi verdict — true when the driver
+	// lists this process among CUDA compute apps. Nil when the probe did not
+	// run (CPU embedder, embedder unavailable, probe skipped).
+	CUDAVerified *bool
+
+	// DeviceID is the ONNX device index the embedder was created with
+	// (vector_index.device_id). Paired with the provider fields so a future
+	// UI can detect restart-pending: the config's device_id diverging from
+	// this value means the running embedder predates the config change.
+	// 0 is the valid "first GPU" default, not a "missing" marker — the
+	// desktop init always writes it alongside RequestedProvider, which is
+	// what keeps IsZero sound despite 0 being indistinguishable from the
+	// zero value.
+	DeviceID int
+}
+
+// IsZero reports whether any fact has been recorded. True when the background
+// init has not (yet) populated the info — e.g. no embedder exists at all.
+// DeviceID participates in the check for non-zero values only: 0 is a valid
+// device index (first GPU) and cannot alone distinguish "recorded" from
+// "missing"; the desktop init always records RequestedProvider together with
+// DeviceID, so the provider fields carry the populated/not-populated signal.
+func (i VectorEmbedderInfo) IsZero() bool {
+	return i.EffectiveProvider == "" && i.RequestedProvider == "" &&
+		i.FallbackReason == "" && i.CUDAVerified == nil && i.DeviceID == 0
+}
+
 // VectorIndexStatus describes the current state of the vector index for the frontend.
 type VectorIndexStatus struct {
 	State        string   `json:"state"`
@@ -399,7 +462,48 @@ type VectorIndexStatus struct {
 	CurrentFile  string   `json:"current_file"`
 	Branch       string   `json:"branch"`
 	Phase        string   `json:"phase"`   // "both" | "embedding" | "lexical"
-	Indices      []string `json:"indices"` // e.g. ["vector", "lexical"]
+	Indices      []string `json:"indices"` // e.g. ["vector", "lexical"
+
+	// ExecutionProvider is the ONNX Runtime execution provider the embedder
+	// effectively runs on: "cpu" or "cuda" — never "auto" ("auto" is resolved
+	// once, at embedder creation; the winner is reported here). Empty when no
+	// embedder exists (model files missing or creation failed). Comparing it
+	// with RequestedExecutionProvider classifies the outcome (ADR-036): an
+	// explicit "cuda" landing on "cpu" is a fallback; an "auto" request always
+	// diverges (it is resolved to a winner), so auto→cuda is a success and
+	// auto→cpu is Auto's expected degradation.
+	ExecutionProvider string `json:"execution_provider,omitempty"`
+
+	// RequestedExecutionProvider is the config value (auto|cpu|cuda) the
+	// embedder was created with. Diverges from ExecutionProvider for every
+	// "auto" request (auto is resolved to the winner) and for an explicit
+	// "cuda" degrading to CPU after init failure (WARN + runtime_error
+	// toast) — only the latter is a fallback.
+	RequestedExecutionProvider string `json:"requested_execution_provider,omitempty"`
+
+	// CUDAVerified is the external nvidia-smi verdict, set only when the
+	// effective provider is "cuda" and the startup verification probe ran:
+	// true = the driver lists this process among CUDA compute apps; false =
+	// absent (possible silent CPU fallback inside the CUDA-capable build).
+	// Nil when no probe ran (CPU embedder, embedder unavailable, or the
+	// embedder never initialized).
+	CUDAVerified *bool `json:"cuda_verified,omitempty"`
+
+	// ProviderFallbackReason explains why an explicit "cuda" request
+	// degraded to the CPU provider (CUDA init failure text). Empty when the
+	// requested provider was honored — and empty on the auto→cpu
+	// degradation path, whose concrete cause is WARN-logged at startup and
+	// does not travel in the status payload.
+	ProviderFallbackReason string `json:"provider_fallback_reason,omitempty"`
+
+	// DeviceID is the ONNX device index the running embedder was created
+	// with (vector_index.device_id at embedder-creation time). Surfaced for
+	// restart-pending detection: comparing it with the live config's
+	// device_id shows the running embedder predates a config change (the
+	// embedder and its ONNX session are created once per process — ADR-036).
+	// Omitted when 0 (the default "first GPU") — a UI treating 0 as the
+	// default must read absence as 0.
+	DeviceID int `json:"device_id,omitempty"`
 }
 
 // VectorStoreEntry represents a single chunk from the vector store for the frontend.
@@ -438,6 +542,16 @@ type SearchRequest struct {
 	FilePattern string   `json:"file_pattern"`
 	MustMatch   []string `json:"must_match"`
 	Mode        string   `json:"mode"`
+}
+
+// GPUDeviceResponse describes one GPU visible to the NVIDIA driver, for the
+// vector-index settings UI (populating the execution-provider device picker).
+// It mirrors embedding.GPUDevice as a plain DTO rather than re-exporting the
+// SDK type through the Wails bindings, keeping the frontend contract owned
+// by this package.
+type GPUDeviceResponse struct {
+	Index int    `json:"index"`
+	Name  string `json:"name"`
 }
 
 // OptimizePromptResponse holds the result of prompt optimization for the frontend.
