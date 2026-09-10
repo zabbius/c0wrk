@@ -18,6 +18,7 @@ import { useProjectLoader } from '@/hooks/useProjectLoader'
 import { useSessionLoader } from '@/hooks/useSessionLoader'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { useBackgroundSessionWatcher } from '@/hooks/useBackgroundSessionWatcher'
+import { useWindowTitle } from '@/hooks/useWindowTitle'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -64,6 +65,9 @@ function App() {
   useSessionEvents(activeSessionId)
   useBackgroundSessionWatcher()
   useUpdateChecker()
+  // Native window title (c0wrk - Project - Session) — mounted at the root so
+  // the title tracks the active context in every app phase.
+  useWindowTitle()
   // Close-guard subscription — mounted once at the root so app-phase
   // transitions never create an event gap; ExitConfirmDialog (rendered in
   // every phase branch) is a pure view over the store this hook writes.
