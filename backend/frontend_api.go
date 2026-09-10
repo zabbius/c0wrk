@@ -69,6 +69,36 @@ type FrontendAPI struct {
 	// only one network operation runs at a time per app instance.
 	remoteOpMu sync.Mutex
 
+	// Auto-fetch funnel state (see frontend_api_git_autofetch.go).
+	// autoFetchMu guards lastAutoFetchAt — the timestamp of the last
+	// automatic fetch ATTEMPT, stamped whenever a trigger gets past the
+	// static gates (config / active project / is-a-repo), whatever the
+	// fetch outcome. All automatic triggers share one
+	// autoFetchMinInterval window through it, so a burst of triggers can
+	// never hammer the remote even when every attempt fails fast.
+	autoFetchMu     sync.Mutex
+	lastAutoFetchAt time.Time
+
+	// Periodic auto-fetch loop state (the git.auto_fetch_interval ticker,
+	// see frontend_api_git_autofetch.go). autoFetchLoopMu guards
+	// autoFetchLoopCancel / autoFetchLoopDone so StartAutoFetch starts at
+	// most one loop and Cleanup can stop it from any goroutine. It is
+	// separate from autoFetchMu above, which guards only the shared
+	// min-interval timestamp of the fetch funnel.
+	autoFetchLoopMu     sync.Mutex
+	autoFetchLoopCancel context.CancelFunc
+	autoFetchLoopDone   chan struct{}
+
+	// autoFetchIntervalOverride, when > 0, replaces the configured
+	// git.auto_fetch_interval in autoFetchInterval. Test-only seam (0 in
+	// production), mirroring switchLockTimeoutOverride.
+	autoFetchIntervalOverride time.Duration
+
+	// autoFetchTickFn, when non-nil, replaces the autoFetchOnce call made
+	// by the periodic ticker loop. Test-only seam (nil in production) so
+	// loop tests observe ticks without touching git or the network.
+	autoFetchTickFn func(trigger string)
+
 	// Project
 	projectManager    *project.Manager
 	agentDir          string
@@ -400,6 +430,11 @@ func (f *FrontendAPI) isNoProject() bool {
 // Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
 func (l *FrontendAPILifecycle) Cleanup() {
 	f := l.f
+	// Stop the periodic auto-fetch ticker first so no new background fetch
+	// starts while the rest of the backend tears down. Non-blocking: an
+	// in-flight fetch is already bounded by remoteGitCmdTimeout and
+	// cancelled through f.ctx() (see frontend_api_git_autofetch.go).
+	f.stopAutoFetchLoop()
 	if f.terminalManager != nil {
 		f.terminalManager.StopAll()
 	}

@@ -572,6 +572,21 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Updates.CheckInterval == "" {
 		cfg.Updates.CheckInterval = "6h"
 	}
+
+	// Git auto-fetch defaults. AutoFetch is the master gate for every
+	// automatic fetch trigger (app startup, project switch, window focus,
+	// periodic ticker) and defaults to true (a pointer-bool so an explicit
+	// `auto_fetch: false` in YAML is respected rather than overwritten by the
+	// default). AutoFetchInterval defaults to 2m; the raw string is parsed by
+	// the consumer, and an explicit "0" is preserved here — it disables only
+	// the periodic ticker, leaving the event-driven triggers on.
+	if cfg.Git.AutoFetch == nil {
+		autoFetch := true
+		cfg.Git.AutoFetch = &autoFetch
+	}
+	if cfg.Git.AutoFetchInterval == "" {
+		cfg.Git.AutoFetchInterval = "2m"
+	}
 }
 
 // defaultBashExecBlacklist returns the POSIX-shell half of the default

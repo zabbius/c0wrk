@@ -376,6 +376,16 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	// for a clean config. See frontend_api_gitconfig_risk.go.
 	f.notifyGitConfigRisk(GitConfigRiskSourceProject, p.WorkspacePath)
 
+	// Kick the auto-fetch funnel on the REAL-switch path only (the
+	// already-active early return above deliberately skips it — the project
+	// was already fetched-for when it was switched to). Fire-and-forget:
+	// every gate (config, No Project, repo check, shared 60s min-interval,
+	// TryLock against manual remote ops) plus the quiet-failure contract
+	// live inside autoFetchOnce. App-startup restoration rides along for
+	// free: the frontend replays the last active project through this same
+	// SwitchProject call.
+	go f.autoFetchOnce(autoFetchTriggerSwitch)
+
 	return nil
 }
 

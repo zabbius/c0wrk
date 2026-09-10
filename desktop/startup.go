@@ -528,6 +528,12 @@ func (a *App) Startup(ctx context.Context) {
 	// operator + user gates, respects the interval, caches the result so a
 	// discovered update is downloadable). Never blocks or breaks startup.
 	a.startUpdateCheckerBackground(log)
+
+	// ── Background: git auto-fetch ticker ───────────────────────────
+	// Starts the periodic background git fetch loop (git.auto_fetch_interval,
+	// default 2m) once the backend is ready. Infrastructure-only; stopped by
+	// FrontendAPILifecycle.Cleanup on shutdown. See startAutoFetchBackground.
+	a.startAutoFetchBackground()
 }
 
 // Shutdown is called when the Wails app is shutting down.

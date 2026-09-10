@@ -506,6 +506,10 @@ export function RenameSession(arg1, arg2) {
   return window['go']['desktop']['App']['RenameSession'](arg1, arg2);
 }
 
+export function RequestGitRemoteRefresh() {
+  return window['go']['desktop']['App']['RequestGitRemoteRefresh']();
+}
+
 export function ResetToCommit(arg1, arg2) {
   return window['go']['desktop']['App']['ResetToCommit'](arg1, arg2);
 }

@@ -2717,3 +2717,86 @@ func TestVectorIndexConfig_ContentFilter_Validation(t *testing.T) {
 		}
 	}
 }
+
+// TestGitConfig_Defaults verifies that an omitted git section resolves to
+// auto_fetch=true / auto_fetch_interval="2m" after defaults are applied.
+func TestGitConfig_Defaults(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.Git.AutoFetch == nil || !*cfg.Git.AutoFetch {
+		t.Errorf("Expected default git.auto_fetch true, got %v", cfg.Git.AutoFetch)
+	}
+	if cfg.Git.AutoFetchInterval != "2m" {
+		t.Errorf("Expected default git.auto_fetch_interval '2m', got %q", cfg.Git.AutoFetchInterval)
+	}
+}
+
+// TestGitConfig_ExplicitValues verifies that explicit YAML values win over
+// the defaults: auto_fetch: false survives (the pointer-bool default must not
+// overwrite it) and a custom interval is preserved verbatim.
+func TestGitConfig_ExplicitValues(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+git:
+  auto_fetch: false
+  auto_fetch_interval: "5m"
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.Git.AutoFetch == nil || *cfg.Git.AutoFetch {
+		t.Errorf("Expected git.auto_fetch false, got %v", cfg.Git.AutoFetch)
+	}
+	if cfg.Git.AutoFetchInterval != "5m" {
+		t.Errorf("Expected git.auto_fetch_interval '5m', got %q", cfg.Git.AutoFetchInterval)
+	}
+}
+
+// TestGitConfig_ZeroIntervalPreserved verifies that an explicit "0" interval
+// (the "ticker off, event-driven triggers stay on" sentinel) is NOT
+// overwritten by the 2m default, and that setting it alone does not flip the
+// auto_fetch master gate.
+func TestGitConfig_ZeroIntervalPreserved(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+git:
+  auto_fetch_interval: "0"
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.Git.AutoFetchInterval != "0" {
+		t.Errorf("Expected git.auto_fetch_interval '0' to be preserved, got %q", cfg.Git.AutoFetchInterval)
+	}
+	if cfg.Git.AutoFetch == nil || !*cfg.Git.AutoFetch {
+		t.Errorf("Expected default git.auto_fetch true, got %v", cfg.Git.AutoFetch)
+	}
+}

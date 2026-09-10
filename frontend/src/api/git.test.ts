@@ -36,6 +36,7 @@ import {
   pull,
   push,
   fetch,
+  requestRemoteRefresh,
   getCommitFiles,
   getCommitFilesBatch,
   stashCreate,
@@ -740,6 +741,25 @@ describe('fetch', () => {
   it('propagates errors', async () => {
     mockApp.Fetch = vi.fn().mockRejectedValue(new Error('network'))
     await expect(fetch('')).rejects.toThrow('network')
+  })
+})
+
+describe('requestRemoteRefresh', () => {
+  beforeEach(() => {
+    Object.keys(mockApp).forEach(k => delete mockApp[k])
+  })
+
+  it('calls app.RequestGitRemoteRefresh with no arguments', async () => {
+    mockApp.RequestGitRemoteRefresh = vi.fn().mockResolvedValue(undefined)
+    await requestRemoteRefresh()
+    expect(mockApp.RequestGitRemoteRefresh).toHaveBeenCalledOnce()
+  })
+
+  it('swallows errors — a gated-off refresh must be invisible (focus trigger)', async () => {
+    // The binding may be missing (pre-ready webview) or reject; the
+    // fire-and-forget wrapper never surfaces this to the caller.
+    mockApp.RequestGitRemoteRefresh = vi.fn().mockRejectedValue(new Error('not available'))
+    await expect(requestRemoteRefresh()).resolves.toBeUndefined()
   })
 })
 

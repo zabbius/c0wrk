@@ -921,6 +921,34 @@ orchestration:
 #   check_interval: "6h"
 
 # ---------------------------------------------------------------------------
+# Git — automatic background fetch
+# ---------------------------------------------------------------------------
+# Controls every AUTOMATIC fetch the app performs in the background: on app
+# startup, on project switch, on window focus, and on a periodic ticker.
+# Manual fetches triggered from the Git panel are never gated by this section.
+#
+# git.auto_fetch is the master switch for ALL automatic fetch triggers. When
+# false, no automatic fetch ever runs (startup, switch, focus, and ticker are
+# all suppressed); manual fetch from the UI still works.
+#
+# git.auto_fetch_interval tunes ONLY the periodic ticker cadence. The special
+# value "0" disables just the ticker — the event-driven triggers (startup,
+# project switch, window focus) remain active as long as auto_fetch is true.
+#
+# git:
+#   # Master switch for all automatic fetch triggers (startup, project
+#   # switch, window focus, periodic ticker). Default: true. When false no
+#   # automatic fetch ever runs; manual fetches from the Git panel are
+#   # unaffected.
+#   auto_fetch: true
+#   # Period of the background fetch ticker, as a duration string parsed by
+#   # time.ParseDuration (e.g. "2m", "30s", "5m"). Default: "2m". Set to "0"
+#   # to disable ONLY the periodic ticker — the event-driven triggers
+#   # (startup, switch, focus) stay on. An unparseable value falls back to
+#   # the default.
+#   auto_fetch_interval: "2m"
+
+# ---------------------------------------------------------------------------
 # Small-LLM Profile
 # ---------------------------------------------------------------------------
 # Optimizations applied when running on a "small" (low-capacity / cheaper) LLM.

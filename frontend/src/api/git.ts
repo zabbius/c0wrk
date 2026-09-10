@@ -251,6 +251,26 @@ export async function fetch(remote: string, flags: string[] = []): Promise<strin
   }
 }
 
+/**
+ * Ask the backend to refresh remote-tracking refs in the background — the
+ * window-focus trigger of the git auto-fetch feature (git.auto_fetch).
+ * Fire-and-forget: the RPC returns immediately (the fetch runs in a backend
+ * goroutine) and every gate is server-side — git.auto_fetch disabled, CHAT
+ * mode (No Project), a non-repo workspace, no configured remote, or the
+ * shared 60s min-interval all result in a silent server-side skip.
+ * Errors are swallowed by design: this is called on every window focus and
+ * must never surface a toast or log noise when gated off.
+ */
+export async function requestRemoteRefresh(): Promise<void> {
+  try {
+    const app = getApp()
+    await app.RequestGitRemoteRefresh()
+  } catch {
+    // Silent by design — a gated-off (or not-yet-ready) refresh request is
+    // invisible to the user; see the hook useGitFocusRefresh.
+  }
+}
+
 // --- Commit history ---
 
 export async function getCommitFiles(sha: string): Promise<CommitFile[]> {

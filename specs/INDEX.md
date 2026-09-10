@@ -32,6 +32,7 @@
 | File & image attachments (pending → blackboard / content blocks), vision-assisted document conversion & its egress  | [domains/session-lifecycle.md](domains/session-lifecycle.md), [domains/memory/blackboard.md](domains/memory/blackboard.md) |
 | File tree, vector index, workspace       | [domains/workspace.md](domains/workspace.md)                             |
 | Git subprocess hardening (untrusted repos, `.git/config` vectors, hooks/filters neutralization, `.git` write gate) + user trust/harden opt-out (snapshot-bound, recheck-with-diff, fail-closed) | [decisions/033-git-subprocess-hardening.md](decisions/033-git-subprocess-hardening.md), [decisions/034-git-trust-opt-out.md](decisions/034-git-trust-opt-out.md), [architecture/security-model.md](architecture/security-model.md) (Git Subprocess Hardening), [domains/workspace.md](domains/workspace.md) |
+| Git auto-fetch (background `git fetch`, switch/ticker/focus triggers) | [domains/git-auto-fetch.md](domains/git-auto-fetch.md)             |
 | Auxiliary work directories               | [architecture/security-model.md](architecture/security-model.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Work Directories section), [domains/frontend/stores.md](domains/frontend/stores.md) (`workDirsStore`) |
 | Frontend stores, state management        | [domains/frontend/stores.md](domains/frontend/stores.md)                 |
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
@@ -107,6 +108,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 
 - [llm-providers.md](domains/llm-providers.md) - Thin c0wrk wiring note (provider config → core/builder → sp4rk Router)
 - [crash-logging.md](domains/crash-logging.md) - Crash & exit diagnostics: fd-level stderr capture (panic/signal dumps), liveness marker, unclean-shutdown detection at next start, visible shutdown records
+- [git-auto-fetch.md](domains/git-auto-fetch.md) - Automatic background git fetch: three triggers (project switch incl. app startup, periodic ticker, window focus) through one gated quiet-failure funnel; config `git.auto_fetch` / `git.auto_fetch_interval`
 - [session-lifecycle.md](domains/session-lifecycle.md) - Session and task lifecycle
 - [goal-mode.md](domains/goal-mode.md) - Goal mode: multi-turn agent-driven loop over a user-approved success condition (derivation → approval → self-eval loop, budgets, anti-spin, pause/resume)
 - [small-llm.md](domains/small-llm.md) - Small-LLM profile: master-toggle + five variants (essential-tools narrowing, system-prompt Lite swap, sampling override, loop hardening, context management) for tuning c0wrk to small/local models

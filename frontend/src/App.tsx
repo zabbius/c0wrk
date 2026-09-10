@@ -13,6 +13,7 @@ import { GitConfigRiskToast } from '@/components/GitConfigRiskToast'
 import { ExitConfirmDialog } from '@/components/ExitConfirmDialog'
 import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { useExitGuard } from '@/hooks/useExitGuard'
+import { useGitFocusRefresh } from '@/hooks/useGitFocusRefresh'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useProjectLoader } from '@/hooks/useProjectLoader'
 import { useSessionLoader } from '@/hooks/useSessionLoader'
@@ -68,6 +69,11 @@ function App() {
   // Native window title (c0wrk - Project - Session) — mounted at the root so
   // the title tracks the active context in every app phase.
   useWindowTitle()
+  // Fetch-on-focus (git auto-fetch, window-focus trigger): the hook arms
+  // its listener only after runtime readiness and defers every gate to the
+  // backend (RequestGitRemoteRefresh / autoFetchOnce), so mounting it here
+  // unconditionally is safe in every phase.
+  useGitFocusRefresh()
   // Close-guard subscription — mounted once at the root so app-phase
   // transitions never create an event gap; ExitConfirmDialog (rendered in
   // every phase branch) is a pure view over the store this hook writes.

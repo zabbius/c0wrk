@@ -1222,3 +1222,15 @@ func (a *App) startUpdateCheckerBackground(log *slog.Logger) {
 		a.RunBackgroundUpdateCheck()
 	}()
 }
+
+// startAutoFetchBackground starts the periodic git auto-fetch ticker (config
+// git.auto_fetch_interval, default 2m). It mirrors startUpdateCheckerBackground:
+// infrastructure-only, started exactly once after the backend is ready (the
+// idempotent StartAutoFetch makes a double call harmless), never blocks or
+// breaks startup, and is stopped by FrontendAPILifecycle.Cleanup on shutdown.
+// The loop re-reads the interval on every tick, so runtime config edits apply
+// without an app restart; an interval of "0" disables only the ticker while
+// the event-driven triggers (startup, project switch, window focus) stay on.
+func (a *App) startAutoFetchBackground() {
+	a.Lifecycle().StartAutoFetch()
+}

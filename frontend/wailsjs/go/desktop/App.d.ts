@@ -261,6 +261,8 @@ export function RenameProject(arg1:string,arg2:string):Promise<void>;
 
 export function RenameSession(arg1:string,arg2:string):Promise<void>;
 
+export function RequestGitRemoteRefresh():Promise<void>;
+
 export function ResetToCommit(arg1:string,arg2:string):Promise<void>;
 
 export function ResolvePendingMessage(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Record<string, any>):Promise<void>;
