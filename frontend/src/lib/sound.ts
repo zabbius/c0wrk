@@ -31,6 +31,14 @@ let ctxBackoffUntil = 0
 /** How long to stay silent after dropping a non-revivable context before
  *  building a replacement. */
 const CTX_BACKOFF_MS = 1500
+/** Upper bound on a single `resume()` attempt. WebKit can leave `resume()`
+ *  PENDING FOREVER on a context stuck in the non-standard `interrupted` state
+ *  (it neither resolves nor rejects), so awaiting it unconditionally would hang
+ *  the recovery path: the wedged context would never be dropped and would stay
+ *  cached for the life of the app, swallowing every later cue. Bounding the wait
+ *  lets the recovery path ALWAYS complete and hand a stuck context to the
+ *  replacement logic. */
+const RESUME_TIMEOUT_MS = 1000
 
 /** Resolve the AudioContext constructor (standard + legacy webkit prefix). */
 function getAudioContextCtor(): AudioContextCtor | null {
@@ -62,10 +70,11 @@ function isTerminal(ctx: AudioContext): boolean {
 /** True when the context is stuck in a state it cannot leave on its own.
  *
  *  WebKit's non-standard `interrupted` state is the trap: while it is set,
- *  `resume()` returns a REJECTED promise (see the "interrupted state" proposal
- *  for the Web Audio API), and a context can wedge there — resume() never
- *  succeeds again, not even from a user gesture. `closed` is equally final.
- *  Such a context must be REPLACED, not resumed. */
+ *  `resume()` does not succeed — it may REJECT (see the "interrupted state"
+ *  proposal for the Web Audio API) or, worse, never settle at all — and a
+ *  context can wedge there permanently, not even recoverable from a user
+ *  gesture. `closed` is equally final. Such a context must be REPLACED, not
+ *  resumed. */
 function isWedged(ctx: AudioContext): boolean {
   // WebKit's non-standard `interrupted` state is absent from the lib.dom
   // AudioContextState union, so read the state as a plain string.
@@ -73,21 +82,58 @@ function isWedged(ctx: AudioContext): boolean {
   return state === 'closed' || state === 'interrupted'
 }
 
+/** Resolve to `promise`'s value, or to `fallback` when it has not settled
+ *  within `ms`. Rejections also resolve to `fallback`, so callers always get a
+ *  settled result and the recovery path can never be stranded on a promise that
+ *  never settles. The underlying promise is NOT cancelled (it cannot be) — only
+ *  the caller's observation of it is bounded; its timer is cleared as soon as
+ *  the promise settles so no stray callback outlives the attempt. `onTimeout`
+ *  (optional) runs once when the bound elapses, letting callers surface the
+ *  anomaly (a resume that never settled) without this helper depending on the
+ *  logger. */
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  fallback: T,
+  onTimeout?: () => void,
+): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => {
+      onTimeout?.()
+      resolve(fallback)
+    }, ms)
+    const settle = (value: T): void => {
+      clearTimeout(timer)
+      resolve(value)
+    }
+    promise.then(settle, () => settle(fallback))
+  })
+}
+
 /** Best-effort resume of a non-running context. Never rejects; resolves to
  *  whether the context is `running` once the attempt completes, so callers can
- *  sequence playback after it and detect a resume that could not succeed. */
+ *  sequence playback after it and detect a resume that could not succeed.
+ *
+ *  The attempt is bounded by `RESUME_TIMEOUT_MS`: on a context wedged in
+ *  WebKit's `interrupted` state, `resume()` may never settle, and an unbounded
+ *  wait would leave the recovery path pending forever (the wedged context then
+ *  stays cached and all cues are lost). A timeout resolves to `false`, which is
+ *  exactly what the caller needs to detect a non-revivable context. */
 function resumeCtx(ctx: AudioContext): Promise<boolean> {
   if (isRunning(ctx)) return Promise.resolve(true)
   try {
-    return Promise.resolve(ctx.resume()).then(
+    const attempt = Promise.resolve(ctx.resume()).then(
       () => isRunning(ctx),
       (err) => {
-        logger.debug('[sound] context resume failed', err)
+        logger.warn('[sound] context resume failed', err)
         return false
       },
     )
+    return withTimeout(attempt, RESUME_TIMEOUT_MS, false, () =>
+      logger.warn('[sound] context resume timed out', ctx.state),
+    )
   } catch (err) {
-    logger.debug('[sound] context resume threw', err)
+    logger.warn('[sound] context resume threw', err)
     return Promise.resolve(false)
   }
 }
@@ -112,14 +158,18 @@ function dropCtx(ctx: AudioContext): void {
  *  context forever. */
 function markWedged(ctx: AudioContext): void {
   if (audioCtx !== ctx) return
-  logger.debug('[sound] replacing non-revivable audio context', ctx.state)
+  logger.warn('[sound] replacing non-revivable audio context', ctx.state)
   ctxBackoffUntil = Date.now() + CTX_BACKOFF_MS
   dropCtx(ctx)
 }
 
 /** Try to bring `ctx` back to `running`. If it is wedged in a state it can never
  *  leave, drop it so the next cue builds a fresh, revivable context. Resolves to
- *  whether the context is running after the attempt. */
+ *  whether the context is running after the attempt.
+ *
+ *  Always settles: `resumeCtx` bounds the resume attempt, so a context that
+ *  hangs in `interrupted` (resume() never settling) still resolves to `false`
+ *  and is dropped here rather than being cached forever. */
 function recoverCtx(ctx: AudioContext): Promise<boolean> {
   return resumeCtx(ctx).then((ok) => {
     if (!ok && isWedged(ctx)) markWedged(ctx)

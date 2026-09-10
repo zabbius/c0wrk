@@ -29,7 +29,7 @@ interface MockGain {
 class MockAudioContext {
   static instances: MockAudioContext[] = []
   static initialState = 'running'
-  static resumeBehavior: 'resolve' | 'reject' = 'resolve'
+  static resumeBehavior: 'resolve' | 'reject' | 'never' = 'resolve'
 
   state: string
   readonly currentTime = 0
@@ -45,6 +45,13 @@ class MockAudioContext {
     if (MockAudioContext.resumeBehavior === 'reject') {
       // Mirrors WebKit refusing to resume an `interrupted` context.
       return Promise.reject(new Error('context interrupted'))
+    }
+    if (MockAudioContext.resumeBehavior === 'never') {
+      // Mirrors WebKit leaving resume() PENDING FOREVER on a context wedged in
+      // `interrupted` — it neither resolves nor rejects.
+      return new Promise<void>((): void => {
+        /* never settles */
+      })
     }
     this.state = 'running'
     return Promise.resolve()
@@ -214,6 +221,46 @@ describe('playSound', () => {
     expect(second).not.toBe(first)
     expect(second.oscillators).toHaveLength(1)
     nowSpy.mockRestore()
+  })
+
+  it('replaces a context whose resume() never settles (WebKit interrupted hang)', async () => {
+    // Only setTimeout is faked; Date is spied below so the backoff window is
+    // deterministic, mirroring the wedged-context test above.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+      MockAudioContext.initialState = 'interrupted'
+      // WebKit can leave resume() PENDING FOREVER on an interrupted context —
+      // it neither resolves nor rejects.
+      MockAudioContext.resumeBehavior = 'never'
+
+      playSound('attention')
+      const first = createdCtx()
+      expect(first.resume).toHaveBeenCalledTimes(1)
+      expect(first.state).toBe('interrupted')
+
+      // With no bound on the resume attempt, the recovery promise would stay
+      // pending for the lifetime of the app: the wedged context would never be
+      // dropped and every later cue would be swallowed forever. The timeout
+      // must force recovery to complete and the context to be discarded.
+      await vi.advanceTimersByTimeAsync(1_000 /* RESUME_TIMEOUT_MS */)
+      expect(first.state).toBe('closed')
+
+      // The interruption is over; a later cue — once the replacement backoff has
+      // elapsed — must build a FRESH, revivable context and actually play.
+      nowSpy.mockReturnValue(1_000 + 60_000)
+      MockAudioContext.initialState = 'suspended'
+      MockAudioContext.resumeBehavior = 'resolve'
+      playSound('attention')
+      expect(MockAudioContext.instances).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(0)
+      const second = createdCtx()
+      expect(second).not.toBe(first)
+      expect(second.oscillators).toHaveLength(1)
+      nowSpy.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not build a replacement for every cue while an interruption persists', async () => {

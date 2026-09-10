@@ -7,11 +7,17 @@
 // discoverable in one place and the event→sound mapping is a pure, unit-testable
 // function. Subscribing to an event a second time is safe: Wails EventsOn
 // supports multiple independent listeners, each with its own cleanup.
+//
+// NOTE: this hook does NOT set up the audio unlock (initSoundUnlock). That is
+// registered once at App start (see App.tsx) so the persistent gesture/
+// visibility listeners exist even with no active session — a state in which
+// this hook is a no-op and the suspended AudioContext would otherwise have no
+// way back.
 
 import { useEffect } from 'react'
 import { onSessionEvent } from '@/api/runtime'
 import type { SessionEventKey } from '@/types/events'
-import { playSound, initSoundUnlock, type SoundKind } from '@/lib/sound'
+import { playSound, type SoundKind } from '@/lib/sound'
 
 /**
  * Pure mapping from a session event to its sound category.
@@ -54,10 +60,6 @@ export function classifySessionEvent(event: SessionEventKey, data: unknown): Sou
 export function useSoundEvents(sessionId: string | null): void {
   useEffect(() => {
     if (!sessionId) return
-
-    // Unlock the AudioContext on the first user gesture (desktop webviews start
-    // suspended until a gesture occurs). Idempotent.
-    initSoundUnlock()
 
     const events: SessionEventKey[] = [
       'task_complete',
