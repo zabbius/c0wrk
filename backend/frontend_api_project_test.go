@@ -3,10 +3,12 @@ package backend
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -983,5 +985,186 @@ func TestActiveProjectDir(t *testing.T) {
 				t.Errorf("ActiveProjectDir() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// closeSwitchTestWatcher tears down the workspace watcher a successful switch
+// leaves behind so the test does not leak an fsnotify handle.
+func closeSwitchTestWatcher(t *testing.T, api *FrontendAPI) {
+	t.Helper()
+	api.watcherMu.Lock()
+	defer api.watcherMu.Unlock()
+	if api.watcher != nil {
+		_ = api.watcher.Close()
+		api.watcher = nil
+	}
+}
+
+// prepareAtomicSwitchHarness wires the minimum scaffolding a full SwitchProject
+// needs: a non-nil event sink and a builder override (so switchProjectActivate
+// does not panic on the harness's typed-nil builder), plus a watcher cleanup.
+// It seeds a session for the harness project so the post-switch session
+// fallback resolves without hitting the nil-orchestrator factory.
+func prepareAtomicSwitchHarness(t *testing.T, h *projectSwitchTestHarness) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	h.seedSession(t, "session-a", now, now)
+	h.api.emitEvent = func(string, ...any) {}
+	h.api.builderOverride = &mockBuilder{}
+	t.Cleanup(func() { closeSwitchTestWatcher(t, h.api) })
+}
+
+// TestSwitchProject_VectorSetupFailureLeavesPreviousProjectActive pins the
+// atomic-activation contract: the fallible vector-setup step runs BEFORE the
+// activation commit, so when it fails the backend must remain on the
+// previously-active project (no half-switched activeProjectID/Path divergence
+// from the frontend, which reads a non-nil RPC error as "switch did not
+// happen") and return the error to the caller.
+func TestSwitchProject_VectorSetupFailureLeavesPreviousProjectActive(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+	prepareAtomicSwitchHarness(t, h)
+
+	target, err := h.api.projectManager.CreateProject("Switch Target Fail", "")
+	if err != nil {
+		t.Fatalf("failed to create target project: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	h.seedSessionForProject(t, target.ID, "session-target", now, now)
+
+	// Activate the first project so there IS a previous project to fall back on.
+	if err := h.api.SwitchProject(h.projectID); err != nil {
+		t.Fatalf("initial SwitchProject: %v", err)
+	}
+
+	switched := 0
+	h.api.emitEvent = func(name string, _ ...any) {
+		if name == EventProjectSwitched {
+			switched++
+		}
+	}
+	h.api.switchProjectSetupVectorFn = func(*project.ProjectInfo) error {
+		return errors.New("vector init boom")
+	}
+
+	if err := h.api.SwitchProject(target.ID); err == nil {
+		t.Fatal("expected SwitchProject to fail when the vector setup step fails")
+	}
+
+	if got := activeProjectIDForTest(h.api); got != h.projectID {
+		t.Fatalf("activeProjectID = %q after failed switch, want previous project %q", got, h.projectID)
+	}
+	h.api.activeProjectMu.RLock()
+	gotPath := h.api.activeProjectPath
+	h.api.activeProjectMu.RUnlock()
+	if gotPath != h.workspace {
+		t.Fatalf("activeProjectPath = %q after failed switch, want previous workspace %q", gotPath, h.workspace)
+	}
+
+	if switched != 0 {
+		t.Fatalf("project:switched emitted %d time(s) on a failed switch, want 0", switched)
+	}
+}
+
+// TestSwitchProject_RetryAfterLateStepFailureSucceeds pins that a late-step
+// failure leaves no half-switched state: once the cause is fixed, switching to
+// the same target succeeds and the backend lands on it (and only then announces
+// project:switched).
+func TestSwitchProject_RetryAfterLateStepFailureSucceeds(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+	prepareAtomicSwitchHarness(t, h)
+
+	target, err := h.api.projectManager.CreateProject("Switch Target Retry", "")
+	if err != nil {
+		t.Fatalf("failed to create target project: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	h.seedSessionForProject(t, target.ID, "session-target", now, now)
+
+	if err := h.api.SwitchProject(h.projectID); err != nil {
+		t.Fatalf("initial SwitchProject: %v", err)
+	}
+
+	switched := 0
+	h.api.emitEvent = func(name string, _ ...any) {
+		if name == EventProjectSwitched {
+			switched++
+		}
+	}
+	failing := true
+	h.api.switchProjectSetupVectorFn = func(*project.ProjectInfo) error {
+		if failing {
+			return errors.New("vector init boom")
+		}
+		return nil
+	}
+
+	if err := h.api.SwitchProject(target.ID); err == nil {
+		t.Fatal("expected the first switch to fail")
+	}
+	if got := activeProjectIDForTest(h.api); got != h.projectID {
+		t.Fatalf("activeProjectID = %q after failed switch, want %q", got, h.projectID)
+	}
+
+	// "Fix" the cause and retry: no half-switched state must block it.
+	failing = false
+	if err := h.api.SwitchProject(target.ID); err != nil {
+		t.Fatalf("retry SwitchProject after fix: %v", err)
+	}
+	if got := activeProjectIDForTest(h.api); got != target.ID {
+		t.Fatalf("activeProjectID = %q after successful retry, want %q", got, target.ID)
+	}
+	if switched != 1 {
+		t.Fatalf("expected exactly 1 project:switched (the successful retry), got %d", switched)
+	}
+}
+
+// TestSwitchProject_AcquireSwitchLockTimesOut pins the bounded-wait contract:
+// when an in-flight switch holds switchMu past the deadline, a second switch
+// returns a timeout error instead of blocking forever behind it.
+func TestSwitchProject_AcquireSwitchLockTimesOut(t *testing.T) {
+	h := newProjectSwitchHarness(t)
+	defer h.close(t)
+	prepareAtomicSwitchHarness(t, h)
+
+	h.api.switchLockTimeoutOverride = 200 * time.Millisecond
+
+	inFirst := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var once sync.Once
+	h.api.switchInProgressHook = func(string) {
+		once.Do(func() {
+			close(inFirst)
+			<-releaseFirst
+		})
+	}
+
+	errFirst := make(chan error, 1)
+	go func() { errFirst <- h.api.SwitchProject(h.projectID) }()
+	<-inFirst // first switch is mid-body, holding switchMu
+
+	start := time.Now()
+	err := h.api.SwitchProject(h.projectID)
+	elapsed := time.Since(start)
+
+	// Always release the first switch before failing the test, so the helper
+	// goroutine cannot leak.
+	close(releaseFirst)
+	if firstErr := <-errFirst; firstErr != nil {
+		t.Fatalf("first SwitchProject: %v", firstErr)
+	}
+
+	if err == nil {
+		t.Fatal("expected the second SwitchProject to time out, got nil error")
+	}
+	if !errors.Is(err, errSwitchLockTimeout) {
+		t.Fatalf("second SwitchProject error = %v, want errSwitchLockTimeout", err)
+	}
+	if !strings.Contains(err.Error(), "timed out waiting for in-flight switch") {
+		t.Fatalf("timeout error message = %q, want it to mention the in-flight switch", err.Error())
+	}
+	if elapsed > time.Second {
+		t.Fatalf("second SwitchProject blocked for %v, want it bounded by the 200ms deadline", elapsed)
 	}
 }

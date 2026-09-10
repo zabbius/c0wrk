@@ -36,6 +36,11 @@ class MockAudioContext {
   readonly destination = {}
   readonly oscillators: MockOscillator[] = []
 
+  readonly close = vi.fn((): Promise<void> => {
+    this.state = 'closed'
+    return Promise.resolve()
+  })
+
   readonly resume = vi.fn((): Promise<void> => {
     if (MockAudioContext.resumeBehavior === 'reject') {
       // Mirrors WebKit refusing to resume an `interrupted` context.
@@ -167,6 +172,62 @@ describe('playSound', () => {
     ctx.state = 'interrupted'
     ctx.emit('statechange')
     expect(ctx.resume).toHaveBeenCalledTimes(1)
+  })
+
+  it('replaces a dead (closed) context instead of staying silent', () => {
+    playSound('attention') // creates the context, running
+    const first = createdCtx()
+    first.state = 'closed' // the webview tore the context down
+
+    // A closed context can never render again, so the next cue must build a
+    // fresh one rather than reuse the dead context forever.
+    playSound('attention')
+    expect(MockAudioContext.instances).toHaveLength(2)
+    const second = createdCtx()
+    expect(second).not.toBe(first)
+    expect(second.oscillators).toHaveLength(1)
+  })
+
+  it('replaces a wedged (interrupted) context so audio recovers without a restart', async () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000)
+    MockAudioContext.initialState = 'interrupted'
+    MockAudioContext.resumeBehavior = 'reject'
+
+    playSound('attention')
+    const first = createdCtx()
+    expect(first.resume).toHaveBeenCalledTimes(1)
+    await flush()
+    // WebKit rejects resume() while interrupted: the cue is dropped and the
+    // wedged context is discarded, not kept forever.
+    expect(first.oscillators).toHaveLength(0)
+    expect(first.state).toBe('closed')
+
+    // The interruption has ended; a later cue must build a fresh, revivable
+    // context and play — the regression was staying silent until an app restart.
+    nowSpy.mockReturnValue(1_000 + 60_000)
+    MockAudioContext.initialState = 'suspended'
+    MockAudioContext.resumeBehavior = 'resolve'
+    playSound('attention')
+    expect(MockAudioContext.instances).toHaveLength(2)
+    await flush()
+    const second = createdCtx()
+    expect(second).not.toBe(first)
+    expect(second.oscillators).toHaveLength(1)
+    nowSpy.mockRestore()
+  })
+
+  it('does not build a replacement for every cue while an interruption persists', async () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(5_000)
+    MockAudioContext.initialState = 'interrupted'
+    MockAudioContext.resumeBehavior = 'reject'
+
+    playSound('attention')
+    await flush()
+    // Further cues inside the backoff window must not spin up new contexts.
+    playSound('attention')
+    playSound('error')
+    expect(MockAudioContext.instances).toHaveLength(1)
+    nowSpy.mockRestore()
   })
 })
 

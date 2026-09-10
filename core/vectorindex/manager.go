@@ -45,6 +45,13 @@ const (
 	// DefaultEmbeddingCacheMaxBytes caps each project's branch-independent
 	// content-addressed embedding cache at 512 MiB.
 	DefaultEmbeddingCacheMaxBytes int64 = 512 << 20
+
+	// DefaultParkCapacity is the default number of recently-closed projects
+	// whose vector-index state is kept resident in RAM (see
+	// vector_index.park_capacity). 3 balances the memory cost (a parked
+	// project keeps its chromem DB + bleve index in memory) against the
+	// avoided chromem gob-decode + index reload on the return path.
+	DefaultParkCapacity = 3
 )
 
 // DefaultEmbeddingBatchSize mirrors sp4rk's embedding.DefaultBatchSize — the
@@ -53,17 +60,20 @@ const (
 // can never drift.
 const DefaultEmbeddingBatchSize = embedding.DefaultBatchSize
 
-// shutdownIndexGracePeriod is the maximum time Shutdown and SwitchProject wait
-// for background init/indexing goroutines to exit after cancelling their
-// contexts. Context cancellation normally unblocks them within milliseconds
-// (the embedder is ctx-aware), but a goroutine stuck in non-interruptible work
-// — most notably a synchronous chromem gob-decode (init) or ONNX inference call
-// (indexing) that ignores ctx.Done() — cannot be interrupted. Rather than block
-// app shutdown or a project switch forever (which would leave the user with no
-// option but to force-kill the process), the caller waits for this period, then
-// proceeds — in Shutdown it skips the blocking service.Close()/closeFn() and lets
-// the OS reclaim resources; in SwitchProject the new init goroutine blocks on
-// s.mu in the background until the old one releases it.
+// shutdownIndexGracePeriod is the maximum time Shutdown waits for background
+// init/indexing goroutines to exit after cancelling their contexts. Context
+// cancellation normally unblocks them within milliseconds (the embedder is
+// ctx-aware), but a goroutine stuck in non-interruptible work — most notably a
+// synchronous chromem gob-decode (init) or ONNX inference call (indexing) that
+// ignores ctx.Done() — cannot be interrupted. Rather than block app shutdown
+// forever (which would leave the user with no option but to force-kill the
+// process), Shutdown waits for this period, then proceeds and skips the
+// blocking service.Close()/closeFn(), letting the OS reclaim the resources.
+//
+// SwitchProject deliberately does NOT drain the init goroutine on this (or any)
+// bound: it only cancels the previous init (initCancel) and relies on
+// initProject's per-step ctx checks plus s.mu for serialization, so the
+// project-switch RPC never blocks on a stuck init. See SwitchProject.
 const shutdownIndexGracePeriod = 10 * time.Second
 
 // ManagerConfig holds configuration for creating a Manager.
@@ -129,6 +139,17 @@ type ManagerConfig struct {
 	// DefaultSearchWaitTimeout (3s), so production wiring always carries an
 	// explicit value.
 	SearchWaitTimeout time.Duration
+
+	// ParkCapacity is the max number of recently-closed projects whose
+	// vector-index state (chromem DB + lexical index + file-hash sidecar) is
+	// kept resident in RAM so returning to them skips the chromem gob-decode
+	// (vector_index.park_capacity). 0 (or negative) disables parking,
+	// reproducing the historical reopen-every-switch behaviour. NO default is
+	// applied here: the config layer resolves an unset key to
+	// DefaultParkCapacity (3) while an explicit 0 stays 0, so this field's
+	// zero value deliberately means "disabled" for zero-value literals
+	// (tests). Production always carries the resolved value.
+	ParkCapacity int
 
 	Logger    *slog.Logger
 	Telemetry *Telemetry
@@ -241,18 +262,21 @@ type Manager struct {
 	// The next SwitchProject / Shutdown cancels it so a stale init can't
 	// touch a freshly-switched (or closed) service. Set under m.mu.
 	initCancel context.CancelFunc
-	// initWG tracks the initProject goroutine. Shutdown waits on it before
-	// closing the service so the init goroutine never operates on a closed
-	// service. initProject checks initCtx between each step and aborts early
-	// when cancelled (e.g. by a rapid follow-up SwitchProject).
+	// initWG tracks the initProject goroutine. Only Shutdown waits on it (and
+	// only in bounded fashion) before closing the service, so the init
+	// goroutine never operates on a closed service. SwitchProject cancels
+	// initCtx but does NOT wait on initWG: initProject checks initCtx before
+	// each mutating step and aborts early when cancelled (e.g. by a rapid
+	// follow-up SwitchProject), and s.mu serializes any residual overlap.
 	initWG sync.WaitGroup
 
 	// closeFn is called during Shutdown to release the embedder (if provided).
 	closeFn func() error
 
 	// shutdownGrace overrides shutdownIndexGracePeriod when non-zero, so
-	// tests can verify the bounded-wait Shutdown logic without waiting the
-	// full 10 s production default.
+	// tests can verify the bounded-wait Shutdown logic — and that SwitchProject
+	// ignores this bound entirely (it never drains initWG) — without waiting
+	// the full 10 s production default.
 	shutdownGrace time.Duration
 }
 
@@ -330,6 +354,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		EmbeddingCacheMaxBytes:    cfg.EmbeddingCacheMaxBytes,
 		ChunkerFingerprint:        ChunkerFingerprint(maxChunkSize, chunkOverlap, resolveContentFilterConfig(cfg.ContentFilter).Fingerprint()),
 		ContentFilter:             cfg.ContentFilter,
+		ParkCapacity:              cfg.ParkCapacity,
 	})
 	if err != nil {
 		return nil, err
@@ -407,23 +432,22 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	// no git branch is detected, and no indexing goroutine or git monitor is
 	// started.
 	if projectID == core.NoProjectID {
-		// Cancel any in-flight async init from a prior CODE project and drain it
-		// (bounded) before resetting the service, so it can't (re)set a
-		// collection/db after we go in-memory below. Mirrors the CODE path's
-		// single-flight teardown. The wait is bounded so a stuck init goroutine
-		// (e.g. one blocked in the non-interruptible chromem gob-decode) cannot
-		// hang the project-switch RPC forever; on timeout we proceed because
-		// initCancel is already called, so the orphaned goroutine aborts at its
-		// next ctx check. The s.mu lock it may still hold serializes naturally
-		// with the SetProject call below, bounding the effective wait to the
-		// actual DB work.
+		// Cancel any in-flight async init from a prior CODE project before
+		// resetting the service, so it can't (re)set a collection/db after we
+		// go in-memory below. We do NOT wait for that goroutine to drain:
+		// initCancel is called here, and initProject checks ctx before each
+		// mutating step, so the orphaned goroutine aborts without touching the
+		// new state — while the s.mu lock it may still hold serializes
+		// naturally with SetProject below, bounding the effective wait to the
+		// actual DB work rather than a fixed grace. Keeping the drain off this
+		// path means a fresh No-Project switch returns immediately even while a
+		// prior init is still unwinding. Only Shutdown waits on initWG (bounded).
 		m.mu.Lock()
 		if m.initCancel != nil {
 			m.initCancel()
 			m.initCancel = nil
 		}
 		m.mu.Unlock()
-		m.waitBounded(&m.initWG, m.initDrainGrace(), "init (no-project switch)")
 
 		m.mu.Lock()
 		if m.indexCancel != nil {
@@ -445,24 +469,23 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 		return nil
 	}
 
-	// Displace any previous project. Cancel its async init's context and
-	// drain it (bounded) before touching shared state, so only one init runs
-	// at a time — no two inits can overlap and race on m.indexer /
-	// m.gitMonitor / the service. In normal use the previous project's init
-	// completed long ago (search became ready), so this returns immediately;
-	// it only blocks during a rapid double-switch, and then for no longer
-	// than the previous synchronous SwitchProject did (≈ one chromem open).
-	// The wait is bounded so a stuck init goroutine (e.g. one blocked in the
-	// non-interruptible chromem gob-decode) cannot hang the project-switch RPC
-	// forever; on timeout the new init goroutine launched below blocks on s.mu
-	// in the background until the old one releases it, keeping the UI free.
+	// Displace any previous project. Cancel its async init's context before
+	// touching shared state; the cancelled init aborts at its next ctx check
+	// (see initProject) and can no longer race on m.indexer / m.gitMonitor /
+	// the service. We deliberately do NOT wait for it to drain here: doing so
+	// would put the previous project's chromem gob-decode (up to the 10 s grace)
+	// back on the project-switch RPC path and freeze the UI during a rapid
+	// double-switch. Serialization is instead provided by initCancel plus
+	// initProject's per-step ctx checks, and any residual mutual exclusion comes
+	// from s.mu — the new init goroutine launched below blocks on s.mu in the
+	// background until an orphaned one releases it, so it never blocks the RPC.
+	// Only Shutdown waits on initWG (bounded) before closing the service.
 	m.mu.Lock()
 	if m.initCancel != nil {
 		m.initCancel()
 		m.initCancel = nil
 	}
 	m.mu.Unlock()
-	m.waitBounded(&m.initWG, m.initDrainGrace(), "init (project switch)")
 
 	m.mu.Lock()
 	if m.indexCancel != nil {
@@ -531,10 +554,34 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vectorIndexFullPath, embeddingCachePath string, cbs ProjectCallbacks) {
 	defer m.initWG.Done()
 
+	// INVARIANT: every mutating step below is preceded by a ctx check (or, for
+	// a step that cannot be pre-empted once entered, followed immediately by
+	// one). Before the init touches shared state — the service's project/
+	// collection, m.indexer, m.workspacePath, m.gitMonitor, or the background
+	// goroutines — it must observe a live ctx; if a follow-up SwitchProject /
+	// Shutdown cancelled it, the orphaned init bails out instead of clobbering
+	// the new project's state. This is what lets SwitchProject skip waiting on
+	// initWG entirely.
+	if err := ctx.Err(); err != nil {
+		m.logger.Info("vector index init cancelled before start", "project", projectID)
+		return
+	}
+
 	// SetProject loads the persistent chromem DB. This is the dominant cost
 	// (gob-decoding every document of every branch collection into RAM) and
-	// holds the service write lock for the duration.
+	// holds the service write lock for the duration. It is the one step that
+	// cannot be pre-empted once entered, so its outcome is also checked against
+	// ctx immediately afterwards.
 	if err := m.service.SetProject(projectID, vectorIndexFullPath, embeddingCachePath); err != nil {
+		// If the init was cancelled while SetProject ran, this failure belongs
+		// to an orphaned init: a newer project already owns readiness, so do NOT
+		// flip it. Calling notifyInitFailure or SetReady(true) here would clear
+		// the new project's not-ready state and let a search race its init.
+		if cerr := ctx.Err(); cerr != nil {
+			m.logger.Info("vector index init cancelled during open; ignoring open failure",
+				"project", projectID, "error", err)
+			return
+		}
 		m.logger.Warn("vector index init failed; search disabled",
 			"project", projectID, "step", "open persistent DB", "error", err)
 		// Surface the soft failure so the backend can emit a terminal
@@ -661,7 +708,13 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 		}
 	}()
 
-	// Start git branch monitor.
+	// Start git branch monitor. Guard this (the last mutating step) with a ctx
+	// check too: an orphaned init must not install its git monitor over the new
+	// project's — initCancel cancellation is what makes the check fail here.
+	if err := ctx.Err(); err != nil {
+		m.logger.Info("vector index init cancelled before git monitor", "project", projectID)
+		return
+	}
 	gitMon, monErr := NewGitMonitor(
 		workspacePath,
 		func(newBranch string) {
@@ -1057,10 +1110,10 @@ func (m *Manager) Shutdown() {
 
 // initDrainGrace resolves the grace period for bounding an init/indexing
 // goroutine drain. It returns the test-overridable m.shutdownGrace when set,
-// falling back to the production default shutdownIndexGracePeriod. The same
-// bound applies to Shutdown and to SwitchProject's single-flight init drain so
-// a stuck init goroutine (blocked in the non-interruptible chromem gob-decode)
-// cannot hang either path indefinitely.
+// falling back to the production default shutdownIndexGracePeriod. The bound
+// applies only to Shutdown now — SwitchProject no longer drains initWG, so a
+// stuck init goroutine (blocked in the non-interruptible chromem gob-decode)
+// cannot hang a project switch either way.
 func (m *Manager) initDrainGrace() time.Duration {
 	if m.shutdownGrace != 0 {
 		return m.shutdownGrace
@@ -1074,7 +1127,8 @@ func (m *Manager) initDrainGrace() time.Duration {
 // cleanup that depends on those goroutines having exited. This bounds the
 // drain for goroutines that may be stuck inside non-interruptible work
 // (chromem gob-decode, os.ReadFile, or synchronous ONNX inference) so a single
-// stuck goroutine can never hang app shutdown or a project switch.
+// stuck goroutine can never hang app shutdown. (SwitchProject no longer uses
+// it: it never waits on initWG.)
 func (m *Manager) waitBounded(wg *sync.WaitGroup, grace time.Duration, what string) bool {
 	done := make(chan struct{})
 	go func() {

@@ -1148,7 +1148,11 @@ func (a *App) startVectorIndexBackground(
 			// config, never defaulted); stored on the Manager for the
 			// search-path wiring.
 			SearchWaitTimeout: time.Duration(derefInt(cfg.VectorIndex.SearchWaitTimeoutMs)) * time.Millisecond,
-			Logger:            log,
+			// ParkCapacity: how many recently-closed projects keep their
+			// vector-index state resident (vector_index.park_capacity;
+			// resolved default 3, explicit 0 disables parking).
+			ParkCapacity: derefInt(cfg.VectorIndex.ParkCapacity),
+			Logger:       log,
 		})
 		if err != nil {
 			log.Warn("vector search unavailable", "error", err)

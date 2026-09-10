@@ -160,8 +160,8 @@ func TestValidateCollection_ContentFilterExcludedAndDeleted(t *testing.T) {
 
 	// Sanity: with the filter off, both files were indexed.
 	svc.mu.RLock()
-	_, genIndexed := svc.fileHashes[genFile]
-	_, legitIndexed := svc.fileHashes[legitFile]
+	_, genIndexed := svc.current.fileHashes[genFile]
+	_, legitIndexed := svc.current.fileHashes[legitFile]
 	svc.mu.RUnlock()
 	if !genIndexed || !legitIndexed {
 		t.Fatalf("filter-off pass must index both files: gen=%v legit=%v", genIndexed, legitIndexed)

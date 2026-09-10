@@ -332,10 +332,17 @@ export function FileTreePanel() {
     const ops: Promise<unknown>[] = [
       listDirectory(workspacePath)
         .then((entries) => {
-          if (!cancelled) {
-            setEntries(workspacePath, entries)
-            setRootLoadError(null)
-          }
+          if (cancelled) return
+          // Guard: never clobber a snapshot-hydrated root with an EMPTY
+          // listing. Immediately after a project switch the backend may not
+          // have finished activating the project yet, and an empty response is
+          // indistinguishable from that transient state — the hydrated tree is
+          // the better data. A genuinely emptied workspace still self-heals on
+          // the next workspace:tree_changed reload (which writes unconditionally).
+          const hydratedRoot = useFileTreeStore.getState().tree[workspacePath]
+          if (entries.length === 0 && hydratedRoot && hydratedRoot.length > 0) return
+          setEntries(workspacePath, entries)
+          setRootLoadError(null)
         })
         .catch((err) => {
           // Surface the failure instead of caching an empty listing: a

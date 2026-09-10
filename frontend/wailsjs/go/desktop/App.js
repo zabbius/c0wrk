@@ -242,8 +242,8 @@ export function GetFileIcon(arg1) {
   return window['go']['desktop']['App']['GetFileIcon'](arg1);
 }
 
-export function GetGitHistory() {
-  return window['go']['desktop']['App']['GetGitHistory']();
+export function GetGitHistory(arg1, arg2) {
+  return window['go']['desktop']['App']['GetGitHistory'](arg1, arg2);
 }
 
 export function GetGitStatus(arg1) {

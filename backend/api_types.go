@@ -311,6 +311,11 @@ type StashEntry = workspace.StashEntry
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type GitHistoryCommit = workspace.GitHistoryCommit
 
+// GitHistoryPage is a single page of the unified commit history for the
+// frontend's incremental (scroll/load-more) loading. Defined in
+// core/workspace; re-exported here as a type alias for ViewModel convenience.
+type GitHistoryPage = workspace.GitHistoryPage
+
 // HunkDiffInfo describes a single diff hunk with staging status and raw
 // diff text. Defined in core/workspace; re-exported here as a type alias
 // for ViewModel convenience.

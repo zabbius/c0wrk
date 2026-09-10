@@ -240,6 +240,20 @@ type VectorIndexConfig struct {
 	// execution is separately bounded by the same value as
 	// defense-in-depth.
 	SearchWaitTimeoutMs *int `yaml:"search_wait_timeout_ms"`
+
+	// ParkCapacity is the maximum number of recently-closed projects whose
+	// vector-index state (chromem DB + bleve lexical index + file-hash
+	// sidecar) is kept resident in RAM so that returning to one of them
+	// restores it instantly — skipping the expensive chromem gob-decode of
+	// every branch document, plus the lexical index reopen. It is a
+	// pointer-int so an unset key resolves to the default of 3 while an
+	// explicit 0 is preserved and DISABLES parking (reproducing the
+	// historical behaviour where every project switch reopened the
+	// persistent DB from scratch). Memory/latency tradeoff: each parked
+	// project holds its full vector + lexical index in memory, so raise this
+	// on a RAM-rich machine to make frequent project hopping instant, and
+	// lower it (or set 0) on a constrained one to cap resident memory.
+	ParkCapacity *int `yaml:"park_capacity"`
 }
 
 // VectorIndexContentFilterConfig is the YAML surface of the pre-chunk content

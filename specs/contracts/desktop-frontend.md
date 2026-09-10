@@ -191,7 +191,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `Pull`                 | remote, flags []string  | (string, error)               | Pull from remote (flags: --ff-only, --rebase, --rebase --autostash) |
 | `Push`                 | remote, flags []string  | (string, error)               | Push to remote (flags: --force, --force-with-lease, --no-verify) |
 | `Fetch`                | remote, flags []string  | (string, error)               | Fetch from remote (flags: --tags, --prune) |
-| `GetGitHistory`        | —                       | ([]GitHistoryCommit, error)   | Unified commit log + DAG graph topology (each `GitHistoryCommit` carries both log fields and parents/refs; replaces the former separate `GetCommitLog`/`GetGitGraph` pair) |
+| `GetGitHistory`        | limit, skip             | (*GitHistoryPage, error)      | One page of the unified commit log + DAG graph topology (each `GitHistoryCommit` carries both log fields and parents/refs; replaces the former separate `GetCommitLog`/`GetGitGraph` pair). Paginated via `git log -n <limit> --skip <skip>` (limit default 300, capped at 1000); returns `GitHistoryPage{Commits, NextSkip, HasMore}` and the frontend accumulates pages |
 | `GetCommitFiles`       | sha                     | ([]CommitFile, error)         | Files changed in a commit |
 | `GetCommitFilesBatch`  | shas []string           | (map[string][]CommitFile, error) | Files changed across many commits (batched) |
 | `GetCommitDiff`        | sha                     | ([]ReviewFileDiff, error)     | Per-file diff for a single commit (review diff format) |

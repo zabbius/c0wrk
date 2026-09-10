@@ -7,6 +7,7 @@ import { useChatInputStore } from "@/stores/chatInputStore";
 import { useAttachmentsStore } from "@/stores/attachmentsStore";
 import { renameProject, deleteProject } from "@/api/projects";
 import { useProjectSwitchState } from "@/hooks/useProjectSwitchState";
+import { drop as dropProjectSnapshot } from "@/lib/projectSnapshotCache";
 import { CreateProjectDialog } from "@/components/project/CreateProjectDialog";
 import { logger } from "@/lib/logger";
 import { cn } from "@/lib/utils";
@@ -41,7 +42,13 @@ export function ProjectSelector() {
 
   const handleSwitch = useCallback(
     async (id: string) => {
-      if (id === activeProjectId) return;
+      // Invariant: a click ALWAYS reaches the backend — even when the clicked
+      // project is already active. SwitchProject is idempotent and re-emits
+      // `project:switched`, which repairs a frontend↔backend desync (e.g. the
+      // frontend's activeProjectId drifted from the backend's active project
+      // after a failed or superseded switch) without an app restart.
+      // Short-circuiting the already-active id here would hide that repair
+      // path, so the local early-exit was deliberately removed.
       try {
         await switchProjectWithState(id);
         setDropdownOpen(false);
@@ -49,7 +56,7 @@ export function ProjectSelector() {
         logger.error("Failed to switch project:", error);
       }
     },
-    [activeProjectId, switchProjectWithState],
+    [switchProjectWithState],
   );
 
   const handleDelete = useCallback(
@@ -78,6 +85,10 @@ export function ProjectSelector() {
         // message, generation flag, error/success banner) so the per-project
         // map stays bounded.
         useGitPanelStore.getState().dropProjectCommitState(id);
+        // Drop the deleted project's in-memory UI snapshot so a later switch
+        // can never rehydrate a tree/session list for a project that no
+        // longer exists.
+        dropProjectSnapshot(id);
         if (id === activeProjectId) {
           const remaining = useProjectStore.getState().projects;
           if (remaining && remaining.length > 0) {

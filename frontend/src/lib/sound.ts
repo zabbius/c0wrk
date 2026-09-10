@@ -23,6 +23,14 @@ let audioCtx: AudioContext | null = null
 let unlockRegistered = false
 /** True once the context `statechange` recovery listener has been attached. */
 let stateChangeRegistered = false
+/** Earliest instant (epoch ms) at which a fresh context may be built after the
+ *  previous one was found non-revivable. Bounds replacement so a long OS
+ *  interruption — during which EVERY resume attempt fails — cannot spin up a
+ *  new AudioContext for each cue. */
+let ctxBackoffUntil = 0
+/** How long to stay silent after dropping a non-revivable context before
+ *  building a replacement. */
+const CTX_BACKOFF_MS = 1500
 
 /** Resolve the AudioContext constructor (standard + legacy webkit prefix). */
 function getAudioContextCtor(): AudioContextCtor | null {
@@ -46,22 +54,77 @@ function isRunning(ctx: AudioContext): boolean {
   return ctx.state === 'running'
 }
 
-/** Best-effort resume of a non-running context. Never rejects; the returned
- *  promise settles once the attempt completes so callers can sequence playback
- *  after it. */
-function resumeCtx(ctx: AudioContext): Promise<void> {
-  if (isRunning(ctx)) return Promise.resolve()
+/** True when the context is dead for good and can never render again. */
+function isTerminal(ctx: AudioContext): boolean {
+  return ctx.state === 'closed'
+}
+
+/** True when the context is stuck in a state it cannot leave on its own.
+ *
+ *  WebKit's non-standard `interrupted` state is the trap: while it is set,
+ *  `resume()` returns a REJECTED promise (see the "interrupted state" proposal
+ *  for the Web Audio API), and a context can wedge there — resume() never
+ *  succeeds again, not even from a user gesture. `closed` is equally final.
+ *  Such a context must be REPLACED, not resumed. */
+function isWedged(ctx: AudioContext): boolean {
+  // WebKit's non-standard `interrupted` state is absent from the lib.dom
+  // AudioContextState union, so read the state as a plain string.
+  const state: string = ctx.state
+  return state === 'closed' || state === 'interrupted'
+}
+
+/** Best-effort resume of a non-running context. Never rejects; resolves to
+ *  whether the context is `running` once the attempt completes, so callers can
+ *  sequence playback after it and detect a resume that could not succeed. */
+function resumeCtx(ctx: AudioContext): Promise<boolean> {
+  if (isRunning(ctx)) return Promise.resolve(true)
   try {
     return Promise.resolve(ctx.resume()).then(
-      () => undefined,
+      () => isRunning(ctx),
       (err) => {
         logger.debug('[sound] context resume failed', err)
+        return false
       },
     )
   } catch (err) {
     logger.debug('[sound] context resume threw', err)
-    return Promise.resolve()
+    return Promise.resolve(false)
   }
+}
+
+/** Discard `ctx`, freeing its graph, and detach our statechange tracking from
+ *  it. `close()` is best-effort — it rejects on an already-closed context. */
+function dropCtx(ctx: AudioContext): void {
+  if (audioCtx === ctx) {
+    audioCtx = null
+    stateChangeRegistered = false
+  }
+  try {
+    void Promise.resolve(ctx.close()).catch(() => { /* already closed */ })
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Drop a context that cannot be revived and start a short backoff before a
+ *  replacement is built. Without this replacement the app stayed silent until a
+ *  full restart — the reported symptom, because `getCtx` handed back the dead
+ *  context forever. */
+function markWedged(ctx: AudioContext): void {
+  if (audioCtx !== ctx) return
+  logger.debug('[sound] replacing non-revivable audio context', ctx.state)
+  ctxBackoffUntil = Date.now() + CTX_BACKOFF_MS
+  dropCtx(ctx)
+}
+
+/** Try to bring `ctx` back to `running`. If it is wedged in a state it can never
+ *  leave, drop it so the next cue builds a fresh, revivable context. Resolves to
+ *  whether the context is running after the attempt. */
+function recoverCtx(ctx: AudioContext): Promise<boolean> {
+  return resumeCtx(ctx).then((ok) => {
+    if (!ok && isWedged(ctx)) markWedged(ctx)
+    return ok
+  })
 }
 
 /** Attach a one-time `statechange` recovery listener.
@@ -73,23 +136,31 @@ function resumeCtx(ctx: AudioContext): Promise<void> {
  *  state change itself can succeed for OS-initiated suspensions; when it cannot
  *  (WebKit only honors resume() from inside a gesture), the persistent gesture
  *  listeners installed by `initSoundUnlock` recover it on the next
- *  interaction. */
+ *  interaction. A context that is wedged (`closed`/`interrupted`) is replaced
+ *  outright, because no amount of resuming can revive it. */
 function attachStateChangeRecovery(ctx: AudioContext): void {
   if (stateChangeRegistered) return
   stateChangeRegistered = true
   ctx.addEventListener('statechange', () => {
-    if (!isRunning(ctx)) {
-      logger.debug('[sound] audio context left running', ctx.state)
-      void resumeCtx(ctx)
-    }
+    if (isRunning(ctx)) return
+    logger.debug('[sound] audio context left running', ctx.state)
+    void recoverCtx(ctx)
   })
 }
 
 /** Lazily create (or return the cached) AudioContext. Returns null when the
- *  Web Audio API is unavailable (older webview / tests). */
+ *  Web Audio API is unavailable (older webview / tests), when the cached
+ *  context is dead, or while a replacement is on backoff after a wedged
+ *  context was dropped. */
 function getCtx(): AudioContext | null {
   if (typeof window === 'undefined') return null
-  if (audioCtx) return audioCtx
+  if (audioCtx) {
+    if (!isTerminal(audioCtx)) return audioCtx
+    // A closed context is unrecoverable — drop it and fall through to build a
+    // fresh one rather than hand callers a context that can never render.
+    dropCtx(audioCtx)
+  }
+  if (Date.now() < ctxBackoffUntil) return null
   const Ctor = getAudioContextCtor()
   if (!Ctor) return null
   try {
@@ -177,9 +248,11 @@ export function playSound(kind: SoundKind): void {
   // engine, so resume FIRST and emit the cue only once the context is actually
   // rendering. The previous implementation fired the resume without awaiting it
   // and scheduled the notes straight away — which is exactly how cues went
-  // missing after the context was interrupted or suspended.
-  void resumeCtx(ctx).then(() => {
-    if (isRunning(ctx)) playCue(ctx, kind)
+  // missing after the context was interrupted or suspended. `recoverCtx` also
+  // replaces a context that is wedged in a state it can never leave, so a later
+  // cue is not stranded on it forever.
+  void recoverCtx(ctx).then((ok) => {
+    if (ok) playCue(ctx, kind)
   })
 }
 
@@ -188,12 +261,14 @@ function playCue(ctx: AudioContext, kind: SoundKind): void {
   for (const note of PRESETS[kind]) playNote(ctx, note)
 }
 
-/** Resume the shared context from inside a user-gesture callback. WebKit only
- *  honors resume() when it is invoked from a gesture, so this is the only path
- *  that can revive a context the OS suspended mid-session. */
-function unlockOnGesture(): void {
+/** Attempt recovery when the user interacts or returns to the app. WebKit only
+ *  honors resume() when it is invoked from a gesture, so a gesture is the main
+ *  path that can revive a context the OS suspended mid-session. A context that
+ *  is wedged in `interrupted`/`closed` is replaced instead — resume() can never
+ *  revive it. */
+function recoverOnInteraction(): void {
   const ctx = getCtx()
-  if (ctx && !isRunning(ctx)) void resumeCtx(ctx)
+  if (ctx && !isRunning(ctx)) void recoverCtx(ctx)
 }
 
 /**
@@ -213,9 +288,18 @@ function unlockOnGesture(): void {
 export function initSoundUnlock(): void {
   if (typeof window === 'undefined' || unlockRegistered) return
   unlockRegistered = true
-  window.addEventListener('pointerdown', unlockOnGesture)
-  window.addEventListener('keydown', unlockOnGesture)
-  window.addEventListener('touchstart', unlockOnGesture)
+  window.addEventListener('pointerdown', recoverOnInteraction)
+  window.addEventListener('keydown', recoverOnInteraction)
+  window.addEventListener('touchstart', recoverOnInteraction)
+  // Returning to the app (un-minimising, display wake) is the moment an OS
+  // interruption usually ends, so attempt recovery then too — the next cue after
+  // the user comes back then plays without waiting for a click.
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', (): void => {
+      if (document.visibilityState !== 'visible') return
+      recoverOnInteraction()
+    })
+  }
 }
 
 /** Test-only: reset module state so unit tests start from a clean slate. */
@@ -223,4 +307,5 @@ export function __resetSoundModule(): void {
   audioCtx = null
   unlockRegistered = false
   stateChangeRegistered = false
+  ctxBackoffUntil = 0
 }

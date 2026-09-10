@@ -19,9 +19,10 @@ import { GitHistoryContextMenu } from './GitHistoryContextMenu'
  * date). Clicking a commit lazily expands its changed files inline; the
  * graph edges route around the expanded gap via variable row heights.
  *
- * Data comes from a single source (`useGitHistory` → `GetGitHistory`);
- * changed files are fetched lazily per commit via `GetCommitFiles` and
- * cached by `useGitHistoryFilter`.
+ * Data comes from a single paginated source (`useGitHistory` →
+ * `GetGitHistory`); the next page is loaded on scroll-to-end or via the
+ * "Load more" button. Changed files are fetched lazily per commit via
+ * `GetCommitFiles` and cached by `useGitHistoryFilter`.
  *
  * A glob/regex file filter (shared with the file-tree panel via `FilterBar`)
  * narrows the list to commits that touched matching files. While a filter is
@@ -29,7 +30,11 @@ import { GitHistoryContextMenu } from './GitHistoryContextMenu'
  * (pushed left), since a filtered subset no longer forms a connected graph.
  */
 export function GitHistoryTab() {
-  const { commits, isLoading, error, reload } = useGitHistory()
+  const { commits, isLoading, isLoadingMore, hasMore, error, reload, loadMore } = useGitHistory()
+  // The file filter is CLIENT-SIDE and applies only to the commits loaded so
+  // far (the "loaded window"). It does not query the backend and therefore
+  // never sees commits that have not been paged in yet — loading more pages
+  // extends the set the filter matches against.
   const {
     filterText,
     filterMode,
@@ -139,10 +144,10 @@ export function GitHistoryTab() {
   )
 
   // ── Virtualization ───────────────────────────────────────────────────
-  // Only visible rows are mounted — essential now that GetGitHistory
-  // returns the full commit list without pagination. Two virtualizers are
-  // created (one per rendering mode); the inactive one has count 0 so it
-  // produces no items. Both share the same scroll element.
+  // Only visible rows are mounted — essential now that GetGitHistory loads
+  // large histories a page at a time. Two virtualizers are created (one per
+  // rendering mode); the inactive one has count 0 so it produces no items.
+  // Both share the same scroll element.
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // SVG gutter width — needed to offset the row column past the graph.
@@ -178,6 +183,19 @@ export function GitHistoryTab() {
     overscan: 8,
     getItemKey: (i: number) => filteredCommits[i]?.sha ?? i,
   })
+
+  // Infinite-scroll edge trigger: when the user scrolls near the bottom of
+  // the loaded window, request the next page. `loadMore` is idempotent (it
+  // no-ops while a page is in flight or once `hasMore` is false), so firing
+  // on every qualifying scroll event is harmless. The explicit "Load more"
+  // button below is the keyboard/accessible path for the same action.
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el || !hasMore || isLoadingMore) return
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
+      void loadMore()
+    }
+  }, [hasMore, isLoadingMore, loadMore])
 
   if (isLoading) {
     return (
@@ -217,6 +235,7 @@ export function GitHistoryTab() {
       />
       <div
         ref={scrollRef}
+        onScroll={handleScroll}
         className="flex flex-col min-h-0 flex-1 overflow-y-auto custom-scrollbar"
       >
         {isFiltering ? (
@@ -316,6 +335,19 @@ export function GitHistoryTab() {
                 </div>
               )
             })}
+          </div>
+        )}
+        {hasMore && (
+          <div className="flex items-center justify-center py-3">
+            <button
+              type="button"
+              onClick={() => void loadMore()}
+              disabled={isLoadingMore}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+            >
+              {isLoadingMore && <Loader2 className="size-3.5 animate-spin" />}
+              Load more
+            </button>
           </div>
         )}
       </div>

@@ -277,7 +277,11 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	// while the frontend's serialized chain already moved on, a desync under
 	// which every ListDirectory (and with it @-file completion) fails
 	// containment until an app restart.
-	f.switchMu.Lock()
+	if err := f.acquireSwitchLock(); err != nil {
+		f.log().Warn("SwitchProject: timed out waiting for an in-flight switch",
+			"project", id, "error", err)
+		return err
+	}
 	defer f.switchMu.Unlock()
 	if f.switchInProgressHook != nil {
 		f.switchInProgressHook(id)
@@ -347,14 +351,23 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 		return errors.New("git is required for CODE mode")
 	}
 
+	// Teardown persists the PREVIOUS project's state and cancels its in-flight
+	// indexing; it stays first. Everything that can still fail (watcher setup,
+	// vector init) runs BEFORE the activation commit below, so a failure
+	// leaves activeProjectID/activeProjectPath on the previous project — the
+	// backend never half-switches, and the frontend (which treats a non-nil
+	// RPC error as "switch did not happen") cannot diverge from the backend.
 	f.switchProjectTeardown(id)
-	f.switchProjectActivate(p)
 	f.switchProjectSetupWatcher(p)
 
-	if err := f.switchProjectSetupVector(p); err != nil {
+	if err := f.switchSetupVector(p); err != nil {
 		return err
 	}
 
+	// All fallible steps succeeded: commit the activation. From here on the
+	// switch cannot fail, so the active marker and the project:switched event
+	// stay consistent with what the frontend is told.
+	f.switchProjectActivate(p)
 	f.applySavedProjectSwitchState(p.ID)
 	f.emitEvent(EventProjectSwitched, p)
 
@@ -370,6 +383,52 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 func gitOnPath() bool {
 	_, err := exec.LookPath("git")
 	return err == nil
+}
+
+// errSwitchLockTimeout is returned by SwitchProject when switchMu cannot be
+// acquired within switchLockTimeout. Exposed as a sentinel so callers/tests
+// can detect the bounded-wait failure specifically.
+var errSwitchLockTimeout = errors.New("project switch timed out waiting for in-flight switch")
+
+// acquireSwitchLock acquires switchMu, waiting at most switchLockTimeout (or
+// the switchLockTimeoutOverride seam) for any in-flight switch to finish.
+//
+// It polls with TryLock rather than blocking on Lock so a switch wedged behind
+// a stuck predecessor surfaces a bounded, actionable error instead of hanging
+// the RPC goroutine forever — an unbounded wait leaves the frontend's
+// project-load waterfall hung with no feedback and no way to recover short of
+// an app restart.
+func (f *FrontendAPI) acquireSwitchLock() error {
+	timeout := switchLockTimeout
+	if f.switchLockTimeoutOverride > 0 {
+		timeout = f.switchLockTimeoutOverride
+	}
+	const tick = 250 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	for {
+		if f.switchMu.TryLock() {
+			return nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return errSwitchLockTimeout
+		}
+		if remaining > tick {
+			remaining = tick
+		}
+		time.Sleep(remaining)
+	}
+}
+
+// switchSetupVector runs the vector-index setup for a project switch, honoring
+// the test-only switchProjectSetupVectorFn seam (nil in production). It lets a
+// test drive the fallible post-watcher step to verify the switch stays atomic
+// on failure.
+func (f *FrontendAPI) switchSetupVector(p *project.ProjectInfo) error {
+	if f.switchProjectSetupVectorFn != nil {
+		return f.switchProjectSetupVectorFn(p)
+	}
+	return f.switchProjectSetupVector(p)
 }
 
 // switchProjectTeardown persists the previous project state and cancels in-flight work.
@@ -408,6 +467,10 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 	f.invalidateSkillCache()
 	// Invalidate cached agent list since project-local agents may differ.
 	f.invalidateAgentCache()
+	// Invalidate both per-repo git caches (status / ignored paths) so no
+	// snapshot from the previous workspace can leak into the new one. Runs for
+	// every real switch (CODE and No Project). See frontend_api_gitcache.go.
+	f.invalidateAllGitCaches()
 
 	// Set MCP working directory to the new project workspace
 	if b := f.builder(); b != nil {
@@ -466,12 +529,12 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 
 	// CODE mode: tear down the previous watcher and create a new one scoped
 	// to the project workspace.
-	// Read the active research root BEFORE acquiring watcherMu so the lock
-	// order stays activeProjectMu → watcherMu (switchProjectActivate runs
-	// first and has already set it for a project with research enabled).
-	f.activeProjectMu.RLock()
-	researchRoot := f.activeResearchRoot
-	f.activeProjectMu.RUnlock()
+	// Read the research root from the TARGET project (p), not from the active
+	// fields: watcher setup now runs BEFORE switchProjectActivate commits the
+	// new project, so f.activeResearchRoot still holds the PREVIOUS project's
+	// root here. Taking p.ResearchRoot directly keeps the watcher scoped to
+	// the destination without acquiring activeProjectMu at all.
+	researchRoot := p.ResearchRoot
 
 	f.watcherMu.Lock()
 	defer f.watcherMu.Unlock()
@@ -506,6 +569,14 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		if f.app != nil && f.app.Manager() != nil {
 			f.app.Manager().InvalidateIgnoreCache(changedPaths)
 		}
+
+		// Any tree change can alter the working-tree status of the active
+		// repo, and an ignore-rule edit additionally stales the ignored-path
+		// set. Treat the debounced batch as the cache-invalidation point for
+		// the active project (this callback only runs for CODE-mode watchers;
+		// No Project uses a separate, cache-free watcher). See
+		// frontend_api_gitcache.go.
+		f.invalidateGitCachesOnWatcher(p.WorkspacePath, changedPaths)
 
 		// Project-local skills live under <workspace>/.agents/skills, so a
 		// workspace change may have added/removed/modified them. Invalidate

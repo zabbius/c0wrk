@@ -225,6 +225,19 @@ export interface GitHistoryCommit {
   refs: string[]
 }
 
+/**
+ * One page of the unified commit history. `GetGitHistory` is paginated
+ * (git log -n <limit> --skip <skip>): the hook accumulates pages and
+ * requests the next one with `skip = next_skip` while `has_more` is true.
+ */
+export interface GitHistoryPage {
+  commits: GitHistoryCommit[]
+  /** Offset to pass as `skip` when requesting the following page. */
+  next_skip: number
+  /** True when the backend filled the page (more commits may exist). */
+  has_more: boolean
+}
+
 /** Structured per-hunk diff info with staging status (for the hunk panel). */
 export interface HunkDiffInfo {
   old_start: number

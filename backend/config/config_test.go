@@ -1673,6 +1673,13 @@ func TestVectorIndexConfig_TuningKnobs_Defaults(t *testing.T) {
 	if gotTimeout != 3000 {
 		t.Errorf("default search_wait_timeout_ms = %d, want 3000", gotTimeout)
 	}
+	gotPark := -1
+	if cfg.VectorIndex.ParkCapacity != nil {
+		gotPark = *cfg.VectorIndex.ParkCapacity
+	}
+	if gotPark != 3 {
+		t.Errorf("default park_capacity = %d, want 3", gotPark)
+	}
 }
 
 // TestVectorIndexConfig_TuningKnobs_YAMLRoundTrip covers YAML parsing of
@@ -1688,6 +1695,7 @@ vector_index:
   debounce_ms: 250
   chunk_overlap: 120
   search_wait_timeout_ms: 0
+  park_capacity: 7
 `
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(src), &cfg); err != nil {
@@ -1711,6 +1719,9 @@ vector_index:
 	if cfg.VectorIndex.SearchWaitTimeoutMs == nil || *cfg.VectorIndex.SearchWaitTimeoutMs != 0 {
 		t.Errorf("explicit search_wait_timeout_ms: 0 must parse as the fail-fast sentinel (pointer to 0), got %v", cfg.VectorIndex.SearchWaitTimeoutMs)
 	}
+	if cfg.VectorIndex.ParkCapacity == nil || *cfg.VectorIndex.ParkCapacity != 7 {
+		t.Errorf("explicit park_capacity must parse verbatim, got %v", cfg.VectorIndex.ParkCapacity)
+	}
 
 	// ApplyDefaults must fill in unset knobs but PRESERVE the explicit
 	// fail-fast sentinel (an unset key resolves to 3000 instead — covered
@@ -1724,6 +1735,9 @@ vector_index:
 	}
 	if cfg.VectorIndex.SearchWaitTimeoutMs == nil || *cfg.VectorIndex.SearchWaitTimeoutMs != 0 {
 		t.Errorf("ApplyDefaults must not overwrite an explicit search_wait_timeout_ms: 0, got %v", cfg.VectorIndex.SearchWaitTimeoutMs)
+	}
+	if cfg.VectorIndex.ParkCapacity == nil || *cfg.VectorIndex.ParkCapacity != 7 {
+		t.Errorf("ApplyDefaults must not overwrite an explicit park_capacity, got %v", cfg.VectorIndex.ParkCapacity)
 	}
 
 	// Marshal → unmarshal round-trip preserves every knob verbatim.
@@ -1752,6 +1766,40 @@ vector_index:
 	}
 	if restored.VectorIndex.SearchWaitTimeoutMs == nil || *restored.VectorIndex.SearchWaitTimeoutMs != 0 {
 		t.Errorf("round-tripped search_wait_timeout_ms must stay the fail-fast sentinel (pointer to 0), got %v", restored.VectorIndex.SearchWaitTimeoutMs)
+	}
+	if restored.VectorIndex.ParkCapacity == nil || *restored.VectorIndex.ParkCapacity != 7 {
+		t.Errorf("round-tripped park_capacity = %v, want 7", restored.VectorIndex.ParkCapacity)
+	}
+}
+
+// TestVectorIndexConfig_ParkCapacity_DisableSentinel pins that an explicit
+// park_capacity: 0 survives the full Load path (defaults + validation) as the
+// "parking disabled" sentinel — distinct from an unset key, which defaults to
+// 3 (covered by TestVectorIndexConfig_TuningKnobs_Defaults). Without the
+// pointer type the two would be indistinguishable and parking could never be
+// turned off.
+func TestVectorIndexConfig_ParkCapacity_DisableSentinel(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+vector_index:
+  park_capacity: 0
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.VectorIndex.ParkCapacity == nil {
+		t.Fatal("park_capacity should be non-nil after Load")
+	}
+	if *cfg.VectorIndex.ParkCapacity != 0 {
+		t.Errorf("explicit park_capacity: 0 must survive as the disable sentinel, got %d", *cfg.VectorIndex.ParkCapacity)
 	}
 }
 

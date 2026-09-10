@@ -396,8 +396,13 @@ func combinedGitOutput(stdout, stderr string) string {
 
 // emitGitStatusChanged emits the git:status_changed event to the
 // frontend with the repository path as payload so the frontend knows
-// which project was affected.
+// which project was affected. It is also the single invalidation funnel for
+// the per-repo git caches: every mutating git RPC (stage/unstage/commit/
+// checkout/stash/merge/rebase/pull/push/reset/tag) calls it on success, so
+// dropping the cached snapshots here keeps GetGitStatus/ListDirectory fresh
+// without touching each operation individually. See frontend_api_gitcache.go.
 func (f *FrontendAPI) emitGitStatusChanged(repoPath string) {
+	f.invalidateGitCaches(repoPath)
 	if f.emitEvent != nil {
 		f.emitEvent(EventGitStatusChanged, repoPath)
 	}
@@ -1904,16 +1909,48 @@ func isRebaseActive(gitDir string) bool {
 // Commit graph RPC (Phase 6)
 // ---------------------------------------------------------------------------
 
-// GetGitHistory returns the full commit history for the unified
+// Default and maximum page sizes for GetGitHistory. The default keeps the
+// first request bounded for large repositories; the cap protects the UI
+// from an unbounded git-log payload.
+const (
+	gitHistoryDefaultLimit = 300
+	gitHistoryMaxLimit     = 1000
+)
+
+// normalizeGitHistoryLimit clamps a requested page size into the supported
+// range: non-positive values fall back to gitHistoryDefaultLimit and
+// values above gitHistoryMaxLimit are capped at it.
+func normalizeGitHistoryLimit(limit int) int {
+	if limit <= 0 {
+		return gitHistoryDefaultLimit
+	}
+	if limit > gitHistoryMaxLimit {
+		return gitHistoryMaxLimit
+	}
+	return limit
+}
+
+// GetGitHistory returns one page of the unified commit history for the
 // history+graph view, each commit carrying the union of the
 // human-readable log fields (author/email/date/message) and the graph
-// topology fields (parents/refs). Returns an empty slice (not nil) when
-// there are no commits. Returns an error when no project is active, the
-// project is No Project, or the git command fails.
-func (f *FrontendAPI) GetGitHistory() ([]GitHistoryCommit, error) {
+// topology fields (parents/refs). Commits are fetched newest-first via
+// `git log -n <limit> --skip <skip>`, so the frontend can page through
+// large repositories incrementally. limit<=0 falls back to
+// gitHistoryDefaultLimit and limit>gitHistoryMaxLimit is clamped to
+// gitHistoryMaxLimit; skip<0 is treated as 0. The returned page reports
+// NextSkip (the offset for the following page) and HasMore (true when the
+// page was saturated, i.e. len(Commits) == limit). Returns an error when
+// no project is active, the project is No Project, or the git command
+// fails.
+func (f *FrontendAPI) GetGitHistory(limit, skip int) (*GitHistoryPage, error) {
 	repoPath, err := f.resolveGitRepoRoot()
 	if err != nil {
 		return nil, err
+	}
+
+	limit = normalizeGitHistoryLimit(limit)
+	if skip < 0 {
+		skip = 0
 	}
 
 	// Pretty format using control characters as separators so commit
@@ -1922,13 +1959,23 @@ func (f *FrontendAPI) GetGitHistory() ([]GitHistoryCommit, error) {
 	// between commits. Fields: SHA, parents, author, email, date,
 	// subject, ref decorations.
 	out, err := f.runGitCmd(repoPath, "log",
+		"-n", strconv.Itoa(limit),
+		"--skip="+strconv.Itoa(skip),
 		"--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%s%x1f%d%x1e",
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	return parseGitHistory(out), nil
+	commits := parseGitHistory(out)
+	// A saturated page means git may have more commits beyond this window;
+	// a short page means we have reached the end of history.
+	hasMore := len(commits) == limit
+	return &GitHistoryPage{
+		Commits:  commits,
+		NextSkip: skip + len(commits),
+		HasMore:  hasMore,
+	}, nil
 }
 
 // parseGitHistory parses git log output produced with the

@@ -17,6 +17,13 @@ import (
 	"github.com/v0lka/sp4rk/pathutil"
 )
 
+// newPersistentDB opens a project's persistent chromem DB. It is a package
+// variable — not a direct chromem.NewPersistentDB call — purely as a test
+// seam: tests swap it for a counting wrapper to assert that a project restored
+// from the park LRU does NOT reopen (and therefore re-gob-decode) its
+// persistent DB. Production code must never reassign it.
+var newPersistentDB = chromem.NewPersistentDB
+
 // ServiceConfig holds configuration for creating a Service.
 type ServiceConfig struct {
 	// EmbeddingFunc is the chromem-go compatible embedding function
@@ -84,6 +91,14 @@ type ServiceConfig struct {
 	// used by the Indexer. Nil selects DefaultContentFilterConfig.
 	ContentFilter *ContentFilterConfig
 
+	// ParkCapacity is the maximum number of recently-closed projects whose
+	// vector-index state (chromem DB + lexical index + file-hash sidecar) is
+	// kept resident in memory so returning to them skips the expensive
+	// chromem gob-decode. 0 (or negative) disables parking and reproduces the
+	// historical behaviour where every project switch reopened the persistent
+	// DB from scratch. Resolved from vector_index.park_capacity (default 3).
+	ParkCapacity int
+
 	// Logger for structured logging.
 	Logger *slog.Logger
 
@@ -91,19 +106,24 @@ type ServiceConfig struct {
 	Telemetry *Telemetry
 }
 
-// Service manages chromem-go collections with git-branch awareness,
-// readiness state, and vector search capabilities. It also owns a
-// per-branch bleve lexical index that is written in lock-step with the
-// chromem collection.
-type Service struct {
-	db            *chromem.DB
-	collection    *chromem.Collection
-	lexical       lexical.Index
-	embeddingFunc chromem.EmbeddingFunc
-	batchEmbedder BatchEmbedder
-	projectID     string
-	projectPath   string // full path to project vector storage (set by SetProject)
+// projectState bundles every piece of mutable, per-project runtime state that
+// used to live directly on Service. SetProject swaps the whole bundle: the
+// outgoing project's state is parked (kept in RAM without closing its chromem
+// DB or bleve lexical index), so a later return to the same project restores
+// it without paying the expensive chromem gob-decode again. Every field is
+// guarded by the owning Service's mu, EXCEPT the two atomics
+// (fileHashMigrationPending, validationsSinceFullHash), which are read/written
+// without the write lock where their documentation allows.
+type projectState struct {
+	db         *chromem.DB
+	collection *chromem.Collection
+	lexical    lexical.Index
+
+	projectID   string
+	projectPath string // full path to project vector storage (set by SetProject)
+
 	currentBranch string
+
 	// fileHashes is a sidecar store mapping file_path → sidecar entry, kept in
 	// sync with the chromem collection. Entries are either a bare content
 	// hash (legacy), "hash|size|mtimeUnixNano" (intermediate format), or
@@ -115,17 +135,72 @@ type Service struct {
 	// Loaded per-branch in SwitchBranch and flushed at lifecycle boundaries
 	// (not on every batch).
 	fileHashes map[string]string
+
 	// fileHashMigrationPending is true while a background sidecar backfill
 	// (collection → file_hashes) is in flight for the current branch.
 	fileHashMigrationPending atomic.Bool
+
 	// migrationCh is closed when the current branch's sidecar has settled
 	// (loaded, empty, or migrated). WaitFileHashMigration selects on it.
 	// nil before the first SwitchBranch.
 	migrationCh chan struct{}
+
 	// migrationCancel cancels an in-flight migrateFileHashes goroutine
 	// (e.g. on branch switch / project switch / close).
 	migrationCancel context.CancelFunc
-	// migrationWG lets Close/SetProject wait for the migration goroutine.
+
+	// embeddingCache is branch-independent and rooted inside the active
+	// project's vector-index storage. It is recreated when a fresh state is
+	// opened (not on a restore from park).
+	embeddingCache *embeddingCache
+
+	// validationsSinceFullHash counts ValidateCollection passes since the
+	// last pass that skipped the stat-based fast-path and re-read +
+	// re-hashed every file (the periodic full-hash revalidation backstop;
+	// see fullHashRevalidationEvery). Atomic: ValidateCollection runs under
+	// the read lock, so the counter must not rely on it.
+	validationsSinceFullHash atomic.Int64
+
+	// sidecarReloadOnRestore is set when the state is parked while a sidecar
+	// backfill migration is still in flight (parkCurrentLocked cancels that
+	// migration, so ps.fileHashes is left as the empty placeholder). On the
+	// next restore, SetProject re-runs loadFileHashes to re-settle the sidecar
+	// (re-triggering the migration when the collection is non-empty) instead
+	// of trusting the empty placeholder — which would make ValidateCollection
+	// treat every file as new. Not guarded by mu on its own; it is only read
+	// and written while holding the owning Service's mu.
+	sidecarReloadOnRestore bool
+}
+
+// Service manages chromem-go collections with git-branch awareness,
+// readiness state, and vector search capabilities. It also owns a
+// per-branch bleve lexical index that is written in lock-step with the
+// chromem collection.
+type Service struct {
+	// current is the active project's state. It is never nil after
+	// NewService: switching to No Project installs an empty in-memory state.
+	// It is swapped only under mu, so any method holding mu (or RLock) sees
+	// a stable state for its whole duration. The lock-free readers
+	// (GetCollection, GetDB) observe whichever state is current at that
+	// instant — exactly as the pre-park code observed the old fields.
+	current *projectState
+
+	// parked is the LRU list of recently-parked project states, oldest
+	// first (parked[0] is the eviction victim). Guarded by mu. Bounded by
+	// parkCapacity; when parkCapacity <= 0 parking is disabled and this stays
+	// empty (every switch closes the outgoing state, the historical
+	// behaviour).
+	parked []*projectState
+
+	// parkCapacity is the maximum number of parked states retained. Resolved
+	// from vector_index.park_capacity (default 3). 0 (or negative) disables
+	// parking. See ServiceConfig.ParkCapacity.
+	parkCapacity int
+
+	embeddingFunc chromem.EmbeddingFunc
+	batchEmbedder BatchEmbedder
+	// migrationWG lets Close wait for the migration goroutine(s) of the
+	// current and any parked state to unwind before closing resources.
 	migrationWG sync.WaitGroup
 	mu          sync.RWMutex
 	ready       atomic.Bool
@@ -154,9 +229,9 @@ type Service struct {
 	// batched-embedding path. See ServiceConfig.EmbeddingBatchSize.
 	embeddingBatchSize int
 
-	// embeddingCache is branch-independent and rooted inside the active
-	// project's vector-index storage. It is recreated on project switch.
-	embeddingCache            *embeddingCache
+	// embeddingCacheFingerprint, embeddingDimension and embeddingCacheMaxBytes
+	// configure the per-project embedding cache held in projectState; it is
+	// (re)created whenever a fresh project state is opened, not on a restore.
 	embeddingCacheFingerprint string
 	embeddingDimension        int
 	embeddingCacheMaxBytes    int64
@@ -171,13 +246,6 @@ type Service struct {
 	// ValidateCollection to keep skipped files out of new/stale sets the
 	// same way processFile keeps them out of the collection.
 	contentFilter ContentFilterConfig
-
-	// validationsSinceFullHash counts ValidateCollection passes since the
-	// last pass that skipped the stat-based fast-path and re-read +
-	// re-hashed every file (the periodic full-hash revalidation backstop;
-	// see fullHashRevalidationEvery). Atomic: ValidateCollection runs under
-	// the read lock, so the counter must not rely on it.
-	validationsSinceFullHash atomic.Int64
 }
 
 // NewService creates a new vector index Service.
@@ -201,7 +269,11 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		embeddingCacheFingerprint: cfg.EmbeddingCacheFingerprint,
 		embeddingDimension:        cfg.EmbeddingDimension,
 		embeddingCacheMaxBytes:    cfg.EmbeddingCacheMaxBytes,
+		parkCapacity:              cfg.ParkCapacity,
 	}
+	// current starts as an empty in-memory state so every accessor (including
+	// the lock-free GetCollection/GetDB) is safe before the first SetProject.
+	s.current = &projectState{}
 	if cfg.MaxFileSize > 0 {
 		s.maxFileSize = cfg.MaxFileSize
 	} else {
@@ -232,6 +304,14 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 
 // SetProject switches to a project directory, creating a project-specific
 // subdirectory for persistence and initializing the chromem-go DB.
+//
+// Instead of unconditionally tearing the previous project down, the outgoing
+// state is parked (see parkCurrentLocked): a later call with the SAME
+// projectID and path restores it from RAM — chromem DB, lexical index and
+// file-hash sidecar intact — so a project round-trip stops paying the full
+// chromem gob-decode. When parking is disabled (park_capacity <= 0) or the
+// outgoing state is not a real project, it is closed, reproducing the
+// historical reopen-on-every-switch behaviour.
 func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -243,49 +323,42 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 
 	s.SetReady(false)
 
-	// Persist the outgoing project's in-memory hashes before discarding them,
-	// and cancel any in-flight sidecar migration from the previous branch.
-	// Skip the save while a background migration is pending: loadFileHashes
-	// seeds s.fileHashes as an empty map during a migration, so persisting it
-	// would write an empty sidecar for the outgoing branch — the next open of
-	// that branch would then hit the (empty) sidecar fast path and re-embed
-	// every file. Leaving it absent lets the migration re-trigger on next open.
-	if s.fileHashes != nil && s.currentBranch != "" && !s.fileHashMigrationPending.Load() {
-		if err := s.saveFileHashes(); err != nil {
-			s.logger.Warn("failed to persist file-hash sidecar on project switch", "error", err)
+	// Retire the outgoing state: park it (best case) or close it.
+	s.parkCurrentLocked()
+
+	// Fast path: restore a parked state for the same project and path. This
+	// skips newPersistentDB entirely — no gob-decode, and the collection and
+	// lexical index are the very same objects that were live before.
+	if ps := s.takeParkedLocked(projectID, fullPath); ps != nil {
+		s.current = ps
+		if ps.sidecarReloadOnRestore {
+			// The sidecar backfill was cancelled when this state was parked
+			// (see parkCurrentLocked); re-settle it — a disk read, or a fresh
+			// background migration when the collection is non-empty and no
+			// sidecar exists — so ValidateCollection sees a complete hash map
+			// rather than re-embedding every file.
+			ps.sidecarReloadOnRestore = false
+			s.loadFileHashes()
 		}
-	}
-	if s.migrationCancel != nil {
-		s.migrationCancel()
-		s.migrationCancel = nil
+		s.logger.Info("project restored from park", "projectID", projectID)
+		return nil
 	}
 
-	// Drop references to the previous project so any lingering goroutines
-	// can't modify the old collection after we've switched.
-	s.collection = nil
-	s.currentBranch = ""
-	s.fileHashes = nil
-	s.migrationCh = nil
-	s.projectID = projectID
-	s.projectPath = fullPath
-	s.db = nil
-	s.embeddingCache = nil
-	if s.lexical != nil {
-		if err := s.lexical.Close(); err != nil {
-			s.logger.Warn("failed to close previous lexical index", "error", err)
-		}
-		s.lexical = nil
-	}
-
+	// Slow path: open a fresh state (the existing behaviour). s.current stays
+	// non-nil on every return path (an empty state on error) so the lock-free
+	// accessors never see a nil current.
+	ps := &projectState{projectID: projectID, projectPath: fullPath}
 	if fullPath != "" {
 		if err := os.MkdirAll(fullPath, 0o750); err != nil {
+			s.current = &projectState{}
 			return fmt.Errorf("creating project directory %s: %w", fullPath, err)
 		}
-		db, err := chromem.NewPersistentDB(fullPath, false)
+		db, err := newPersistentDB(fullPath, false)
 		if err != nil {
+			s.current = &projectState{}
 			return fmt.Errorf("opening persistent DB at %s: %w", fullPath, err)
 		}
-		s.db = db
+		ps.db = db
 		if embeddingCachePath != "" {
 			within, containmentErr := pathutil.IsWithinPath(fullPath, embeddingCachePath)
 			if containmentErr != nil || !within {
@@ -293,20 +366,142 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 				embeddingCachePath = ""
 			}
 		}
-		s.embeddingCache = newEmbeddingCache(
+		ps.embeddingCache = newEmbeddingCache(
 			embeddingCachePath,
 			s.embeddingCacheFingerprint,
 			s.embeddingDimension,
 			s.embeddingCacheMaxBytes,
 			s.logger,
 		)
-		s.embeddingCache.prune()
+		ps.embeddingCache.prune()
 	} else {
-		s.db = chromem.NewDB()
+		ps.db = chromem.NewDB()
 	}
+	s.current = ps
 
 	s.logger.Info("project set for vector index", "projectID", projectID)
 	return nil
+}
+
+// parkCurrentLocked retires the current project state. The caller must hold
+// s.mu. It flushes the outgoing branch's file-hash sidecar (skipped while a
+// background migration is pending, exactly as SetProject did before), cancels
+// any in-flight sidecar migration, and then either parks the state — keeping
+// its chromem DB and lexical index resident — or closes it:
+//   - parking disabled (parkCapacity <= 0) or the state is not a real project
+//     (the empty in-memory No-Project state) → close it;
+//   - otherwise → push it onto the LRU, evicting the oldest state(s) when the
+//     capacity is exceeded.
+//
+// After the call s.current holds a fresh empty state (never nil, so the
+// lock-free GetCollection/GetDB readers can never dereference nil);
+// SetProject installs the incoming state.
+func (s *Service) parkCurrentLocked() {
+	ps := s.current
+	// Install an empty placeholder for the (brief, mu-protected) window until
+	// SetProject assigns the incoming state. Never leave s.current nil: the
+	// lock-free accessors do not take mu and would fault.
+	s.current = &projectState{}
+	if ps == nil {
+		return
+	}
+
+	// Persist the outgoing project's in-memory hashes before parking/closing,
+	// and cancel any in-flight sidecar migration. Skip the save while a
+	// background migration is pending: loadFileHashes seeds ps.fileHashes as an
+	// empty map during a migration, so persisting it would write an empty
+	// sidecar for the outgoing branch — the next open would then hit the
+	// (empty) sidecar fast path and re-embed every file. Mark the state so the
+	// next restore re-settles the sidecar (loadFileHashes) instead of trusting
+	// the placeholder.
+	if ps.fileHashes != nil && ps.currentBranch != "" {
+		if ps.fileHashMigrationPending.Load() {
+			ps.sidecarReloadOnRestore = true
+		} else if err := ps.saveFileHashes(); err != nil {
+			s.logger.Warn("failed to persist file-hash sidecar on project switch", "error", err)
+		}
+	}
+	if ps.migrationCancel != nil {
+		ps.migrationCancel()
+		ps.migrationCancel = nil
+	}
+
+	if s.parkCapacity <= 0 || ps.projectPath == "" {
+		// Parking disabled, or nothing worth keeping (the empty in-memory
+		// No-Project state): close immediately.
+		s.closeStateLocked(ps)
+		return
+	}
+
+	s.parked = append(s.parked, ps)
+	// Evict least-recently-parked states beyond the LRU capacity.
+	for len(s.parked) > s.parkCapacity {
+		s.evictLocked(s.parked[0])
+		s.parked = s.parked[1:]
+	}
+}
+
+// takeParkedLocked returns and removes the parked state matching
+// (projectID, fullPath), or nil when none matches. The caller must hold s.mu.
+// A parked entry for the same projectID but a DIFFERENT path is stale (the
+// project was moved or its storage directory recreated), so it is evicted
+// rather than restored.
+func (s *Service) takeParkedLocked(projectID, fullPath string) *projectState {
+	for i, ps := range s.parked {
+		if ps.projectID != projectID {
+			continue
+		}
+		s.parked = append(s.parked[:i], s.parked[i+1:]...)
+		if filepath.Clean(ps.projectPath) != filepath.Clean(fullPath) {
+			s.logger.Info("evicting stale parked project (storage path changed)",
+				"projectID", projectID, "parkedPath", ps.projectPath, "requestedPath", fullPath)
+			s.evictLocked(ps)
+			return nil
+		}
+		return ps
+	}
+	return nil
+}
+
+// closeStateLocked releases the file handles (bleve lexical index + chromem
+// DB) held by a project state and drops its in-memory references. The caller
+// must hold s.mu. It deliberately does NOT flush the sidecar (parkCurrentLocked
+// and evictLocked do) and leaves goroutine-lifetime tracking (migrationWG) to
+// the caller.
+func (s *Service) closeStateLocked(ps *projectState) {
+	if ps == nil {
+		return
+	}
+	if ps.lexical != nil {
+		if err := ps.lexical.Close(); err != nil {
+			s.logger.Warn("failed to close lexical index", "error", err)
+		}
+		ps.lexical = nil
+	}
+	ps.db = nil
+	ps.collection = nil
+	ps.fileHashes = nil
+	ps.migrationCh = nil
+	ps.currentBranch = ""
+}
+
+// evictLocked drops a parked state to make room in the LRU: it flushes the
+// file-hash sidecar to disk one final time (unless a migration is pending),
+// then closes the state's handles. The caller must hold s.mu.
+func (s *Service) evictLocked(ps *projectState) {
+	if ps == nil {
+		return
+	}
+	if ps.fileHashes != nil && ps.currentBranch != "" && !ps.fileHashMigrationPending.Load() {
+		if err := ps.saveFileHashes(); err != nil {
+			s.logger.Warn("failed to persist file-hash sidecar on park eviction", "error", err)
+		}
+	}
+	if ps.migrationCancel != nil {
+		ps.migrationCancel()
+		ps.migrationCancel = nil
+	}
+	s.closeStateLocked(ps)
 }
 
 // Browse returns up to topK chunks from the current collection without semantic
@@ -347,11 +542,11 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.collection == nil {
+	if s.current.collection == nil {
 		return nil, errors.New("no collection available; call SetProject and SwitchBranch first")
 	}
 
-	count := s.collection.Count()
+	count := s.current.collection.Count()
 	if count == 0 {
 		return []SearchResult{}, nil
 	}
@@ -359,7 +554,7 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 		topK = count
 	}
 
-	results, err := s.collection.Query(ctx, " ", topK, nil, nil)
+	results, err := s.current.collection.Query(ctx, " ", topK, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("browsing collection: %w", err)
 	}
@@ -502,14 +697,28 @@ func (s *Service) RestoreReady(gen int64) {
 	}
 }
 
-// GetDB returns the underlying chromem-go DB (for use by Indexer).
+// GetDB returns the underlying chromem-go DB (for use by Indexer). It is
+// lock-free on purpose: GetDB is called from the Indexer while it already
+// holds the service lock, so taking the lock here would deadlock. It reads
+// the current state pointer once and tolerates a nil current defensively.
 func (s *Service) GetDB() *chromem.DB {
-	return s.db
+	ps := s.current
+	if ps == nil {
+		return nil
+	}
+	return ps.db
 }
 
-// GetCollection returns the current collection (for use by Indexer).
+// GetCollection returns the current collection (for use by Indexer). Like
+// GetDB it is intentionally lock-free (the Indexer calls it while holding the
+// service lock); s.current is never nil after NewService, but the pointer is
+// read once and nil-checked defensively.
 func (s *Service) GetCollection() *chromem.Collection {
-	return s.collection
+	ps := s.current
+	if ps == nil {
+		return nil
+	}
+	return ps.collection
 }
 
 // GetLexical returns the current lexical index (may be nil for in-memory
@@ -517,14 +726,14 @@ func (s *Service) GetCollection() *chromem.Collection {
 func (s *Service) GetLexical() lexical.Index {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.lexical
+	return s.current.lexical
 }
 
 // LexicalCount returns the number of documents in the lexical index, or
 // 0 if no lexical index is currently open.
 func (s *Service) LexicalCount() (uint64, error) {
 	s.mu.RLock()
-	lex := s.lexical
+	lex := s.current.lexical
 	s.mu.RUnlock()
 	if lex == nil {
 		return 0, nil
@@ -541,7 +750,7 @@ func (s *Service) GetEmbeddingFunc() chromem.EmbeddingFunc {
 func (s *Service) CurrentBranchName() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.currentBranch
+	return s.current.currentBranch
 }
 
 // DeleteProjectData removes the on-disk vector data for a project.
@@ -557,19 +766,34 @@ func (s *Service) DeleteProjectData(fullPath string) error {
 	// the file"); Unix would silently unlink them and leave the service
 	// holding stale, deleted inodes. Closing first makes both platforms
 	// behave consistently and avoids dangling references to removed data.
+	// The same applies to a PARKED state for this project: its handles are
+	// still open, so it must be dropped too (otherwise a later switch back
+	// would restore a collection rooted at a deleted directory).
 	target := filepath.Clean(fullPath)
 	s.mu.Lock()
-	if filepath.Clean(s.projectPath) == target {
-		if s.lexical != nil {
-			if err := s.lexical.Close(); err != nil {
-				s.logger.Warn("failed to close lexical index before deleting project data", "error", err)
-			}
-			s.lexical = nil
+	if cur := s.current; cur != nil && filepath.Clean(cur.projectPath) == target {
+		if cur.migrationCancel != nil {
+			cur.migrationCancel()
+			cur.migrationCancel = nil
 		}
-		s.db = nil
-		s.collection = nil
-		s.fileHashes = nil
-		s.currentBranch = ""
+		s.closeStateLocked(cur)
+	}
+	if len(s.parked) > 0 {
+		kept := s.parked[:0]
+		for _, ps := range s.parked {
+			if filepath.Clean(ps.projectPath) == target {
+				if ps.migrationCancel != nil {
+					ps.migrationCancel()
+					ps.migrationCancel = nil
+				}
+				// Do NOT flush the sidecar here: the directory is about to be
+				// removed, so writing into it is wasted work.
+				s.closeStateLocked(ps)
+				continue
+			}
+			kept = append(kept, ps)
+		}
+		s.parked = kept
 	}
 	s.mu.Unlock()
 
@@ -583,32 +807,38 @@ func (s *Service) DeleteProjectData(fullPath string) error {
 func (s *Service) Close() error {
 	s.mu.Lock()
 
-	// Persist the current branch's in-memory hashes before shutdown.
-	if s.fileHashes != nil && s.currentBranch != "" {
-		if err := s.saveFileHashes(); err != nil {
-			s.logger.Warn("failed to persist file-hash sidecar on close", "error", err)
+	// Persist the current branch's in-memory hashes before shutdown, cancel
+	// any in-flight migration, and close the current state's handles.
+	if cur := s.current; cur != nil {
+		if cur.fileHashes != nil && cur.currentBranch != "" {
+			if err := cur.saveFileHashes(); err != nil {
+				s.logger.Warn("failed to persist file-hash sidecar on close", "error", err)
+			}
 		}
-	}
-	if s.migrationCancel != nil {
-		s.migrationCancel()
-		s.migrationCancel = nil
-	}
-
-	s.collection = nil
-	s.db = nil
-	s.fileHashes = nil
-	s.migrationCh = nil
-	if s.lexical != nil {
-		if err := s.lexical.Close(); err != nil {
-			s.logger.Warn("failed to close lexical index on service close", "error", err)
+		if cur.migrationCancel != nil {
+			cur.migrationCancel()
+			cur.migrationCancel = nil
 		}
-		s.lexical = nil
+		s.closeStateLocked(cur)
 	}
+	// Close every parked state too: their chromem DB and lexical handles are
+	// still resident. Their sidecars were already flushed at park time (no
+	// indexing runs on a parked state), so we only cancel any migration and
+	// release the handles.
+	for _, ps := range s.parked {
+		if ps.migrationCancel != nil {
+			ps.migrationCancel()
+			ps.migrationCancel = nil
+		}
+		s.closeStateLocked(ps)
+	}
+	s.parked = nil
 	s.mu.Unlock()
 
-	// Wait for any in-flight migration goroutine to unwind (it aborts after
-	// seeing the cancellation / nil collection above). Must happen AFTER
-	// releasing the lock, or the goroutine would deadlock waiting for it.
+	// Wait for any in-flight migration goroutine (current or parked) to
+	// unwind (it aborts after seeing the cancellation / nil collection above).
+	// Must happen AFTER releasing the lock, or the goroutine would deadlock
+	// waiting for it.
 	s.migrationWG.Wait()
 	s.logger.Info("vector index service closed")
 	return nil

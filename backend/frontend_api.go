@@ -53,6 +53,18 @@ type FrontendAPI struct {
 	watcherMu      sync.Mutex
 	gitRepoCache   map[string]gitRepoCacheEntry
 	gitRepoCacheMu sync.Mutex
+	// gitStatusCache / gitIgnoredCache memoize the two heavy per-repo git
+	// subprocesses (git status --porcelain -uall; git ls-files --others
+	// --ignored) that dominate GetGitStatus / ListDirectory. See
+	// frontend_api_gitcache.go.
+	gitStatusCache    map[string]gitStatusCacheEntry
+	gitStatusCacheMu  sync.Mutex
+	gitIgnoredCache   map[string]gitIgnoredCacheEntry
+	gitIgnoredCacheMu sync.Mutex
+	// gitStatusFn / gitIgnoredFn are test seams overriding the workspace git
+	// helpers; nil in production, where the real workspace functions run.
+	gitStatusFn  func(root string) (map[string]GitStatusEntry, error)
+	gitIgnoredFn func(root string) (map[string]bool, error)
 	// remoteOpMu serializes remote git operations (pull/push/fetch) so that
 	// only one network operation runs at a time per app instance.
 	remoteOpMu sync.Mutex
@@ -64,8 +76,8 @@ type FrontendAPI struct {
 	activeProjectPath string
 	activeProjectMu   sync.RWMutex
 
-	// switchMu serializes the whole SwitchProject body (teardown → activate →
-	// watcher → vector → event). Wails runs each binding call in its own
+	// switchMu serializes the whole SwitchProject body (teardown → watcher →
+	// vector → activate → event). Wails runs each binding call in its own
 	// goroutine, so two rapid CHAT↔CODE toggles used to interleave inside the
 	// backend: a slower earlier switch could overwrite activeProjectID AFTER a
 	// later switch had completed, leaving the backend on the older project
@@ -73,11 +85,23 @@ type FrontendAPI struct {
 	// one. Every subsequent ListDirectory against the frontend's rootPath then
 	// fails containment ("path outside project workspace") and @-file
 	// completions in the chat input stay empty until an app restart.
+	// Acquisition is bounded by switchLockTimeout (see acquireSwitchLock) so a
+	// wedged in-flight switch yields an error instead of an unbounded wait.
 	switchMu sync.Mutex
+
+	// switchLockTimeoutOverride, when > 0, replaces switchLockTimeout as the
+	// deadline for acquiring switchMu. Test-only seam (0 in production).
+	switchLockTimeoutOverride time.Duration
 
 	// switchInProgressHook is a test-only seam invoked inside SwitchProject
 	// while switchMu is held (i.e. mid-switch). Nil in production.
 	switchInProgressHook func(id string)
+
+	// switchProjectSetupVectorFn, when non-nil, overrides
+	// switchProjectSetupVector from SwitchProject. Test-only seam (nil in
+	// production) letting a test drive the fallible post-watcher step to
+	// verify the switch stays atomic when it fails.
+	switchProjectSetupVectorFn func(*project.ProjectInfo) error
 
 	// Active research root path (empty when RESEARCH is off). Guarded by
 	// activeProjectMu so it stays in sync with project switches.
@@ -286,6 +310,12 @@ func (f *FrontendAPI) EmitSessionEvent(evt session.Event) {
 		f.app.EmitSessionEvent(evt)
 	}
 }
+
+// switchLockTimeout bounds how long SwitchProject waits to acquire switchMu
+// before failing with errSwitchLockTimeout instead of blocking indefinitely
+// behind an in-flight switch. Tests override it via
+// FrontendAPI.switchLockTimeoutOverride.
+const switchLockTimeout = 5 * time.Second
 
 const gitRepoCacheTTL = 30 * time.Second
 

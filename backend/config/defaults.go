@@ -443,6 +443,13 @@ func ApplyDefaults(cfg *Config) {
 		v := int(vectorindex.DefaultSearchWaitTimeout.Milliseconds())
 		cfg.VectorIndex.SearchWaitTimeoutMs = &v
 	}
+	// ParkCapacity is a pointer-int too: nil (unset) resolves to the default
+	// of 3, while an explicit 0 is preserved and disables parking (the
+	// historical reopen-every-switch behaviour).
+	if cfg.VectorIndex.ParkCapacity == nil {
+		v := vectorindex.DefaultParkCapacity
+		cfg.VectorIndex.ParkCapacity = &v
+	}
 
 	// Proxy defaults
 	if cfg.Proxy.BypassList == nil {
