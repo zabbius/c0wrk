@@ -128,6 +128,61 @@ func TestValidateThemeCSS_SpecExampleTheme(t *testing.T) {
 	}
 }
 
+// bundledThemeFiles lists every bundled palette theme shipped under
+// specs/assets/themes/. Each entry pins the parsed display name and type the
+// theme must carry — the file's basename (sans .css) must equal the theme id.
+var bundledThemeFiles = map[string]struct {
+	name string
+	typ  string
+}{
+	"nord.css":                {name: "Nord", typ: themeTypeDark},
+	"tokyo-night.css":         {name: "Tokyo Night", typ: themeTypeDark},
+	"catppuccin-mocha.css":    {name: "Catppuccin Mocha", typ: themeTypeDark},
+	"high-contrast-dark.css":  {name: "High Contrast Dark", typ: themeTypeDark},
+	"high-contrast-light.css": {name: "High Contrast Light", typ: themeTypeLight},
+	"catppuccin-latte.css":    {name: "Catppuccin Latte", typ: themeTypeLight},
+	"rose-pine-dawn.css":      {name: "Rosé Pine Dawn", typ: themeTypeLight},
+	"gruvbox-light.css":       {name: "Gruvbox Light", typ: themeTypeLight},
+}
+
+// TestValidateThemeCSS_BundledThemes keeps every bundled palette theme under
+// specs/assets/themes/ importable: each must pass all validation rules,
+// parse with the metadata it declares, and own a slug that neither collides
+// with the built-ins nor contradicts its filename. If this test fails after
+// an edit to a bundled theme (or to the validator), fix the file — the
+// bundled themes must always stay valid.
+func TestValidateThemeCSS_BundledThemes(t *testing.T) {
+	dir := filepath.Join("..", "specs", "assets", "themes")
+	for filename, want := range bundledThemeFiles {
+		t.Run(filename, func(t *testing.T) {
+			b, err := os.ReadFile(filepath.Join(dir, filename))
+			if err != nil {
+				t.Fatalf("read bundled theme: %v", err)
+			}
+			css := string(b)
+			if err := ValidateThemeCSS(css); err != nil {
+				t.Fatalf("bundled theme must pass validation: %v", err)
+			}
+			name, typ := ParseThemeCSS(filename, css)
+			if name != want.name {
+				t.Errorf("name: got %q, want %q", name, want.name)
+			}
+			if typ != want.typ {
+				t.Errorf("type: got %q, want %q", typ, want.typ)
+			}
+			slug, err := themeSlug(filename)
+			if err != nil {
+				t.Fatalf("themeSlug(%q): unexpected error %v", filename, err)
+			}
+			// Import derives the id from the user-chosen path; guard that the
+			// canonical in-repo filename round-trips to itself.
+			if slug != strings.TrimSuffix(filename, ".css") {
+				t.Errorf("slug: got %q, want %q", slug, strings.TrimSuffix(filename, ".css"))
+			}
+		})
+	}
+}
+
 func TestValidateThemeCSS_RejectsImport(t *testing.T) {
 	cases := []string{
 		"@import url('https://evil.example/x.css');\n:root { --color-background: #fff; --color-foreground: #000; }",

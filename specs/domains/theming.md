@@ -2,7 +2,7 @@
 
 ## Purpose
 
-c0wrk ships two built-in themes (Default Dark / One Dark, Default Light / One Light) and lets users import custom CSS themes. A theme is a set of CSS custom-property (design-token) overrides on `:root`; all component styles reference `var(--color-*)` / `var(--radius-*)` exclusively, so a theme recolors the entire UI — including the embedded terminal (XTerm ANSI mapping) and syntax highlighting — without touching any component code.
+c0wrk ships two built-in themes (Default Dark / One Dark, Default Light / One Light) and lets users import custom CSS themes; a set of ready-to-import bundled palette themes lives in the repo (see "Bundled Themes"). A theme is a set of CSS custom-property (design-token) overrides on `:root`; all component styles reference `var(--color-*)` / `var(--radius-*)` exclusively, so a theme recolors the entire UI — including the embedded terminal (XTerm ANSI mapping) and syntax highlighting — without touching any component code.
 
 ## Key Files
 
@@ -19,6 +19,7 @@ c0wrk ships two built-in themes (Default Dark / One Dark, Default Light / One Li
 - `frontend/src/hooks/useXTermTheme.ts` - resolves XTerm ANSI colors from CSS variables at call time (re-resolves on theme change)
 - `frontend/src/lib/cmChatTheme.ts`, `frontend/src/components/fileViewer/CodeMirrorFileViewer.tsx` - CodeMirror themes resolved from CSS variables; re-created via Compartment on theme change
 - `specs/assets/example-theme.css` - fully annotated example theme (light, "Solar Light"): a self-contained authoring tutorial — metadata header, validation rules, every token group explained inline; guarded by `TestValidateThemeCSS_SpecExampleTheme`
+- `specs/assets/themes/` - bundled palette themes, ready to import as-is (see "Bundled Themes" below); each guarded by `TestValidateThemeCSS_BundledThemes` in `backend/themes_test.go`
 
 ## Core Types
 
@@ -157,6 +158,27 @@ Importing a file whose slug already exists **overwrites** the stored file — re
 ### Deleting the active theme
 
 `DeleteTheme(id)` removes `<ThemesDir>/<id>.css`. If the removed theme is currently active, `applyThemes` reconciles the store: `themeId` resets to `default-dark`, the CSS cache is cleared, and the custom `<style>` element is removed. The UI never keeps pointing at a missing file; there is no confirmation dialog (same one-click pattern as session/project deletion).
+
+## Bundled Themes
+
+Besides the two built-in themes compiled into `index.css`, the repo ships ready-to-import palette themes under `specs/assets/themes/`. They are ordinary custom-theme files: users import them through the same `Settings → Theme → [+]` flow, they land in `~/.c0wrk/themes/<slug>.css`, and they follow every rule of the custom-theme format (header, tokens, validation limits). They exist so users can try known palettes without authoring CSS.
+
+| File | Theme name | Type | Palette |
+| ---- | ---------- | ---- | ------- |
+| `specs/assets/themes/nord.css` | Nord | dark | Nord |
+| `specs/assets/themes/tokyo-night.css` | Tokyo Night | dark | Tokyo Night |
+| `specs/assets/themes/catppuccin-mocha.css` | Catppuccin Mocha | dark | Catppuccin (Mocha) |
+| `specs/assets/themes/high-contrast-dark.css` | High Contrast Dark | dark | original — black canvas / white text, every pair ≥ WCAG AA (core pairs AAA) |
+| `specs/assets/themes/high-contrast-light.css` | High Contrast Light | light | original — white canvas / near-black text, every pair ≥ WCAG AA (core pairs AAA) |
+| `specs/assets/themes/catppuccin-latte.css` | Catppuccin Latte | light | Catppuccin (Latte) |
+| `specs/assets/themes/rose-pine-dawn.css` | Rosé Pine Dawn | light | Rosé Pine (Dawn) |
+| `specs/assets/themes/gruvbox-light.css` | Gruvbox Light | light | Gruvbox (light) |
+
+Notes:
+
+- Each bundled theme declares the full token set (core, surfaces, primary/accent, secondary/muted, semantic, borders, RGB triplets, hljs, terminal, elevation, `color-scheme`) so it is complete without inheriting One Dark defaults.
+- `TestValidateThemeCSS_BundledThemes` (`backend/themes_test.go`) guards the whole directory: every file must pass `ValidateThemeCSS`, parse to its declared name/type, and round-trip its filename to its slug. A theme added to the directory must be registered in that test's `bundledThemeFiles` table.
+- The two High Contrast themes are original c0wrk palettes (not derived from an external palette); their text/background pairs were measured against WCAG at authoring time.
 
 ## Anti-FOUC cache
 
