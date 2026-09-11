@@ -1,8 +1,14 @@
-// mid-cycle state (ADR-031): this working tree consumes unpublished sp4rk
-// APIs; build via the parent-dir go.work. Release step: commit+push sp4rk,
-// then `GOWORK=off go get github.com/v0lka/sp4rk@main && go mod tidy` and
-// remove this note.
-module github.com/zabbius/c0wrk
+// staging branch (fork build): sp4rk is pinned to a commit of the
+// zabbius/sp4rk fork via the replace below — clone + `make build` works
+// from go.mod alone, no go.work and no sibling checkout required.
+// NOTE: this replace block (and the go.sum entries it produces) is a
+// fork-specific diff vs main (ADR-015 holds on main; see ADR-031 for the
+// mid-cycle go.work flow that still works on top of this pin).
+// Re-pin to the current fork staging head: set the replace below to
+//   `replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk staging`
+// (or an exact commit SHA), then run `GOWORK=off go mod tidy` — it
+// canonicalizes the pin into a pseudo-version and updates go.sum.
+module github.com/v0lka/c0wrk
 
 go 1.27.1
 
@@ -17,7 +23,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/openai/openai-go v1.12.0
 	github.com/philippgille/chromem-go v0.7.0
-	github.com/v0lka/c0wrk v0.0.0-00010101000000-000000000000
 	github.com/v0lka/sp4rk v0.0.0-20260909120503-5e2a0349d02d
 	github.com/wailsapp/wails/v2 v2.15.0
 	golang.org/x/image v0.45.0
@@ -117,5 +122,4 @@ require (
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
-replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk staging
-replace github.com/v0lka/c0wrk => github.com/zabbius/c0wrk staging
+replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk v0.0.0-20260911155609-cb0c429154a4

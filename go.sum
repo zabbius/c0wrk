@@ -228,10 +228,8 @@ github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5t
 github.com/yuin/goldmark v1.7.1/go.mod h1:uzxRWxtg69N339t3louHJ7+O03ezfj6PlliRlaOzY1E=
 github.com/yuin/goldmark v1.7.4 h1:BDXOHExt+A7gwPCJgPIIq7ENvceR7we7rOS9TNoLZeg=
 github.com/yuin/goldmark v1.7.4/go.mod h1:uzxRWxtg69N339t3louHJ7+O03ezfj6PlliRlaOzY1E=
-github.com/zabbius/c0wrk v0.7.4-0.20260910232250-8f332bbd8920 h1:1LmELRXV+jXqNoWLeLlqirRCI6wgXfXBy6bHB/AfNuE=
-github.com/zabbius/c0wrk v0.7.4-0.20260910232250-8f332bbd8920/go.mod h1:N1jasWpmYimjD3fO7/VuNgVlzoP9JBZO9jSCUiPYa+o=
-github.com/zabbius/sp4rk v0.0.0-20260911123809-d1a395cbd632 h1:6W9yUfw9bcwArdtNAp13TZ9X9p/+iHn46YQjERhPTcc=
-github.com/zabbius/sp4rk v0.0.0-20260911123809-d1a395cbd632/go.mod h1:1oTHM29JQuWpXBKqSfIlZdogTs7Zq+qH1228TJPfJaA=
+github.com/zabbius/sp4rk v0.0.0-20260911155609-cb0c429154a4 h1:nGQeotqdLij+IsEcmTqjhweeFRODKC0yU3xmpTDKlHE=
+github.com/zabbius/sp4rk v0.0.0-20260911155609-cb0c429154a4/go.mod h1:1uZdQ+oFoWI7ExeNc/+LLTQJeuhkm1iq4mJPk5luNdo=
 go.etcd.io/bbolt v1.4.0 h1:TU77id3TnN/zKr7CO/uk+fBCwF2jGcMuw2B/FMAzYIk=
 go.etcd.io/bbolt v1.4.0/go.mod h1:AsD+OCi/qPN1giOX1aiLAha3o1U8rAz65bvN4j0sRuk=
 golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
