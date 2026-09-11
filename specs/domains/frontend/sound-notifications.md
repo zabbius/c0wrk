@@ -10,9 +10,27 @@ Synthesize the app's notification cues in the webview with the Web Audio API and
 - `frontend/src/hooks/events/useSoundEvents.ts` — foreground wiring: the pure mapping `classifySessionEvent()` plus the `useSoundEvents()` subscription.
 - `frontend/src/App.tsx` — calls `initSoundUnlock()` once at app start (mount effect), so the gesture/visibility recovery listeners exist even with no active session.
 - `frontend/src/hooks/useBackgroundSessionWatcher.ts` — replays the same cues for background sessions through `classifySessionEvent()` + `playSound()`.
+- `frontend/src/hooks/useTaskFlagRestore.ts` — the switch-time `taskActive` corrector (extracted from ChatArea): writes the backend's authoritative `status.active` in both directions, guarded against reverting fresher live flag transitions (`taskFlagsEventAt`).
+- `frontend/src/stores/activeSessionsStore.ts` — the cross-project DB snapshot + `useActiveSessionsRefresh()` triggers (mount, live-set changes, every project/session switch, visible-window safety poll).
 - `frontend/src/stores/soundStore.ts` — the master `enabled` toggle (persisted at `c0wrk-sound`, default enabled).
 - `frontend/src/components/settings/SoundSettings.tsx` — settings UI; previews an `attention` tone when the toggle is switched on.
 - `frontend/src/lib/sound.test.ts` — unit tests pinning the recovery/replacement behaviour (fake `window` + `AudioContext`; vitest runs in a DOM-less `node` environment).
+- `frontend/src/hooks/sessionSoundCoverage.test.tsx` — integration test pinning the listener-coverage invariant across CHAT↔CODE toggles (real hooks + stores + a fake Wails bus).
+
+## Listener-coverage invariant (why cues can go missing above the audio engine)
+
+A session's audible cues have exactly one owner at a time:
+
+- the **active** session → `useSoundEvents(activeSessionId)`;
+- every **background** session that is busy → `useBackgroundSessionWatcher`, whose watched set is `taskActive ∪ paused ∪ pausing ∪ snapshot(unfinished_task_status ∈ {in_progress, paused})` minus the active id.
+
+**Invariant: for every session with a running backend task, a sound-event listener must exist** (active-subscription or watched-set membership). The CHAT↔CODE toggle is a project switch that re-runs this handoff; three historical defects broke the invariant and are now closed:
+
+1. **Blind switch-time flag reset (removed).** `useSessionEvents`' reset effect used to write `taskActive[dest] = false` on every switch-TO. The flag was only restored by an async RPC, so toggling away first left a genuinely-running background session flagged idle — un-watched, its completion/HITL events had no listener (no cue, no pending-action card). `useTaskFlagRestore` is now the sole switch-time corrector, writing `status.active` in both directions.
+2. **Unguarded/cancellable fast restore (guarded).** The restore RPC is cancelled by a switch-away (correct — its write would target a now-background session) and its resolved snapshot can be older than a live flag transition (`task_resumed`, terminal events). The write is skipped when `taskFlagsEventAt[dest]` is newer than the snapshot read, mirroring `reconcileRuntimeStatus`.
+3. **Snapshot refresh triggers derived from the corrupted state (made independent).** `useActiveSessionsRefresh` used to re-read `listAllSessions` only on mount and live-set changes (`liveSessionsSignature(taskActive, paused)`) — a signal derived from the very flags the switch dance could corrupt. After a corruption the live set goes empty and stays empty, so no refresh would ever re-fire and the watched set never self-healed. Now **every project/session switch triggers a refresh** (the DB's `unfinished_task_status` is authoritative and independent of the live flags), and a **visible-window safety poll** (`SNAPSHOT_POLL_INTERVAL_MS`, 30 s) bounds the worst case after a refresh-RPC failure or a stale answer. All triggers ride the same 500 ms debounce funnel.
+
+The Wails event layer itself is not a loss point: `EventsOn` cancellation is per-listener (v2.15 runtime), and Go→webview delivery is unconditional — coverage is decided entirely by which listeners the frontend holds.
 
 ## Behavior
 
@@ -97,6 +115,7 @@ Informational state transitions (`[sound] audio context left running`) stay at *
 
 ## Invariants
 
+- **Listener coverage**: every session with a running backend task has a sound-event listener at all times — it is the active session (`useSoundEvents`) or a member of the background watcher's set. The switch-time corrector is `useTaskFlagRestore` alone (no other switch path writes `taskActive`); the snapshot refresh fires on mount, on live-set changes, on every project/session switch, and on the visible-window safety poll.
 - A `running` context is never replaced.
 - A `closed` — or `interrupted` (wedged) — context is never revived in place; it is dropped and a replacement is built after `CTX_BACKOFF_MS`.
 - At most one `AudioContext` is cached/alive at a time.
