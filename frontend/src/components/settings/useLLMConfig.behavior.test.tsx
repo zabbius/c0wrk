@@ -150,3 +150,146 @@ describe('useLLMConfig loading errors', () => {
     expect(result.openaiCompatibleProviderNames.has('custom')).toBe(true)
   })
 })
+
+describe('useLLMConfig structural mutations persist immediately (no unmount drop)', () => {
+  // Closing the settings dialog (or switching its tab) unmounts LLMSettings,
+  // which CANCELS the 300 ms debounced save. Structural mutations (add /
+  // delete provider) must therefore persist immediately — the debounce is
+  // reserved for field edits, where a lost trailing edit is recoverable from
+  // the still-open form.
+  function renderLocalHarness(): { localRoot: Root; localContainer: HTMLDivElement } {
+    const localContainer = document.createElement('div')
+    document.body.appendChild(localContainer)
+    const localRoot = createRoot(localContainer)
+    act(() => localRoot.render(<HookHarness />))
+    return { localRoot, localContainer }
+  }
+
+  it('addProvider saves the full config immediately — unmounting before the debounce cannot drop it', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        default_model: 'anthropic/default-model',
+        anthropic: { api_key: '', models: ['default-model'] },
+      },
+    })
+    const { localRoot, localContainer } = renderLocalHarness()
+    await flush()
+
+    act(() => {
+      result.addProvider('custom', {
+        api_key: 'k',
+        base_url: 'http://localhost:1234',
+        models: [],
+        type: 'openai',
+      })
+    })
+
+    // Close the dialog BEFORE the old 300 ms debounce window elapses.
+    act(() => localRoot.unmount())
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    expect(mocks.updateLLMConfig).toHaveBeenCalledTimes(1)
+    expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
+      default_model: 'anthropic/default-model',
+      anthropic: { api_key: '', models: ['default-model'] },
+      openai_compatible: { custom: { api_key: 'k', base_url: 'http://localhost:1234', models: [] } },
+      anthropic_compatible: {},
+    })
+    localContainer.remove()
+  })
+
+  it('deleteProvider saves immediately as well — unmounting before the debounce cannot drop it', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        default_model: 'anthropic/default-model',
+        anthropic: { api_key: '', models: ['default-model'] },
+        openai_compatible: {
+          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'] },
+        },
+      },
+    })
+    const { localRoot, localContainer } = renderLocalHarness()
+    await flush()
+
+    act(() => result.deleteProvider('custom'))
+
+    act(() => localRoot.unmount())
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    expect(mocks.updateLLMConfig).toHaveBeenCalledTimes(1)
+    expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
+      default_model: 'anthropic/default-model',
+      anthropic: { api_key: '', models: ['default-model'] },
+      openai_compatible: {},
+      anthropic_compatible: {},
+    })
+    localContainer.remove()
+  })
+
+  it('cancels a pending debounced save so its stale snapshot cannot revert a delete', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        default_model: 'anthropic/default-model',
+        anthropic: { api_key: '', models: ['default-model'] },
+        openai_compatible: {
+          custom: { api_key: '', base_url: 'http://localhost:1234', models: ['custom-model'] },
+        },
+      },
+    })
+    const { localRoot, localContainer } = renderLocalHarness()
+    await flush()
+
+    // A field edit queues the 300 ms debounced save (its captured snapshot
+    // still contains the custom provider).
+    act(() => result.toggleModel('custom', 'model-a'))
+    // Delete the provider within the debounce window: the immediate save must
+    // supersede the queued timer, or the orphaned timer's PRE-mutation
+    // snapshot would land afterwards and resurrect the deleted provider.
+    act(() => result.deleteProvider('custom'))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    expect(mocks.updateLLMConfig).toHaveBeenCalledTimes(1)
+    expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
+      default_model: 'anthropic/default-model',
+      anthropic: { api_key: '', models: ['default-model'] },
+      openai_compatible: {},
+      anthropic_compatible: {},
+    })
+    act(() => localRoot.unmount())
+    localContainer.remove()
+  })
+
+  it('addProvider with an invalid default still holds the change locally (no RPC)', async () => {
+    // The default does not resolve to an enabled model, so the save is gated
+    // on the timing AND the validity: nothing is sent until the user picks a
+    // valid replacement default.
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        default_model: '',
+        anthropic: { api_key: '', models: ['default-model'] },
+      },
+    })
+    const { localRoot, localContainer } = renderLocalHarness()
+    await flush()
+
+    act(() => {
+      result.addProvider('custom', {
+        api_key: 'k',
+        base_url: 'http://localhost:1234',
+        models: [],
+        type: 'openai',
+      })
+    })
+
+    act(() => localRoot.unmount())
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    expect(mocks.updateLLMConfig).not.toHaveBeenCalled()
+    localContainer.remove()
+  })
+})

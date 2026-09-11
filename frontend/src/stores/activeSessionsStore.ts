@@ -173,9 +173,11 @@ export async function sweepPendingActions(): Promise<void> {
  * changes — i.e. on task transitions (start / complete / error / cancel /
  * pause / resume / resumable failure), when the DB snapshot has just become
  * stale. Streaming chunks and message appends do not change the set and do
- * not trigger anything. Mount this once next to the badge/switcher; opening
- * the dropdown should additionally call refreshNow() + sweepPendingActions()
- * for immediate freshness plus the pending-HITL sweep.
+ * not trigger anything. Mount this ONCE at the App root (App.tsx), not in the
+ * sidebar header: the header unmounts when the sidebar is collapsed, which
+ * would stop the snapshot from refreshing app-wide. Opening the dropdown
+ * additionally calls refreshNow() + sweepPendingActions() for immediate
+ * freshness plus the pending-HITL sweep.
  */
 export function useActiveSessionsRefresh(): void {
   // Primitive string → referentially stable under Object.is (React #185 safe).

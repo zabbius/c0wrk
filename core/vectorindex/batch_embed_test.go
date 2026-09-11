@@ -230,11 +230,11 @@ func TestAddDocuments_BatchEmbedder_ZeroChromemEmbeddingCalls(t *testing.T) {
 		}
 	}
 
-	if got := svc.collection.Count(); got != 70 {
+	if got := svc.current.collection.Count(); got != 70 {
 		t.Errorf("collection Count = %d; want 70", got)
 	}
 	for _, doc := range docs {
-		stored, err := svc.collection.GetByID(context.Background(), doc.ID)
+		stored, err := svc.current.collection.GetByID(context.Background(), doc.ID)
 		if err != nil {
 			t.Fatalf("GetByID(%s): %v", doc.ID, err)
 		}
@@ -272,7 +272,7 @@ func TestAddDocuments_BatchEmbedder_SubBatchChunkBounds(t *testing.T) {
 			t.Errorf("EmbedDocuments called with %d texts; want ≤ embedding batch size 32", size)
 		}
 	}
-	if got := svc.collection.Count(); got != 250 {
+	if got := svc.current.collection.Count(); got != 250 {
 		t.Errorf("collection Count = %d; want 250", got)
 	}
 }
@@ -328,16 +328,16 @@ func TestAddDocuments_BatchVsLegacy_Equivalence(t *testing.T) {
 			}
 			batch.ReleaseWriteLock()
 
-			if lc, bc := legacy.collection.Count(), batch.collection.Count(); lc != bc {
+			if lc, bc := legacy.current.collection.Count(), batch.current.collection.Count(); lc != bc {
 				t.Fatalf("collection counts differ: legacy=%d batch=%d", lc, bc)
 			}
 
 			for _, doc := range docs {
-				l, err := legacy.collection.GetByID(context.Background(), doc.ID)
+				l, err := legacy.current.collection.GetByID(context.Background(), doc.ID)
 				if err != nil {
 					t.Fatalf("legacy GetByID(%s): %v", doc.ID, err)
 				}
-				b, err := batch.collection.GetByID(context.Background(), doc.ID)
+				b, err := batch.current.collection.GetByID(context.Background(), doc.ID)
 				if err != nil {
 					t.Fatalf("batch GetByID(%s): %v", doc.ID, err)
 				}
@@ -423,7 +423,7 @@ func TestAddDocuments_BatchEmbedder_SkipsPrePopulated(t *testing.T) {
 	// 0/2 were assigned raw batch vectors that chromem normalizes, so only
 	// their presence + dimension is asserted above via GetByID succeeding.
 	for _, i := range []int{1, 3} {
-		stored, err := svc.collection.GetByID(context.Background(), docs[i].ID)
+		stored, err := svc.current.collection.GetByID(context.Background(), docs[i].ID)
 		if err != nil {
 			t.Fatalf("GetByID(%s): %v", docs[i].ID, err)
 		}
@@ -451,7 +451,7 @@ func TestAddDocuments_BatchEmbedder_ErrorPreservesSidecarSemantics(t *testing.T)
 		t.Fatal("AddDocuments must fail when the batch embedder fails")
 	}
 
-	if got := svc.collection.Count(); got != 200 {
+	if got := svc.current.collection.Count(); got != 200 {
 		t.Errorf("collection Count = %d; want 200 (first sub-batch committed)", got)
 	}
 	files, ferr := svc.GetCollectionFiles()
@@ -488,7 +488,7 @@ func TestAddDocuments_BatchEmbedder_CancelledMidBatch(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("error does not wrap context.Canceled: %v", err)
 	}
-	if got := svc.collection.Count(); got != 0 {
+	if got := svc.current.collection.Count(); got != 0 {
 		t.Errorf("collection Count = %d; want 0 (cancelled before any chromem commit)", got)
 	}
 }
@@ -517,7 +517,7 @@ func TestAddDocuments_BatchEmbedder_PerTextFallbackDropsPoisonedDoc(t *testing.T
 		t.Fatalf("AddDocuments: %v; want success with only the poisoned doc dropped", err)
 	}
 
-	if got := svc.collection.Count(); got != 39 {
+	if got := svc.current.collection.Count(); got != 39 {
 		t.Errorf("collection Count = %d; want 39 (poisoned doc dropped)", got)
 	}
 
@@ -528,7 +528,7 @@ func TestAddDocuments_BatchEmbedder_PerTextFallbackDropsPoisonedDoc(t *testing.T
 	}
 
 	// The dropped document must be the poisoned one and nothing else.
-	results, qerr := svc.collection.Query(context.Background(), " ", 39, nil, nil)
+	results, qerr := svc.current.collection.Query(context.Background(), " ", 39, nil, nil)
 	if qerr != nil {
 		t.Fatalf("Query: %v", qerr)
 	}
@@ -638,7 +638,7 @@ func TestAddDocuments_BatchEmbedder_AllTextsFailIndividually(t *testing.T) {
 	if err == nil {
 		t.Fatal("AddDocuments must fail when every per-text retry fails (systemic embedder failure)")
 	}
-	if got := svc.collection.Count(); got != 0 {
+	if got := svc.current.collection.Count(); got != 0 {
 		t.Errorf("collection Count = %d; want 0 (nothing committed on systemic failure)", got)
 	}
 	files, ferr := svc.GetCollectionFiles()
@@ -719,10 +719,10 @@ func TestDocumentAccumulator_FillsInferenceAcrossFileAndCommitBoundaries(t *test
 	if got := snapshot.BatchFill(); got != float64(425)/float64(450) {
 		t.Errorf("inference batch fill = %v; want %v", got, float64(425)/float64(450))
 	}
-	if got := svc.collection.Count(); got != len(docs) {
+	if got := svc.current.collection.Count(); got != len(docs) {
 		t.Errorf("collection Count = %d; want %d", got, len(docs))
 	}
-	lexCount, err := svc.lexical.Count()
+	lexCount, err := svc.current.lexical.Count()
 	if err != nil {
 		t.Fatalf("lexical Count: %v", err)
 	}
@@ -757,7 +757,7 @@ func TestDocumentAccumulator_FileHashWaitsForEveryChunkCommit(t *testing.T) {
 	if err == nil {
 		t.Fatal("addFile must fail on the fifth inference batch")
 	}
-	if got := svc.collection.Count(); got != 200 {
+	if got := svc.current.collection.Count(); got != 200 {
 		t.Errorf("collection Count = %d; want 200 committed chunks", got)
 	}
 	files, ferr := svc.GetCollectionFiles()
@@ -792,20 +792,20 @@ func TestDocumentAccumulator_PoisonedTextKeepsDualIndexAlignment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("streaming poisoned fallback: %v", err)
 	}
-	if got := svc.collection.Count(); got != 224 {
+	if got := svc.current.collection.Count(); got != 224 {
 		t.Errorf("collection Count = %d; want 224", got)
 	}
-	lexCount, err := svc.lexical.Count()
+	lexCount, err := svc.current.lexical.Count()
 	if err != nil {
 		t.Fatalf("lexical Count: %v", err)
 	}
 	if lexCount != 224 {
 		t.Errorf("lexical Count = %d; want 224", lexCount)
 	}
-	if _, err := svc.collection.GetByID(context.Background(), docs[107].ID); err == nil {
+	if _, err := svc.current.collection.GetByID(context.Background(), docs[107].ID); err == nil {
 		t.Error("poisoned document unexpectedly present in chromem")
 	}
-	hits, err := svc.lexical.Query(context.Background(), "POISON", 10)
+	hits, err := svc.current.lexical.Query(context.Background(), "POISON", 10)
 	if err != nil {
 		t.Fatalf("lexical Query: %v", err)
 	}
@@ -841,7 +841,7 @@ func TestDocumentAccumulator_CancellationDoesNotCommitInferenceTail(t *testing.T
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("addFile error = %v; want wrapped context.Canceled", err)
 	}
-	if got := svc.collection.Count(); got != 0 {
+	if got := svc.current.collection.Count(); got != 0 {
 		t.Errorf("collection Count = %d; want 0", got)
 	}
 	files, ferr := svc.GetCollectionFiles()

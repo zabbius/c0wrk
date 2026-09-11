@@ -3,7 +3,7 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isArrayOf } from '@/types/guards'
-import type { Branch, BranchBase, BranchInfo, CommitFile, DiffStat, StashEntry, GitHistoryCommit, HunkDiffInfo, MergeRebaseState } from '@/types/models'
+import type { Branch, BranchBase, BranchInfo, CommitFile, DiffStat, StashEntry, GitHistoryCommit, GitHistoryPage, HunkDiffInfo, MergeRebaseState } from '@/types/models'
 
 // --- Type guards ---
 
@@ -74,6 +74,17 @@ function isGitHistoryCommit(v: unknown): v is GitHistoryCommit {
     typeof o.message === 'string' &&
     Array.isArray(o.refs) &&
     o.refs.every((r) => typeof r === 'string')
+  )
+}
+
+function isGitHistoryPage(v: unknown): v is GitHistoryPage {
+  if (typeof v !== 'object' || v === null) return false
+  const o = v as Record<string, unknown>
+  return (
+    Array.isArray(o.commits) &&
+    o.commits.every(isGitHistoryCommit) &&
+    typeof o.next_skip === 'number' &&
+    typeof o.has_more === 'boolean'
   )
 }
 
@@ -173,6 +184,28 @@ export async function getCurrentBranch(): Promise<BranchInfo> {
   }
 }
 
+/**
+ * Report whether the ACTIVE project's workspace is inside a git work tree.
+ * Powers the workspace layout decision: a git repo gets the Git panel (with
+ * the file explorer as its first "files" section); a non-repo keeps the
+ * standalone Explorer tab. Rejections (no active project / No Project /
+ * git failure) propagate to the caller, which treats them fail-closed as
+ * "not a repository".
+ */
+export async function getIsGitRepo(): Promise<boolean> {
+  try {
+    const app = getApp()
+    const result = await app.GetIsGitRepo()
+    if (typeof result !== 'boolean') {
+      throw new Error('getIsGitRepo: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('getIsGitRepo failed:', err)
+    throw err
+  }
+}
+
 // --- Remote operations (Phase 5) ---
 // An empty `remote` argument lets git use the configured upstream.
 
@@ -215,6 +248,26 @@ export async function fetch(remote: string, flags: string[] = []): Promise<strin
   } catch (err) {
     logger.error('fetch failed:', err)
     throw err
+  }
+}
+
+/**
+ * Ask the backend to refresh remote-tracking refs in the background — the
+ * window-focus trigger of the git auto-fetch feature (git.auto_fetch).
+ * Fire-and-forget: the RPC returns immediately (the fetch runs in a backend
+ * goroutine) and every gate is server-side — git.auto_fetch disabled, CHAT
+ * mode (No Project), a non-repo workspace, no configured remote, or the
+ * shared 60s min-interval all result in a silent server-side skip.
+ * Errors are swallowed by design: this is called on every window focus and
+ * must never surface a toast or log noise when gated off.
+ */
+export async function requestRemoteRefresh(): Promise<void> {
+  try {
+    const app = getApp()
+    await app.RequestGitRemoteRefresh()
+  } catch {
+    // Silent by design — a gated-off (or not-yet-ready) refresh request is
+    // invisible to the user; see the hook useGitFocusRefresh.
   }
 }
 
@@ -585,17 +638,31 @@ export async function getRebaseMergeState(): Promise<MergeRebaseState> {
 // --- Unified history + graph (merged tab) ---
 
 /**
- * Fetch the full unified commit history+graph: SHAs, parents, author,
- * email, date, message, and ref decorations in a single call. Replaces
- * the separate GetCommitLog/GetGitGraph calls for the merged History tab.
+ * Page size for `getGitHistory`. Matches the backend default
+ * (`gitHistoryDefaultLimit`) so the first request is bounded for large
+ * repositories; further pages are fetched on demand by the hook.
  */
-export async function getGitHistory(): Promise<GitHistoryCommit[]> {
+export const GIT_HISTORY_PAGE_SIZE = 300
+
+/**
+ * Fetch one page of the unified commit history+graph: SHAs, parents,
+ * author, email, date, message, and ref decorations. Replaces the
+ * separate GetCommitLog/GetGitGraph calls for the merged History tab.
+ * `limit` is the page size (defaults to GIT_HISTORY_PAGE_SIZE, capped at
+ * 1000 by the backend) and `skip` is the number of commits to skip from
+ * the newest — pass the previous page's `next_skip` to advance. Returns a
+ * page whose `has_more` signals whether more commits may exist.
+ */
+export async function getGitHistory(
+  limit: number = GIT_HISTORY_PAGE_SIZE,
+  skip: number = 0,
+): Promise<GitHistoryPage> {
   try {
     const app = getApp()
-    const result = await app.GetGitHistory()
-    if (!isArrayOf(result, isGitHistoryCommit)) {
-      logger.error('getGitHistory: unexpected response shape, returning []', result)
-      return []
+    const result = await app.GetGitHistory(limit, skip)
+    if (!isGitHistoryPage(result)) {
+      logger.error('getGitHistory: unexpected response shape, returning empty page', result)
+      return { commits: [], next_skip: skip, has_more: false }
     }
     return result
   } catch (err) {

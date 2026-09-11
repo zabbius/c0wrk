@@ -1,7 +1,10 @@
-import { useState, type KeyboardEvent } from 'react'
-import { X, Plus, Lock } from 'lucide-react'
+import { useState } from 'react'
+import { X, Lock } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { Combobox } from '@/components/ui/combobox'
+import { Markdown } from '@/lib/markdownConfig'
+import type { PickerOption } from '@/lib/smallLlmTools'
 
 /**
  * Toggle switch — master / sub-toggles for the Small LLM profile.
@@ -89,42 +92,39 @@ export function NumberField({ label, value, onChange, min, step, disabled }: Num
 }
 
 /**
- * TagList — editable list of tool-name strings (e.g. always_present). Add via
- * Enter / button, remove via the per-chip X. Values in `lockedValues` are
- * rendered as non-removable locked tags (no X, a lock glyph).
+ * TagList — an editable list of tool-name chips (e.g. always_present). A tool
+ * is added by picking an entry from a combobox restricted to `options` (the
+ * caller pre-filters it to the still-selectable built-ins and clusters); an
+ * entry may be a single tool or a workflow cluster, in which case picking it
+ * pins the whole cluster at once. The per-chip X removes one. Values in
+ * `lockedValues` render as non-removable locked tags (no X, a lock glyph).
  */
 interface TagListProps {
   label: string
   values: string[]
   onChange: (values: string[]) => void
-  placeholder?: string
+  /** Picker entries (tools and clusters) offered, in display order. */
+  options: readonly PickerOption[]
   disabled?: boolean
   lockedValues?: Set<string>
 }
 
-export function TagList({ label, values, onChange, placeholder, disabled, lockedValues }: TagListProps) {
-  const [draft, setDraft] = useState('')
-
-  const add = () => {
-    const trimmed = draft.trim()
-    if (!trimmed || values.includes(trimmed)) {
-      setDraft('')
-      return
-    }
-    onChange([...values, trimmed])
-    setDraft('')
+export function TagList({ label, values, onChange, options, disabled, lockedValues }: TagListProps) {
+  const add = (value: string) => {
+    const option = options.find((o) => o.value === value)
+    if (!option) return
+    // A cluster entry (members set) pins its whole cluster at once, so the
+    // picker never adds a workflow only in part (individual chips remain
+    // removable afterwards). A tool entry pins itself. Already-present names
+    // are filtered defensively.
+    const toAdd = (option.members ?? [option.value]).filter((n) => !values.includes(n))
+    if (toAdd.length === 0) return
+    onChange([...values, ...toAdd])
   }
 
   const remove = (v: string) => {
     if (lockedValues?.has(v)) return
     onChange(values.filter((x) => x !== v))
-  }
-
-  const handleKey = (e: KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      add()
-    }
   }
 
   return (
@@ -160,19 +160,25 @@ export function TagList({ label, values, onChange, placeholder, disabled, locked
           })}
         </div>
       )}
-      <div className="flex gap-2">
-        <Input
-          placeholder={placeholder}
-          value={draft}
+      {options.length === 0 ? (
+        <p className="text-xs text-muted-foreground italic">All built-in tools are already included.</p>
+      ) : (
+        <Combobox
+          ariaLabel={`Add ${label}`}
+          value=""
+          options={options.map((o) => ({
+            value: o.value,
+            label: o.label,
+            tooltip: o.tooltip ? (
+              <Markdown content={o.tooltip} compact className="prose-tooltip" />
+            ) : undefined,
+          }))}
+          onChange={add}
+          placeholder="Add tool or group…"
           disabled={disabled}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={handleKey}
-          className="h-8 text-xs font-mono"
+          className="h-8 w-full text-xs font-mono"
         />
-        <Button variant="outline" size="sm" className="h-8" onClick={add} disabled={disabled || !draft.trim()}>
-          <Plus className="h-3 w-3" />
-        </Button>
-      </div>
+      )}
     </div>
   )
 }

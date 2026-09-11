@@ -1,7 +1,10 @@
 package workspace
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"time"
 )
 
 // TestParseGitVersion pins the `git --version` output parser: the canonical
@@ -63,5 +66,125 @@ func TestGitVersionLessThan(t *testing.T) {
 		if got := p.v.lessThan(p.o); got != p.want {
 			t.Errorf("%+v.lessThan(%+v) = %v, want %v", p.v, p.o, got, p.want)
 		}
+	}
+}
+
+// TestRequireAttrTreeCapableGitRetriesTransientProbeFailure pins the retry
+// semantics that replaced the process-lifetime sync.Once: a first probe
+// failure returns the fail-closed error WITHOUT freezing it; the next call
+// re-probes, and once a version parses the verdict is cached — further
+// calls neither re-probe nor regress.
+func TestRequireAttrTreeCapableGitRetriesTransientProbeFailure(t *testing.T) {
+	probes := 0
+	swapGitVersionProbe(t, func(context.Context) (string, error) {
+		probes++
+		if probes == 1 {
+			return "", errors.New("transient: git not yet on PATH")
+		}
+		return "git version 2.50.1\n", nil
+	})
+
+	if err := requireAttrTreeCapableGit(); err == nil {
+		t.Fatal("first call (probe fails transiently) must return the fail-closed error")
+	}
+	if err := requireAttrTreeCapableGit(); err != nil {
+		t.Fatalf("second call (probe succeeds) must resolve: %v", err)
+	}
+	if err := requireAttrTreeCapableGit(); err != nil {
+		t.Fatalf("third call must return the cached success: %v", err)
+	}
+	if probes != 2 {
+		t.Fatalf("probe invocations = %d, want 2 (failure retried once, success cached)", probes)
+	}
+}
+
+// TestRequireAttrTreeCapableGitRetriesUnparsableOutput pins that an
+// unparsable probe result is transient-shaped too: it fails closed once but
+// is not frozen — a later well-formed probe resolves the capability.
+func TestRequireAttrTreeCapableGitRetriesUnparsableOutput(t *testing.T) {
+	probes := 0
+	swapGitVersionProbe(t, func(context.Context) (string, error) {
+		probes++
+		if probes == 1 {
+			return "garbage", nil
+		}
+		return "git version 2.45.0\n", nil
+	})
+
+	if err := requireAttrTreeCapableGit(); err == nil {
+		t.Fatal("unparsable output must fail closed")
+	}
+	if err := requireAttrTreeCapableGit(); err != nil {
+		t.Fatalf("retry after unparsable output must resolve: %v", err)
+	}
+	if probes != 2 {
+		t.Fatalf("probe invocations = %d, want 2", probes)
+	}
+}
+
+// TestRequireAttrTreeCapableGitCachesVerdicts pins that a COMPLETED
+// resolution is final for the process lifetime, in both directions: a
+// too-old git keeps failing without re-probing, and a capable git keeps
+// passing even after the probe itself would fail again.
+func TestRequireAttrTreeCapableGitCachesVerdicts(t *testing.T) {
+	t.Run("too old stays cached", func(t *testing.T) {
+		probes := 0
+		swapGitVersionProbe(t, func(context.Context) (string, error) {
+			probes++
+			return "git version 2.44.9\n", nil
+		})
+		if err := requireAttrTreeCapableGit(); err == nil {
+			t.Fatal("git 2.44.9 predates attr.tree; must fail closed")
+		}
+		if err := requireAttrTreeCapableGit(); err == nil {
+			t.Fatal("too-old verdict must stay cached")
+		}
+		if probes != 1 {
+			t.Fatalf("probe invocations = %d, want 1 (verdict cached)", probes)
+		}
+	})
+	t.Run("capable stays cached", func(t *testing.T) {
+		probes := 0
+		swapGitVersionProbe(t, func(context.Context) (string, error) {
+			probes++
+			if probes > 1 {
+				return "", errors.New("probe broken after success")
+			}
+			return "git version 2.50.1\n", nil
+		})
+		if err := requireAttrTreeCapableGit(); err != nil {
+			t.Fatalf("capable git must pass: %v", err)
+		}
+		if err := requireAttrTreeCapableGit(); err != nil {
+			t.Fatalf("successful resolution must stay cached (no re-probe): %v", err)
+		}
+		if probes != 1 {
+			t.Fatalf("probe invocations = %d, want 1 (success cached)", probes)
+		}
+	})
+}
+
+// TestRequireAttrTreeCapableGitBoundsProbe pins that the probe context
+// carries a deadline within gitVersionProbeTimeout, so a hung `git
+// --version` (wedged AV scan, unresponsive filesystem) cannot block callers
+// indefinitely — exec.CommandContext kills the probe at the deadline.
+func TestRequireAttrTreeCapableGitBoundsProbe(t *testing.T) {
+	var probeCtx context.Context
+	swapGitVersionProbe(t, func(ctx context.Context) (string, error) {
+		probeCtx = ctx
+		return "git version 2.50.1\n", nil
+	})
+	if err := requireAttrTreeCapableGit(); err != nil {
+		t.Fatalf("requireAttrTreeCapableGit: %v", err)
+	}
+	if probeCtx == nil {
+		t.Fatal("probe seam was not invoked")
+	}
+	deadline, ok := probeCtx.Deadline()
+	if !ok {
+		t.Fatal("probe context must carry a deadline, got none")
+	}
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > gitVersionProbeTimeout {
+		t.Fatalf("probe deadline remaining = %v, want within (0, %v]", remaining, gitVersionProbeTimeout)
 	}
 }

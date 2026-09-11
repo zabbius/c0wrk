@@ -512,6 +512,76 @@ describe('usePanZoom wheel handling', () => {
     // The cancelled pan frame must not overwrite the zoom one frame later.
     expect(canvas.getAttribute('data-x')).toBe('22.5')
   })
+
+  it('rebases the drag origin onto a committed mid-drag zoom so the next move composes on it', () => {
+    // A wheel zoom landing AFTER a pan frame has committed still faces the
+    // stale-origin problem: the drag captured its origin at pointerdown, and
+    // the next pointermove would commit oldOrigin + dx — silently discarding
+    // the zoom's anchored translate correction (the anchor point under the
+    // cursor visibly jumps). The committed view must become the drag's new
+    // origin.
+    const { canvas } = renderProbe()
+    act(() => {
+      firePointer(canvas, 'pointerdown', 100, 100)
+      firePointer(canvas, 'pointermove', 120, 100) // pan engaged: pending x = 20
+    })
+    act(() => flushRaf())
+    expect(canvas.getAttribute('data-x')).toBe('20')
+
+    // The wheel zoom lands and commits: 1.25x anchored at (10, 10) over
+    // {x: 20} gives x = 10 - 1.25 * (10 - 20) = 22.5.
+    act(() => {
+      canvas.dispatchEvent(
+        new WheelEvent('wheel', { cancelable: true, deltaX: 0, deltaY: -100, clientX: 10, clientY: 10 }),
+      )
+    })
+    expect(canvas.getAttribute('data-x')).toBe('22.5')
+
+    // The next move composes on the ZOOMED translate with only the
+    // incremental delta since the last processed pointer position:
+    // dx = 10 (130 - 120, lastX was rebased along with the origin) over the
+    // rebased origin 22.5 → 32.5. Without the rebase it would commit the
+    // pre-zoom origin (0 + 30 = 30), losing the correction; rebasing
+    // startX to the gesture start instead of lastX would double-count the
+    // already-panned distance (22.5 + 30 = 52.5).
+    act(() => {
+      firePointer(canvas, 'pointermove', 130, 100)
+    })
+    act(() => flushRaf())
+    expect(canvas.getAttribute('data-x')).toBe('32.5')
+    expect(canvas.getAttribute('data-scale')).toBe('1.25')
+
+    // The gesture still ends cleanly on the rebased origin.
+    act(() => {
+      firePointer(canvas, 'pointerup', 130, 100)
+    })
+    expect(canvas.getAttribute('data-x')).toBe('32.5')
+  })
+
+  it('keeps a plain multi-frame drag linear — committed frames never re-add earlier deltas', () => {
+    // The drag's OWN rAF flushes must not rebase the origin: rebasing ox on
+    // every committed frame while dx stays gesture-absolute makes x grow
+    // superlinearly (the pan accelerates away from the cursor).
+    const { canvas } = renderProbe()
+    act(() => {
+      firePointer(canvas, 'pointerdown', 100, 100)
+      firePointer(canvas, 'pointermove', 120, 100) // pending x = 20
+    })
+    act(() => flushRaf())
+    expect(canvas.getAttribute('data-x')).toBe('20')
+
+    act(() => {
+      firePointer(canvas, 'pointermove', 130, 100) // total dx = 30 → x = 30
+    })
+    act(() => flushRaf())
+    expect(canvas.getAttribute('data-x')).toBe('30')
+
+    act(() => {
+      firePointer(canvas, 'pointermove', 140, 100) // total dx = 40 → x = 40
+      firePointer(canvas, 'pointerup', 140, 100)
+    })
+    expect(canvas.getAttribute('data-x')).toBe('40')
+  })
 })
 
 describe('usePanZoom rAF-coalesced pan commits', () => {

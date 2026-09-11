@@ -3,6 +3,11 @@ import { createSession, listSessions } from '@/api/sessions'
 import { getProjectSwitchState, saveProjectSwitchState, switchProject } from '@/api/projects'
 import { logger } from '@/lib/logger'
 import { resolveRestoreSession } from '@/lib/sessionRestore'
+import {
+  capture as captureProjectSnapshot,
+  restore as restoreProjectSnapshot,
+} from '@/lib/projectSnapshotCache'
+import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -33,7 +38,32 @@ async function performSwitch(nextProjectId: string, seq: number): Promise<void> 
   const projectState = useProjectStore.getState()
   const currentProjectId = projectState.activeProjectId
 
-  if (!nextProjectId || nextProjectId === currentProjectId) {
+  // Empty target id: nothing to switch to — keep it as a guard.
+  if (!nextProjectId) {
+    return
+  }
+
+  // Reconcile path — the requested project is ALREADY the active one.
+  //
+  // Invariant: a project-select click always reaches the backend, even for the
+  // already-active project (see ProjectSelector.handleSwitch, which no longer
+  // short-circuits the active id locally). SwitchProject is idempotent and
+  // re-emits `project:switched`; that event repairs a frontend↔backend desync
+  // (e.g. activeProjectId drifted from the backend's active project after a
+  // failed or superseded switch) without an app restart.
+  //
+  // This is the LIGHT path: send the idempotent switch RPC and return. It
+  // deliberately skips the heavy teardown of a real switch — no
+  // resetForProjectSwitch, no getProjectSwitchState, no session-list reload,
+  // no fallback-session creation — because the active project's UI state
+  // already matches, so there is nothing to tear down or reload (no UI flash).
+  // The re-emitted `project:switched` event consumed by useProjectLoader is
+  // what restores consistency. The supersede guard mirrors every other await
+  // in this function: a body released by the watchdog while a newer switch is
+  // already running must not leave its stale writes behind.
+  if (nextProjectId === currentProjectId) {
+    await switchProject(nextProjectId)
+    if (abortIfSuperseded()) return
     return
   }
 
@@ -50,6 +80,16 @@ async function performSwitch(nextProjectId: string, seq: number): Promise<void> 
   // is also persisted on every explicit selection (see selectSession), so
   // the restore below may trust it even on the initial activation.
   const isInitialActivation = !currentProjectId
+
+  // Snapshot the source project's UI state BEFORE any teardown (the
+  // resetForProjectSwitch below and the FileTreePanel root reload clear the
+  // stores). A later switch back to this project rehydrates it synchronously
+  // from `useProjectSwitchState` — see the fast-path hydration below. Pure
+  // in-memory, best-effort: skipped on the initial activation (no source
+  // project) and never allowed to fail the switch.
+  if (currentProjectId) {
+    captureProjectSnapshot(currentProjectId)
+  }
 
   // Best-effort save of source project UI state before changing active project.
   if (currentProjectId) {
@@ -78,10 +118,36 @@ async function performSwitch(nextProjectId: string, seq: number): Promise<void> 
   const sessionStore = useSessionStore.getState()
   const fileViewer = useFileViewerStore.getState()
 
+  // Fast path: if this project was visited earlier in the same app session,
+  // paint its file tree and session list from the in-memory snapshot NOW —
+  // synchronously, before any await — so switching back is instant instead of
+  // waiting for the RPC round-trips below. Everything here is below the
+  // supersede guard, so a body released by the watchdog while a newer switch
+  // runs never rehydrates its stale snapshot over the newer project. The
+  // existing async path below then reconciles with fresh backend data
+  // (getProjectSwitchState / listSessions overwrite the hydrated values, and
+  // the FileTreePanel root effect reloads the root). A cache miss is a no-op:
+  // the project loads exactly as before.
+  const snapshot = restoreProjectSnapshot(nextProjectId)
+  if (snapshot) {
+    useFileTreeStore.getState().restoreFromSnapshot(snapshot)
+  }
+
   // Clear previous project session state before loading destination sessions.
   sessionStore.resetForProjectSwitch()
 
   useProjectStore.getState().setActiveProjectId(nextProjectId)
+
+  // Rehydrate the snapshot's sessions synchronously (still before any await).
+  // resetForProjectSwitch has just cleared them, so this paints the project's
+  // session list immediately; the awaited listSessions below then overwrites
+  // it with the authoritative list.
+  if (snapshot) {
+    if (snapshot.sessions) {
+      sessionStore.setSessions(snapshot.sessions)
+    }
+    sessionStore.setActiveSessionId(snapshot.activeSessionId)
+  }
 
   let savedSessionId = ''
   let savedTabs: string[] = []

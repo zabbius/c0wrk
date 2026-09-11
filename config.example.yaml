@@ -770,6 +770,26 @@ orchestration:
 #                              # call. Query execution is separately bounded
 #                              # by the same value as defense-in-depth.
 #
+# Project parking (return-to-project latency vs. RAM):
+#
+#   park_capacity: 3           # how many recently-closed projects keep their
+#                              # vector-index state resident in RAM (default
+#                              # 3). Opening a project synchronously
+#                              # gob-decodes every branch document into memory
+#                              # and reopens the bleve lexical index — the
+#                              # dominant project-switch cost. Parking keeps
+#                              # that state alive so returning to a recent
+#                              # project restores it instantly and only
+#                              # re-indexes files that changed while away
+#                              # (IndexIncremental). Tradeoff: each parked
+#                              # project holds its full vector + lexical index
+#                              # in memory — raise this on a RAM-rich machine
+#                              # to make frequent project hopping instant,
+#                              # lower it (or set 0) on a constrained one.
+#                              # 0 disables parking: every switch reopens the
+#                              # persistent DB from scratch (the historical
+#                              # behaviour). Negative is treated as 0.
+#
 #   max_chunks_per_file: 4000  # upper bound on chunks one file may contribute
 #                              # to an index pass (default 4000). Files that
 #                              # exceed it are skipped wholesale (WARN) — a
@@ -815,6 +835,7 @@ orchestration:
 #   debounce_ms: 1000
 #   chunk_overlap: 200
 #   search_wait_timeout_ms: 3000
+#   park_capacity: 3
 #   max_file_size: 4194304
 #   max_chunk_size: 1500
 #   max_chunks_per_file: 4000
@@ -898,6 +919,34 @@ orchestration:
 #   # time.ParseDuration (e.g. "6h", "30m", "24h"). Default: "6h". An
 #   # unparseable value falls back to 6h.
 #   check_interval: "6h"
+
+# ---------------------------------------------------------------------------
+# Git — automatic background fetch
+# ---------------------------------------------------------------------------
+# Controls every AUTOMATIC fetch the app performs in the background: on app
+# startup, on project switch, on window focus, and on a periodic ticker.
+# Manual fetches triggered from the Git panel are never gated by this section.
+#
+# git.auto_fetch is the master switch for ALL automatic fetch triggers. When
+# false, no automatic fetch ever runs (startup, switch, focus, and ticker are
+# all suppressed); manual fetch from the UI still works.
+#
+# git.auto_fetch_interval tunes ONLY the periodic ticker cadence. The special
+# value "0" disables just the ticker — the event-driven triggers (startup,
+# project switch, window focus) remain active as long as auto_fetch is true.
+#
+# git:
+#   # Master switch for all automatic fetch triggers (startup, project
+#   # switch, window focus, periodic ticker). Default: true. When false no
+#   # automatic fetch ever runs; manual fetches from the Git panel are
+#   # unaffected.
+#   auto_fetch: true
+#   # Period of the background fetch ticker, as a duration string parsed by
+#   # time.ParseDuration (e.g. "2m", "30s", "5m"). Default: "2m". Set to "0"
+#   # to disable ONLY the periodic ticker — the event-driven triggers
+#   # (startup, switch, focus) stay on. An unparseable value falls back to
+#   # the default.
+#   auto_fetch_interval: "2m"
 
 # ---------------------------------------------------------------------------
 # Small-LLM Profile

@@ -12,10 +12,11 @@
 //
 // Data wiring (per lib/activeSessions): DB snapshot + pending override come
 // from activeSessionsStore, live execution flags from chatStore, folded by
-// pure helpers inside useMemo (never inside selectors — React #185). Refresh
-// triggers (mount + live set transitions) come from useActiveSessionsRefresh;
-// opening the dropdown additionally calls refreshNow() + sweepPendingActions()
-// for immediate freshness plus the pending-HITL sweep.
+// pure helpers inside useMemo (never inside selectors — React #185). The
+// snapshot loader (useActiveSessionsRefresh) is mounted at the App root, not
+// here, so the store stays fresh even while this indicator is unmounted with
+// the collapsed sidebar; opening the dropdown additionally calls refreshNow()
+// + sweepPendingActions() for immediate freshness plus the pending-HITL sweep.
 
 import { useMemo, useState } from 'react'
 import { Radar } from 'lucide-react'
@@ -34,7 +35,7 @@ import {
   sortedLiveRows,
   type LiveChatSnapshot,
 } from '@/lib/activeSessions'
-import { sweepPendingActions, useActiveSessionsRefresh, useActiveSessionsStore } from '@/stores/activeSessionsStore'
+import { sweepPendingActions, useActiveSessionsStore } from '@/stores/activeSessionsStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -57,7 +58,11 @@ const LAYOUT_FIT_CLASSES = 'hidden @min-[228px]:inline-flex'
 /** Global live-sessions indicator: Radar icon button + badge, store-wired.
  *  Click opens the live-sessions dropdown. */
 export function ActiveSessionsIndicator() {
-  useActiveSessionsRefresh()
+  // NOTE: this component is a PURE CONSUMER of activeSessionsStore — it does
+  // not mount the snapshot loader. The loader (useActiveSessionsRefresh) lives
+  // at the App root (App.tsx) so the snapshot stays fresh even while the
+  // sidebar (and therefore this indicator) is collapsed/unmounted. Opening the
+  // dropdown only triggers an immediate refreshNow() + pending sweep below.
 
   // Direct store-field selectors only (React #185); the snapshot object and
   // the aggregations allocate inside useMemo, never inside a selector.

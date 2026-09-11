@@ -21,7 +21,7 @@ import { ActiveSessionsIndicator } from './ActiveSessionsIndicator'
 import { ActiveSessionsBadge } from './ActiveSessionsBadge'
 import { SidebarHeader } from './SidebarHeader'
 import { NO_BADGE_FLAGS, type BadgeFlags } from '@/lib/activeSessions'
-import { cancelPendingRefresh, useActiveSessionsStore } from '@/stores/activeSessionsStore'
+import { cancelPendingRefresh, useActiveSessionsRefresh, useActiveSessionsStore } from '@/stores/activeSessionsStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -86,6 +86,16 @@ function render(ui: React.ReactNode): HTMLElement {
 
 function radarButton(container: HTMLElement): HTMLButtonElement {
   return container.querySelector('button[aria-label="Active sessions"]') as HTMLButtonElement
+}
+
+/** The live-sessions snapshot loader now lives at the App root (App.tsx), not
+ *  inside the indicator — the sidebar header unmounts when collapsed, so the
+ *  loader must outlive it. Reproduce that composition for the restart-path
+ *  sweep assertions (the loader's mount sweep is what upgrades a
+ *  DB-in_progress session from green to yellow before the dropdown opens). */
+function IndicatorWithAppLoader() {
+  useActiveSessionsRefresh()
+  return <ActiveSessionsIndicator />
 }
 
 /** The dot spans are the children of the badge's aria-hidden cluster span. */
@@ -559,8 +569,9 @@ describe('ActiveSessionsIndicator dropdown', () => {
 
     // The mount sweep runs before the dropdown is ever opened: chatStore
     // starts empty, the DB still says in_progress, and only the backend knows
-    // s1 is actually blocked on a prompt.
-    const container = renderIndicator()
+    // s1 is actually blocked on a prompt. The sweep is owned by the App-root
+    // loader, so render that composition (indicator + loader).
+    const container = render(<IndicatorWithAppLoader />)
 
     // Only the unknown-pending live session is queried: s2 is already known
     // (override), the idle session is not live.

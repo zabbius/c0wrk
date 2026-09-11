@@ -57,12 +57,25 @@ func TestBuiltinDescriptionsWithinGuardLimit(t *testing.T) {
 	}
 }
 
+// rubricLabels is the ordered set of section labels every c0wrk builtin
+// description must carry. Each label must START a line — a label buried
+// mid-prose does not satisfy the rubric.
+var rubricLabels = []string{"Purpose:", "Use when:", "Inputs:", "Outputs:", "Example:", "Anti-example:"}
+
 func TestBuiltinDescriptionsFollowRubric(t *testing.T) {
 	for _, tool := range builtinTools(t) {
-		desc := tool.Description()
-		for _, section := range []string{"Purpose:", "Use when:", "Inputs:", "Anti-example:"} {
-			if !strings.Contains(desc, section) {
-				t.Errorf("tool %s: description lacks %q section", tool.Name(), section)
+		lines := strings.Split(tool.Description(), "\n")
+		for _, label := range rubricLabels {
+			found := false
+			for _, line := range lines {
+				if strings.HasPrefix(line, label) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("tool %s: description lacks a %q section at the start of a line — the rubric requires all six per-line labels (purpose/when-to-use/inputs/outputs/example/anti-example)",
+					tool.Name(), label)
 			}
 		}
 	}

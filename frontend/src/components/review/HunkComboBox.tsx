@@ -95,7 +95,7 @@ export function HunkComboBox({
         // Match the dropdown's width to the trigger so left-truncated paths
         // behave identically in the list and the closed combobox.
         style={{ minWidth: 'var(--radix-dropdown-menu-trigger-width)' }}
-        className="max-h-[min(60vh,24rem)]"
+        className="max-h-[min(calc(var(--ui-vh)*0.6),24rem)]"
       >
         {entries.map((entry, i) => {
           const isCurrent = i === safeIndex

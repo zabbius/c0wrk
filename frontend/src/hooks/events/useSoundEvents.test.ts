@@ -1,5 +1,31 @@
-import { describe, it, expect } from 'vitest'
-import { classifySessionEvent } from '@/hooks/events/useSoundEvents'
+// @vitest-environment jsdom
+//
+// Unit tests for the sound-event hook.
+//
+// `classifySessionEvent` is a pure mapping and is tested without any runtime.
+// `useSoundEvents` is additionally pinned to NOT own the audio unlock: the
+// persistent gesture/visibility listeners are registered once at App start
+// (App.tsx), so they exist even with no active session — a state in which this
+// hook is a no-op. Here we verify the hook only wires session subscriptions.
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, createElement } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+
+// The unlock initialiser lives in lib/sound, but ownership must belong to App —
+// spy on it here to prove the hook never calls it. playSound is stubbed so no
+// real audio work happens.
+vi.mock('@/lib/sound', () => ({
+  playSound: vi.fn(),
+  initSoundUnlock: vi.fn(),
+}))
+vi.mock('@/api/runtime', () => ({
+  onSessionEvent: vi.fn(() => () => {}),
+}))
+
+import { classifySessionEvent, useSoundEvents } from '@/hooks/events/useSoundEvents'
+import { initSoundUnlock } from '@/lib/sound'
+import { onSessionEvent } from '@/api/runtime'
 import type { SessionEventKey } from '@/types/events'
 
 describe('classifySessionEvent', () => {
@@ -66,5 +92,54 @@ describe('classifySessionEvent', () => {
     expect(classifySessionEvent('task_complete', undefined)).toBe('success')
     expect(classifySessionEvent('ask_user', null)).toBe('attention')
     expect(classifySessionEvent('error', null)).toBe('error')
+  })
+})
+
+/** Mount the hook via a minimal probe component and return an unmount fn. */
+async function mountSoundEvents(sessionId: string | null): Promise<() => Promise<void>> {
+  const container = document.createElement('div')
+  document.body.appendChild(container)
+  const root: Root = createRoot(container)
+
+  function Probe(): null {
+    useSoundEvents(sessionId)
+    return null
+  }
+
+  await act(async () => {
+    // createElement (not JSX) so this stays a .ts file.
+    root.render(createElement(Probe))
+  })
+
+  return async () => {
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+  }
+}
+
+describe('useSoundEvents — unlock ownership', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('does not initialise the unlock and subscribes to nothing without a session', async () => {
+    const unmount = await mountSoundEvents(null)
+    expect(vi.mocked(initSoundUnlock)).not.toHaveBeenCalled()
+    expect(vi.mocked(onSessionEvent)).not.toHaveBeenCalled()
+    await unmount()
+  })
+
+  it('subscribes to the session events but still never owns the unlock', async () => {
+    const unmount = await mountSoundEvents('s1')
+    expect(vi.mocked(onSessionEvent)).toHaveBeenCalled()
+    // Ownership moved to App: the hook must not register the unlock itself.
+    expect(vi.mocked(initSoundUnlock)).not.toHaveBeenCalled()
+    await unmount()
   })
 })

@@ -143,15 +143,45 @@ func ValidateTransition(from, to HypothesisStatus) error {
 
 // escapeCell renders a raw field value into a single-line Markdown table-cell
 // value: newlines fold to "<br>" (a row must stay one line — the parser reads
-// tables line by line) and literal pipes escape to "\|" (an unescaped pipe
-// would split the cell). The parser's splitCells/unescapeCell reverses both,
-// so written values parse back exactly.
+// tables line by line), literal pipes escape to "\|" (an unescaped pipe would
+// split the cell), and a literal "<br>" already present in the value is
+// shielded as "&lt;br&gt;" so it cannot masquerade as a folded newline on
+// parse. The parser's splitCells/unescapeCell reverses all three, so written
+// values parse back exactly (a value that itself contains the entity spelling
+// "&lt;br&gt;" is shielded one level deeper — see escapeLiteralBR).
 func escapeCell(v string) string {
-	if strings.ContainsAny(v, "|\n\r") {
+	if strings.ContainsAny(v, "|\n\r") || strings.Contains(v, "<br>") || strings.Contains(v, "&lt;br&gt;") {
+		v = escapeLiteralBR(v)
 		v = foldBR(v)
 		v = strings.ReplaceAll(v, "|", `\|`)
 	}
 	return v
+}
+
+// escapeLiteralBR shields a literal "<br>" marker from the newline-fold
+// round trip: foldBR renders newlines as "<br>", so a value that already
+// contains that literal text must be protected — it is rewritten to the
+// HTML-entity spelling "&lt;br&gt;" on write and restored on parse
+// (restoreLiteralBR, parser.go). Without the shield, a finding or title
+// legitimately containing "<br>" would parse back as a newline. A value that
+// itself contains the entity spelling "&lt;br&gt;" is shielded one level
+// deeper ("&lt;br&gt;" → "&amp;lt;br&gt;") so it too round-trips exactly.
+//
+// The shield is single-level (like the Mermaid label escapes): a value that
+// literally contains the doubly-escaped "&amp;lt;br&gt;" is not protected a
+// third time and drifts once to "&lt;br&gt;" — the same documented one-time
+// drift unescapeMermaidLabel admits for "#quot;"/"#124;". Making it exact at
+// every depth would require escaping every "&", which would rewrite ordinary
+// values ("R&D") for no practical gain.
+func escapeLiteralBR(v string) string {
+	if !strings.Contains(v, "<br>") && !strings.Contains(v, "&lt;br&gt;") {
+		return v
+	}
+	// Escape the ampersand of a pre-existing entity spelling FIRST, so the
+	// shield below cannot claim it and restoreLiteralBR maps it back to the
+	// entity text rather than to "<br>".
+	v = strings.ReplaceAll(v, "&lt;br&gt;", "&amp;lt;br&gt;")
+	return strings.ReplaceAll(v, "<br>", "&lt;br&gt;")
 }
 
 // foldBR replaces any newline flavor (and surrounding spaces) with the
@@ -179,13 +209,15 @@ func foldTitle(v string) string {
 }
 
 // escapeMermaidLabel renders a raw title into a Mermaid quoted label
-// ("H001[\"H-001: <label>\"]"): newlines fold to "<br>", a literal pipe
-// becomes "#124;" (the pipe character is edge-label syntax in Mermaid), and a
-// double quote becomes "#quot;". Those escapes are exactly what keeps the
-// written line matching mermaidNodeLineRe — whose label group is [^"]* on a
-// single line — so a quoted label containing pipes or quotes still parses
-// back; unescapeMermaidLabel (parser.go) reverses them.
+// ("H001[\"H-001: <label>\"]"): newlines fold to "<br>", a literal "<br>" is
+// shielded as "&lt;br&gt;" (escapeLiteralBR), a literal pipe becomes "#124;"
+// (the pipe character is edge-label syntax in Mermaid), and a double quote
+// becomes "#quot;". Those escapes are exactly what keeps the written line
+// matching mermaidNodeLineRe — whose label group is [^"]* on a single line —
+// so a quoted label containing pipes or quotes still parses back;
+// unescapeMermaidLabel (parser.go) reverses them.
 func escapeMermaidLabel(v string) string {
+	v = escapeLiteralBR(v)
 	v = foldBR(v)
 	if strings.Contains(v, "|") {
 		v = strings.ReplaceAll(v, "|", "#124;")
@@ -867,7 +899,8 @@ func buildCardContent(id, title, statement, criterion, timebox, created string, 
 }
 
 // normalizeParents canonicalizes, de-duplicates, and sorts a list of parent
-// IDs. Non-identifier tokens are dropped.
+// IDs (numeric H-NNN order via compareHypothesisIDs). Non-identifier tokens
+// are dropped.
 func normalizeParents(raw []string) []string {
 	seen := make(map[string]struct{}, len(raw))
 	out := make([]string, 0, len(raw))
@@ -882,7 +915,7 @@ func normalizeParents(raw []string) []string {
 		seen[id] = struct{}{}
 		out = append(out, id)
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return compareHypothesisIDs(out[i], out[j]) < 0 })
 	return out
 }
 
@@ -950,11 +983,9 @@ func maxHypothesisNumber(projectDir string) int {
 	hypDir := filepath.Join(projectDir, "hypotheses")
 	maxNum := 0
 
-	if paths, err := filepath.Glob(filepath.Join(hypDir, "H-*.md")); err == nil {
-		for _, p := range paths {
-			if n := parseIDNum(filepath.Base(p)); n > maxNum {
-				maxNum = n
-			}
+	for _, p := range listHypothesisCards(hypDir) {
+		if n := parseIDNum(filepath.Base(p)); n > maxNum {
+			maxNum = n
 		}
 	}
 	if content, ok := readFile(filepath.Join(hypDir, "graph.md")); ok {
@@ -1058,6 +1089,28 @@ func ProjectDir(researchRoot, rid string) (string, error) {
 	return "", fmt.Errorf("research project %q not found under %q", rid, researchRoot)
 }
 
+// cardPathForID resolves the on-disk card file for a canonical (padded)
+// hypothesis ID: the canonical <id>.md spelling when it exists, else the
+// first H-*.md file whose filename normalizes to the same ID — a hand-named
+// unpadded spelling like "H-1.md" for H-001. This keeps UpdateHypothesis
+// working on cards created outside the writer (whose heading parses to the
+// canonical ID) instead of reporting them missing. It returns the canonical
+// path when no file matches, so the caller's "not found" error names the
+// canonical spelling. The directory listing is bounded by the number of
+// cards, and determinism comes from the sorted directory listing.
+func cardPathForID(hypDir, id string) string {
+	canonical := filepath.Join(hypDir, id+".md")
+	if _, err := os.Stat(canonical); err == nil {
+		return canonical
+	}
+	for _, p := range listHypothesisCards(hypDir) {
+		if NormalizeID(strings.TrimSuffix(filepath.Base(p), ".md")) == id {
+			return p
+		}
+	}
+	return canonical
+}
+
 // UpdateHypothesis applies an update to an existing hypothesis card and its
 // graph entries. It is atomic-ish: validation (including the status-transition
 // check) happens before any write, and each file is written via temp+rename.
@@ -1077,15 +1130,26 @@ func UpdateHypothesis(researchRoot, projectDir, id string, upd HypothesisUpdate)
 	}
 
 	hypDir := filepath.Join(projectDir, "hypotheses")
-	cardPath := filepath.Join(hypDir, id+".md")
+	// A hand-named unpadded card file ("H-1.md") still parses to the canonical
+	// ID; resolve the actual file rather than assuming the canonical spelling.
+	cardPath := cardPathForID(hypDir, id)
 	graphPath := filepath.Join(hypDir, "graph.md")
 
-	cardContent, ok := readFile(cardPath)
-	if !ok {
+	// Fail closed on unreadable files: treating a present-but-unreadable
+	// card or graph as missing would let the atomic rename below destroy
+	// its prior content (see readFileStrict).
+	cardContent, err := readFileStrict(cardPath)
+	if err != nil {
+		return fmt.Errorf("failed to read hypothesis card: %w", err)
+	}
+	if cardContent == "" {
 		return fmt.Errorf("hypothesis card %s not found", id)
 	}
-	graphContent, ok := readFile(graphPath)
-	if !ok {
+	graphContent, err := readFileStrict(graphPath)
+	if err != nil {
+		return fmt.Errorf("failed to read hypothesis graph: %w", err)
+	}
+	if graphContent == "" {
 		return fmt.Errorf("hypothesis graph not found for %s", id)
 	}
 
@@ -1169,7 +1233,12 @@ func UpdateHypothesis(researchRoot, projectDir, id string, upd HypothesisUpdate)
 	decisionLogged := upd.Decision != nil && strings.TrimSpace(*upd.Decision) != ""
 	if statusChanged || decisionLogged {
 		logPath := filepath.Join(projectDir, "log.md")
-		logContent, _ := readFile(logPath)
+		// Fail closed on an unreadable log: proceeding with "" would replace
+		// the whole research history with a log containing only this entry.
+		logContent, readErr := readFileStrict(logPath)
+		if readErr != nil {
+			return fmt.Errorf("failed to read research log: %w", readErr)
+		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		if statusChanged {
 			msg := fmt.Sprintf("Moved %s from %s to %s.", id, node.Status, newStatus)
@@ -1221,6 +1290,18 @@ func CreateHypothesis(researchRoot, projectDir string, nh NewHypothesis) (string
 	parents := normalizeParents(nh.Parents)
 
 	hypDir := filepath.Join(projectDir, "hypotheses")
+	// Contain the directory creation: every FILE write goes through
+	// writeFilesAtomic → resolveTargetWithinRoot, but a bare MkdirAll here
+	// would run before that gate and create real directories outside the
+	// research root for a mis-wired projectDir (defense-in-depth — the
+	// backend resolves projectDir under the parsed root today). Resolving
+	// hypDir through the same check first also normalizes symlinks, so the
+	// tree that is created is the tree the writes will validate against.
+	resolvedHypDir, err := resolveTargetWithinRoot(researchRoot, hypDir)
+	if err != nil {
+		return "", err
+	}
+	hypDir = resolvedHypDir
 	if err := os.MkdirAll(hypDir, 0o755); err != nil {
 		return "", fmt.Errorf("failed to create hypotheses dir: %w", err)
 	}
@@ -1251,7 +1332,12 @@ func CreateHypothesis(researchRoot, projectDir string, nh NewHypothesis) (string
 
 	cardContent := buildCardContent(id, title, nh.Statement, nh.VerificationCriterion, nh.Timebox, nh.Created, parents, status, nh.Decision)
 
-	graphContent, _ := readFile(filepath.Join(hypDir, "graph.md"))
+	// Fail closed on an unreadable graph: proceeding with "" would let the
+	// atomic write below replace its prior content with a fresh skeleton.
+	graphContent, readErr := readFileStrict(filepath.Join(hypDir, "graph.md"))
+	if readErr != nil {
+		return "", fmt.Errorf("failed to read hypothesis graph: %w", readErr)
+	}
 	graphContent = ensureGraphSkeleton(graphContent)
 	newGraph := addMermaidNodeAndEdges(graphContent, id, title, status, parents)
 	newGraph = addCatalogRow(newGraph, id, title, status, nh.Decision, parents)
@@ -1280,7 +1366,12 @@ func CreateHypothesis(researchRoot, projectDir string, nh NewHypothesis) (string
 // error and leaves the log untouched.
 func AppendLogEntry(researchRoot, projectDir string, entry ResearchLogEntry) error {
 	logPath := filepath.Join(projectDir, "log.md")
-	current, _ := readFile(logPath)
+	// Fail closed on an unreadable log: proceeding with "" would replace the
+	// whole research history with a log containing only the new entry.
+	current, err := readFileStrict(logPath)
+	if err != nil {
+		return fmt.Errorf("failed to read research log: %w", err)
+	}
 	next, err := appendLogEntryContent(current, entry.Kind, entry.HypothesisID, entry.CreatedAt, entry.Message)
 	if err != nil {
 		return err

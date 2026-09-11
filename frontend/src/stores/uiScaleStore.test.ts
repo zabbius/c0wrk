@@ -26,6 +26,7 @@ import {
   getUiZoomFactor,
   UI_SCALE_MIN,
   UI_SCALE_MAX,
+  UI_ZOOM_CSS_VAR,
 } from '@/stores/uiScaleStore'
 
 describe('uiScaleStore', () => {
@@ -34,6 +35,7 @@ describe('uiScaleStore', () => {
     useUiScaleStore.setState({ scale: 100 })
     localStorage.clear()
     document.documentElement.style.zoom = ''
+    document.documentElement.style.removeProperty(UI_ZOOM_CSS_VAR)
   })
 
   it('defaults to 100', () => {
@@ -74,6 +76,27 @@ describe('uiScaleStore', () => {
     expect(document.documentElement.style.zoom).toBe('1.25')
     applyScaleToDocument(100)
     expect(document.documentElement.style.zoom).toBe('1')
+  })
+
+  it('setScale mirrors the zoom factor as the --ui-zoom custom property', () => {
+    // index.css derives the zoom-corrected --ui-vh length from this property,
+    // so it must track the applied scale (unitless, for use in calc()).
+    useUiScaleStore.getState().setScale(150)
+    expect(
+      document.documentElement.style.getPropertyValue(UI_ZOOM_CSS_VAR),
+    ).toBe('1.5')
+  })
+
+  it('applyScaleToDocument publishes both the zoom style and --ui-zoom', () => {
+    applyScaleToDocument(125)
+    expect(document.documentElement.style.zoom).toBe('1.25')
+    expect(
+      document.documentElement.style.getPropertyValue(UI_ZOOM_CSS_VAR),
+    ).toBe('1.25')
+    applyScaleToDocument(100)
+    expect(
+      document.documentElement.style.getPropertyValue(UI_ZOOM_CSS_VAR),
+    ).toBe('1')
   })
 
   it('getUiZoomFactor reads scale/100 straight from the store state', () => {

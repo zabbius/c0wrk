@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { Fragment, useCallback, useState, type ReactNode } from 'react'
 import { CheckIcon, ChevronDownIcon } from 'lucide-react'
 
 import {
@@ -7,11 +7,20 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 export interface ComboboxOption {
   value: string
   label: string
+  /**
+   * Optional hover tooltip content, rendered inside a portaled Radix tooltip
+   * anchored to the menu item — the generic settings combobox has no other
+   * description surface, and Radix tooltips are zoom-corrected globally
+   * (lib/floatingUiZoom). The caller supplies the node (e.g. rendered
+   * markdown), so this primitive stays free of any rendering dependency.
+   */
+  tooltip?: ReactNode
 }
 
 /**
@@ -124,9 +133,8 @@ export function Combobox({
         )}
         {options.map((opt) => {
           const isSelected = opt.value === value
-          return (
+          const item = (
             <DropdownMenuItem
-              key={opt.value}
               data-selected={isSelected}
               className={cn('gap-2 px-3 py-1.5 text-xs', isSelected && 'bg-primary/10 font-medium')}
               // Re-picking the already-selected value is a no-op (native
@@ -139,6 +147,32 @@ export function Combobox({
               <span className="flex-1 text-left truncate">{opt.label}</span>
               {isSelected && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
             </DropdownMenuItem>
+          )
+          // Without a tooltip the item renders bare (unchanged behavior). With
+          // one, a portaled Radix tooltip wraps it — the trigger *is* the menu
+          // item, so hovering anywhere on the row reveals the description.
+          if (!opt.tooltip) {
+            return <Fragment key={opt.value}>{item}</Fragment>
+          }
+          return (
+            <Tooltip key={opt.value}>
+              <TooltipTrigger asChild>{item}</TooltipTrigger>
+              <TooltipContent
+                side="right"
+                align="start"
+                sideOffset={6}
+                collisionPadding={16}
+                // Full registry descriptions (the Small-LLM picker) can run to
+                // several hundred characters; without a cap the body-portaled
+                // tooltip is simply clipped by the window and the tail becomes
+                // unreadable. Cap and scroll it like every other long-content
+                // tooltip (StepTooltip/StepResultTooltip); the cap uses the
+                // zoom-corrected `--ui-vh` primitive (see lib/layoutSpace.ts).
+                className="max-w-sm max-h-[min(calc(var(--ui-vh)*0.7),calc(var(--radix-tooltip-content-available-height)-16px))] overflow-y-auto custom-scrollbar text-left text-wrap"
+              >
+                {opt.tooltip}
+              </TooltipContent>
+            </Tooltip>
           )
         })}
       </DropdownMenuContent>

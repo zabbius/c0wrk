@@ -131,11 +131,13 @@ export function GetFileDiffHunks(arg1:string):Promise<Array<workspace.HunkDiffIn
 
 export function GetFileIcon(arg1:string):Promise<backend.FileIconResponse>;
 
-export function GetGitHistory():Promise<Array<workspace.GitHistoryCommit>>;
+export function GetGitHistory(arg1:number,arg2:number):Promise<workspace.GitHistoryPage>;
 
 export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitStatusEntry>>;
 
 export function GetHardenGitRepos():Promise<Array<string>>;
+
+export function GetIsGitRepo():Promise<boolean>;
 
 export function GetLastActiveProjectID():Promise<string>;
 
@@ -253,6 +255,8 @@ export function ReadFileAsDataURL(arg1:string):Promise<string>;
 
 export function Rebase(arg1:string):Promise<void>;
 
+export function ReindexVectorIndex():Promise<void>;
+
 export function RemoveAttachment(arg1:string,arg2:string):Promise<void>;
 
 export function RemoveHardenGitRepo(arg1:string):Promise<void>;
@@ -266,6 +270,8 @@ export function RenameBranch(arg1:string,arg2:string):Promise<void>;
 export function RenameProject(arg1:string,arg2:string):Promise<void>;
 
 export function RenameSession(arg1:string,arg2:string):Promise<void>;
+
+export function RequestGitRemoteRefresh():Promise<void>;
 
 export function ResetToCommit(arg1:string,arg2:string):Promise<void>;
 

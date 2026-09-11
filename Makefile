@@ -72,6 +72,28 @@ else
 	WAILS_TAGS :=
 endif
 
+# Application icon staged for `wails build`. Wails always reads the app icon
+# from build/appicon.png regardless of the target platform (the build packager's
+# buildassets.ReadFile hard-codes that name), so a platform-specific icon must be
+# swapped into that exact path for the duration of the build.
+#
+# Only macOS uses a variant: build/appicon-macos.{svg,png} is the same artwork on
+# an opaque solid #1d2025 background, matching the platform's opaque-icon look.
+# Windows builds the tracked transparent build/appicon.png directly (`wails build`
+# without this Makefile), and Linux is not Darwin, so both keep the transparent
+# icon. WAILS_APPICON_STAGE is the shell preamble prepended to the macOS
+# `wails build` invocation and is empty elsewhere. It backs the transparent icon
+# up to a temp file, overwrites build/appicon.png with the macOS variant, then
+# restores the original on shell exit (success or failure) via a trap, so the
+# tracked file is never left modified. `set -e` makes a missing variant fail the
+# build closed instead of silently shipping the transparent icon. The leading `@`
+# keeps the noisy staged command out of the log; the echo announces the variant.
+ifeq ($(UNAME_S),Darwin)
+	WAILS_APPICON_STAGE := @set -e; echo "==> Staging macOS app icon (opaque \#1d2025 background)"; bak=$$(mktemp); cp build/appicon.png "$$bak"; trap 'cp "$$bak" build/appicon.png; rm -f "$$bak"' EXIT; cp build/appicon-macos.png build/appicon.png;
+else
+	WAILS_APPICON_STAGE :=
+endif
+
 # Platform-specific output directories
 ifeq ($(UNAME_S),Darwin)
 	APP_BUNDLE_DIR := build/bin/c0wrk-desktop.app/Contents/MacOS
@@ -150,7 +172,7 @@ frontend-deps:
 	cd frontend && npm install
 
 build: frontend-deps
-	wails build $(WAILS_TAGS) -ldflags "$(VERSION_LDFLAGS)"
+	$(WAILS_APPICON_STAGE)wails build $(WAILS_TAGS) -ldflags "$(VERSION_LDFLAGS)"
 	$(MAKE) fetch-onnx
 	$(MAKE) fetch-embedding-model
 

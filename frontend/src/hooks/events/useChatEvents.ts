@@ -215,11 +215,18 @@ export function useChatEvents(sessionId: string | null): void {
           const reviewStore = useReviewStore.getState()
           const isLoopActive = !!reviewStore.reviewLoopActive[sessionId]
           const gitState = useGitPanelStore.getState()
-          const hasChanges = gitState.isGitRepo && gitState.entries.length > 0
-          // Review is a CODE-mode-only feature: never show the review prompt or
-          // reopen the review page in CHAT (No Project) mode, even if the git
-          // store holds stale/leaked entries.
-          const isNoProject = selectIsNoProject(useProjectStore.getState())
+          const projectState = useProjectStore.getState()
+          // Pair isGitRepo with the project it was checked against (the store
+          // contract): a stale isGitRepo=true from a previously active project
+          // must not inject a review prompt for the project now active, which
+          // may have no changes. Review is also CODE-mode-only: never show the
+          // prompt or reopen the review page in CHAT (No Project) mode, even if
+          // the git store holds stale/leaked entries.
+          const hasChanges =
+            gitState.isGitRepo &&
+            gitState.gitRepoProjectId === projectState.activeProjectId &&
+            gitState.entries.length > 0
+          const isNoProject = selectIsNoProject(projectState)
 
           if (shouldTriggerReview(isNoProject, hasChanges)) {
             if (isLoopActive) {

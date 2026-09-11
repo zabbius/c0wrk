@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { useScrollContext } from './ScrollContext'
 import { scrollBlockStartIntoView } from '@/lib/chatScroll'
+import { cssEscape } from '@/lib/cssEscape'
 import type { ChatMessageUI } from '@/types/messages'
 import { unresolvedReviewPromptIds } from '@/types/messages'
 import { ChatNewActivityBanner } from './ChatNewActivityBanner'
@@ -146,7 +147,12 @@ export function ChatScrollManager({
     const scrollToStepFn = (stepId: string) => {
       const viewport = viewportRef.current
       if (!viewport) return
-      const elements = viewport.querySelectorAll(`[data-step-id="${stepId}"]`)
+      // Step ids originate from LLM-authored declare_plan payloads and can
+      // contain selector metacharacters (quotes, backslashes) — escape the
+      // id before interpolating it into the attribute selector, or the
+      // querySelectorAll call throws a SyntaxError DOMException and the
+      // navigation silently dies inside the click handler.
+      const elements = viewport.querySelectorAll(`[data-step-id="${cssEscape(stepId)}"]`)
       const target = elements[elements.length - 1]
       if (target) {
         scrollBlockStartIntoView(viewport, target)

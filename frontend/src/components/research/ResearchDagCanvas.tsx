@@ -198,6 +198,24 @@ export function ResearchDagCanvas({ layout, nodes, selectedId, onSelect }: Resea
     fit()
   }, [geometrySig, isPanningRef, fit])
 
+  // Refit when the CANVAS itself resizes (file-viewer divider drag, window
+  // resize, viewer pin/unpin): the geometry signature above does not change,
+  // so a previously fitted DAG would keep its stale scale/translate —
+  // clipped when the container shrank, swimming in dead space when it grew
+  // until the next graph change. fit() reads clientWidth/clientHeight live
+  // and never resizes the canvas itself, so the observer cannot loop.
+  // Mid-drag refits are skipped for the same reason as above.
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (isPanningRef.current) return
+      fit()
+    })
+    ro.observe(canvas)
+    return () => ro.disconnect()
+  }, [canvasRef, isPanningRef, fit])
+
   // Swallow the click that trails a pan gesture: once the drag threshold is
   // crossed the canvas holds pointer capture, and under capture the browser
   // retargets the trailing `click` to the canvas itself (per the Pointer

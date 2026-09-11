@@ -3,8 +3,10 @@
 //
 //   c0wrk                              no project active (startup)
 //   c0wrk - MyProject                  project active, no session selected
-//   c0wrk - MyProject - Refactor auth  full context
-//   c0wrk - CHAT - Quick question      No Project pseudo-project (CHAT mode)
+//   c0wrk - MyProject: Refactor auth   full context
+//   c0wrk - CHAT: Quick question       No Project pseudo-project (CHAT mode)
+//
+// Template: APP_NAME - <project scope>: <session>.
 //
 // Driven entirely from the two stores rather than from backend events: the
 // project/session lifecycle events already land there (project:switched,
@@ -24,23 +26,30 @@ export const APP_NAME = 'c0wrk'
  *  without reaching into the project store. */
 export { CHAT_LABEL }
 
-/** Separator between title segments, matching common IDE conventions. */
-const SEPARATOR = ' - '
+/** Separator between the app name and the project scope. */
+const SCOPE_SEPARATOR = ' - '
+
+/** Separator between the project scope and the active session name. */
+const SESSION_SEPARATOR = ': '
 
 /**
  * Build the window title from the scope segment (project name, or CHAT) and
- * the active session name. Segments that are absent — or blank after
- * trimming — are dropped rather than rendered as empty text, so a session
- * without a project can never produce a dangling separator.
+ * the active session name, following the template:
+ *
+ *   APP_NAME - <project scope>: <session>
+ *
+ * Segments that are absent — or blank after trimming — are dropped rather
+ * than rendered as empty text, so a session without a project can never
+ * produce a dangling separator and a project without a session never leaves
+ * a trailing colon.
  */
 export function buildWindowTitle(scope: string | null, sessionName: string | null): string {
   const trimmedScope = scope?.trim()
   if (!trimmedScope) return APP_NAME
 
-  const segments = [APP_NAME, trimmedScope]
+  const base = `${APP_NAME}${SCOPE_SEPARATOR}${trimmedScope}`
   const trimmedSession = sessionName?.trim()
-  if (trimmedSession) segments.push(trimmedSession)
-  return segments.join(SEPARATOR)
+  return trimmedSession ? `${base}${SESSION_SEPARATOR}${trimmedSession}` : base
 }
 
 /**

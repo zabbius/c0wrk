@@ -149,7 +149,7 @@ func TestSwitchBranch_FileHashMigrationIsAsync(t *testing.T) {
 	}
 	// SwitchBranch returned without completing the backfill: it is pending in
 	// the background (blocked on the gate), proving the migration is async.
-	if !b.fileHashMigrationPending.Load() {
+	if !b.current.fileHashMigrationPending.Load() {
 		t.Fatal("expected file-hash migration to be pending (deferred to background)")
 	}
 
@@ -158,7 +158,7 @@ func TestSwitchBranch_FileHashMigrationIsAsync(t *testing.T) {
 	if err := b.WaitFileHashMigration(context.Background()); err != nil {
 		t.Fatalf("WaitFileHashMigration: %v", err)
 	}
-	if b.fileHashMigrationPending.Load() {
+	if b.current.fileHashMigrationPending.Load() {
 		t.Fatal("expected file-hash migration to be settled after waiting")
 	}
 
@@ -402,7 +402,7 @@ func TestValidateCollection_LegacySidecarFullReadAndUpgrade(t *testing.T) {
 	svc.ReleaseWriteLock()
 
 	svc.mu.RLock()
-	entry := svc.fileHashes[file]
+	entry := svc.current.fileHashes[file]
 	svc.mu.RUnlock()
 	gotHash, gotSize, gotMtime, ok := parseFileHashEntry(entry)
 	if !ok {
@@ -450,7 +450,7 @@ func TestValidateCollection_StatMismatchTakesFullRead(t *testing.T) {
 	// setSidecarEntry installs a single crafted entry in the in-memory sidecar.
 	setSidecarEntry := func(entry string) {
 		svc.AcquireWriteLock()
-		svc.fileHashes = map[string]string{file: entry}
+		svc.current.fileHashes = map[string]string{file: entry}
 		svc.ReleaseWriteLock()
 	}
 
@@ -632,7 +632,7 @@ func TestSwitchBranch_RoundTripsNewSidecarFormat(t *testing.T) {
 
 	// In-memory round-trip: the entry parses with identical components.
 	svc.mu.RLock()
-	gotEntry := svc.fileHashes[file]
+	gotEntry := svc.current.fileHashes[file]
 	svc.mu.RUnlock()
 	if gotEntry != wantEntry {
 		t.Fatalf("entry after switch round-trip = %q, want %q", gotEntry, wantEntry)
@@ -719,7 +719,7 @@ func TestValidateCollection_ChunkerFingerprintChangeStalesFiles(t *testing.T) {
 	// The entry records the fingerprint of the configuration it was
 	// chunked under (the Service's active fingerprint).
 	svc.mu.RLock()
-	entry := svc.fileHashes[file]
+	entry := svc.current.fileHashes[file]
 	svc.mu.RUnlock()
 	if got := fileHashEntryChunkerFP(entry); got != "cfgAAAAAAAAAAAA" {
 		t.Fatalf("upserted entry carries fingerprint %q, want cfgAAAAAAAAAAAA (entry %q)", got, entry)
@@ -750,12 +750,12 @@ func TestValidateCollection_ChunkerFingerprintChangeStalesFiles(t *testing.T) {
 	// Fingerprint-less entry (intermediate 3-field format): hash matches,
 	// configuration unknown → exempt, not stale.
 	svc.mu.Lock()
-	hash, size, mtime, parseOK := parseFileHashEntry(svc.fileHashes[file])
+	hash, size, mtime, parseOK := parseFileHashEntry(svc.current.fileHashes[file])
 	if !parseOK {
 		svc.mu.Unlock()
-		t.Fatalf("entry does not parse: %q", svc.fileHashes[file])
+		t.Fatalf("entry does not parse: %q", svc.current.fileHashes[file])
 	}
-	svc.fileHashes[file] = hash + fileHashEntrySep +
+	svc.current.fileHashes[file] = hash + fileHashEntrySep +
 		strconv.FormatInt(size, 10) + fileHashEntrySep +
 		strconv.FormatInt(mtime, 10)
 	svc.mu.Unlock()

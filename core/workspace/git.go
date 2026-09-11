@@ -140,6 +140,20 @@ func gitCmdInRepoScanned(ctx context.Context, scan *gitScanMemo, args ...string)
 	if root := ResolveWorkTreeRoot(scan.path); root != "" && gittrust.IsTrusted(root) {
 		cmd := sysproc.GitCmdRaw(ctx, args...)
 		cmd.Dir = scan.path
+		// GIT_OPTIONAL_LOCKS=0 is c0wrk's own watcher-loop prevention, not
+		// a repo-config neutralization, so it stays on the trusted path too:
+		// without it every read-only status/diff refresh opportunistically
+		// rewrites .git/index (REMOVE+CREATE under fsnotify), the watcher
+		// reports workspace:tree_changed, and the UI re-fetches git status —
+		// the self-sustaining refresh loop the hardened path already closes
+		// (see the pin below). It changes no git output and disarms nothing
+		// the user opted back into: the variable only skips OPTIONAL locks,
+		// and commands that genuinely require the index (add/commit/stash)
+		// still take their real locks. GitCmdRaw leaves cmd.Env nil (child
+		// inherits the parent environment), so the pin is layered over
+		// os.Environ() — pinGitEnv strips any inherited value first, keeping
+		// everything else exactly as it would be outside c0wrk.
+		cmd.Env = pinGitEnv(os.Environ(), "GIT_OPTIONAL_LOCKS", "0")
 		return cmd, nil
 	}
 

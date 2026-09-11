@@ -108,7 +108,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `ListProviderModels`     | provider                 | ([]string, error)                 | List models for a provider     |
 | `UpdateProxySettings`    | ProxySettingsRequest     | error                             | Update proxy configuration     |
 | `UpdateExperimentalFeatures` | enabled            | error                             | Toggle the master experimental-features switch (it gates only the Small-LLM profile). Persists the change, rebuilds the LLM router (so the gated Small-LLM profile applies immediately), and updates the session manager's Small-LLM snapshot. RESEARCH mode is unaffected by this switch: it is activated per project via its own RPCs (`EnableResearch`/`GetResearchStatus`/`GetResearchGraph`) |
-| `GetSmallLLMConfig`      | —                        | SmallLLMConfigResponse            | Get the small-LLM profile (always_present normalized to non-nil; protected orchestration tools unioned in) |
+| `GetSmallLLMConfig`      | —                        | SmallLLMConfigResponse            | Get the small-LLM profile (always_present normalized to non-nil; protected orchestration tools unioned in; `essential_tools.builtin_tools` carries the read-only, name-sorted list of every registered built-in tool that is neither MCP-sourced nor goal-mode-only (it still carries the always-protected tools, which the UI subtracts as already-allowed) with its registry description — every built-in follows the same purpose/when-to-use/inputs/outputs/example/anti-example rubric, so the UI reformats it into markdown for the picker's hover tooltip; and `essential_tools.tool_groups` the workflow clusters (plan, subagents) — each an atomic picker entry with title, description and member list — as the always-present picker's universe) |
 | `UpdateSmallLLMConfig`   | SmallLLMConfigResponse   | error                             | Validate + persist the small-LLM profile, then rebuild the LLM router. Validation runs before mutation; an invalid payload produces no partial write. |
 | `GetModelConfig`         | model                    | (ModelConfigResponse, error)      | Get per-model overrides (sampling/params) |
 | `SetModelConfig`         | model, ModelConfigRequest | error                            | Set per-model overrides |
@@ -160,6 +160,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | --------------------- | ------------------------------------------------------------- | ----------------------------- | --------------------------------------------------- |
 | `SearchVectorStore`   | `SearchRequest{query, top_k, file_pattern, must_match, mode}` | ([]VectorStoreEntry, error)   | Hybrid search/browse; mode= hybrid\|vector\|lexical |
 | `GetVectorIndexStatus`| —                                                             | VectorIndexStatus             | Get vector index state/progress (getter, no error)  |
+| `ReindexVectorIndex`  | —                                                             | error                         | Force a full reindex of the active project's index: reconciles changed/new/deleted files, falling back to a full build when no index exists yet. Rejected for No Project (CHAT) mode |
 
 ### Git (`backend/frontend_api_git.go`)
 
@@ -191,7 +192,8 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `Pull`                 | remote, flags []string  | (string, error)               | Pull from remote (flags: --ff-only, --rebase, --rebase --autostash) |
 | `Push`                 | remote, flags []string  | (string, error)               | Push to remote (flags: --force, --force-with-lease, --no-verify) |
 | `Fetch`                | remote, flags []string  | (string, error)               | Fetch from remote (flags: --tags, --prune) |
-| `GetGitHistory`        | —                       | ([]GitHistoryCommit, error)   | Unified commit log + DAG graph topology (each `GitHistoryCommit` carries both log fields and parents/refs; replaces the former separate `GetCommitLog`/`GetGitGraph` pair) |
+| `GetIsGitRepo`         | —                       | (bool, error)                 | Whether the active project's workspace resolves to a git repository (30s-cached local check; feeds the `isGitRepo`/`gitRepoProjectId` store pairing) |
+| `GetGitHistory`        | limit, skip             | (*GitHistoryPage, error)      | One page of the unified commit log + DAG graph topology (each `GitHistoryCommit` carries both log fields and parents/refs; replaces the former separate `GetCommitLog`/`GetGitGraph` pair). Paginated via `git log -n <limit> --skip <skip>` (limit default 300, capped at 1000); returns `GitHistoryPage{Commits, NextSkip, HasMore}` and the frontend accumulates pages |
 | `GetCommitFiles`       | sha                     | ([]CommitFile, error)         | Files changed in a commit |
 | `GetCommitFilesBatch`  | shas []string           | (map[string][]CommitFile, error) | Files changed across many commits (batched) |
 | `GetCommitDiff`        | sha                     | ([]ReviewFileDiff, error)     | Per-file diff for a single commit (review diff format) |
@@ -207,6 +209,23 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `AbortRebase`          | —                       | error                         | Abort an in-progress rebase |
 | `ResetToCommit`        | sha, mode               | error                         | Reset HEAD to a commit (mode: soft, mixed, hard) |
 | `GetRebaseMergeState`  | —                       | (MergeRebaseState, error)     | Get in-progress merge/rebase state |
+
+### Git Auto-Fetch (`backend/frontend_api_git_autofetch.go`)
+
+| Method                 | Params                  | Returns                       | Purpose                                                |
+| ---------------------- | ----------------------- | ----------------------------- | ------------------------------------------------------ |
+| `RequestGitRemoteRefresh` | —                    | —                             | Enqueue a best-effort background `git fetch` for the active project's repo (fire-and-forget; all gating is server-side — see `git-auto-fetch.md`) |
+
+### Git Config Risk (`backend/frontend_api_gitconfig_risk.go`)
+
+| Method                 | Params                  | Returns                       | Purpose                                                |
+| ---------------------- | ----------------------- | ----------------------------- | ------------------------------------------------------ |
+| `GetTrustedGitRepos`   | —                       | []string                      | Repository paths the user has permanently trusted (gitconfig-risk intake) |
+| `TrustGitRepo`         | path                    | error                         | Add a repository path to the permanent trust list      |
+| `RemoveTrustedGitRepo` | path                    | error                         | Remove a repository path from the trust list           |
+| `GetHardenGitRepos`    | —                       | []string                      | Repository paths force-hardened via the config scanner's neutralization |
+| `HardenGitRepo`        | path                    | error                         | Force-harden a repository path                         |
+| `RemoveHardenGitRepo`  | path                    | error                         | Remove a path from the harden list                     |
 
 ### Lifecycle (`backend/frontend_api.go`)
 

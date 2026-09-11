@@ -9,6 +9,7 @@ const { gitMocks } = vi.hoisted(() => ({
     getGitHistory: vi.fn(),
     getCommitFiles: vi.fn(),
     getCommitFilesBatch: vi.fn(),
+    GIT_HISTORY_PAGE_SIZE: 300,
   },
 }))
 
@@ -77,11 +78,16 @@ const FILES: Record<string, { path: string; status: string }[]> = {
   ccc: [{ path: 'src/main.go', status: 'A' }],
 }
 
+/** Build a paginated GetGitHistory response for the mocks. */
+function makePage(commits: typeof COMMITS, nextSkip: number, hasMore: boolean) {
+  return { commits, next_skip: nextSkip, has_more: hasMore }
+}
+
 beforeEach(() => {
   gitMocks.getGitHistory.mockReset()
   gitMocks.getCommitFiles.mockReset()
   gitMocks.getCommitFilesBatch.mockReset()
-  gitMocks.getGitHistory.mockResolvedValue(COMMITS)
+  gitMocks.getGitHistory.mockResolvedValue(makePage(COMMITS, COMMITS.length, false))
   gitMocks.getCommitFiles.mockImplementation((sha: string) =>
     Promise.resolve(FILES[sha] ?? []),
   )
@@ -225,10 +231,10 @@ describe('GitHistoryTab rendering', () => {
   it('renders root commits with empty parents array', async () => {
     // The backend sends [] (not null) for root commits via
     // parents := []string{}. The type guard rejects null arrays.
-    gitMocks.getGitHistory.mockResolvedValue([
+    gitMocks.getGitHistory.mockResolvedValue(makePage([
       { sha: 'aaa', parents: ['bbb'], author: 'Jane', email: 'j@x', date: 'd', message: 'feat', refs: [] },
       { sha: 'bbb', parents: [], author: 'Jane', email: 'j@x', date: 'd', message: 'root', refs: [] },
-    ])
+    ], 2, false))
 
     renderTab()
     await flush()
@@ -271,5 +277,135 @@ describe('GitHistoryTab commit SHA click', () => {
 
     // The row should NOT expand — stopPropagation prevents the row toggle.
     expect(container.textContent).not.toContain('src/a.ts')
+  })
+})
+
+describe('GitHistoryTab pagination', () => {
+  // Two pages: page 1 = [aaa, bbb] (saturated), page 2 = [ccc] (remainder).
+  const PAGE_1 = [
+    { sha: 'aaa', parents: ['bbb'], author: 'Jane', email: 'j@x', date: '2026-07-10', message: 'feat: x', refs: ['HEAD -> main'] },
+    { sha: 'bbb', parents: ['ccc'], author: 'Jane', email: 'j@x', date: '2026-07-09', message: 'docs: readme', refs: [] },
+  ]
+  const PAGE_2 = [
+    { sha: 'ccc', parents: [], author: 'Jane', email: 'j@x', date: '2026-07-08', message: 'init', refs: [] },
+  ]
+
+  function loadMoreButton(): HTMLButtonElement | null {
+    return (
+      (Array.from(container.querySelectorAll('button')).find(
+        (b) => (b.textContent ?? '').trim() === 'Load more',
+      ) as HTMLButtonElement | undefined) ?? null
+    )
+  }
+
+  it('loads only the first page on mount and exposes Load more when has_more', async () => {
+    gitMocks.getGitHistory.mockResolvedValue(makePage(PAGE_1 as typeof COMMITS, 2, true))
+    renderTab()
+    await flush()
+    await flush()
+
+    // Only the first page was requested, at the default size + offset 0.
+    expect(gitMocks.getGitHistory).toHaveBeenCalledTimes(1)
+    expect(gitMocks.getGitHistory).toHaveBeenCalledWith(300, 0)
+    expect(commitMessages()).toEqual(['feat: x', 'docs: readme'])
+    expect(graphNodes()).toBe(2)
+    expect(loadMoreButton()).toBeTruthy()
+  })
+
+  it('hides Load more when the history is exhausted (has_more=false)', async () => {
+    gitMocks.getGitHistory.mockResolvedValue(makePage(COMMITS, 3, false))
+    renderTab()
+    await flush()
+    await flush()
+    expect(loadMoreButton()).toBeNull()
+  })
+
+  it('appends the next page on Load more without replacing already-loaded commits', async () => {
+    gitMocks.getGitHistory
+      .mockResolvedValueOnce(makePage(PAGE_1 as typeof COMMITS, 2, true))
+      .mockResolvedValueOnce(makePage(PAGE_2 as typeof COMMITS, 3, false))
+
+    renderTab()
+    await flush()
+    await flush()
+
+    // Capture a first-page row to prove it survives the append (same DOM node).
+    const firstRowBefore = Array.from(container.querySelectorAll('button')).find(
+      (b) => (b.textContent ?? '').includes('feat: x'),
+    ) as HTMLButtonElement
+    expect(firstRowBefore).toBeTruthy()
+
+    const btn = loadMoreButton()
+    expect(btn).toBeTruthy()
+    await act(async () => { btn!.click() })
+    await flush()
+    await flush()
+
+    // The second page is requested at the previous page's next_skip.
+    expect(gitMocks.getGitHistory).toHaveBeenNthCalledWith(2, 300, 2)
+    // All three commits are present, in order — the first page was appended
+    // to, never rewritten.
+    expect(commitMessages()).toEqual(['feat: x', 'docs: readme', 'init'])
+    expect(graphNodes()).toBe(3)
+    // The first-page row is still the SAME DOM node (no unmount/remount).
+    expect(container.contains(firstRowBefore)).toBe(true)
+    // Exhausted → Load more disappears.
+    expect(loadMoreButton()).toBeNull()
+  })
+
+  it('ignores repeated Load more clicks while a page is in flight', async () => {
+    let resolveSecond: ((v: unknown) => void) | undefined
+    gitMocks.getGitHistory
+      .mockResolvedValueOnce(makePage(PAGE_1 as typeof COMMITS, 2, true))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve }))
+      .mockResolvedValueOnce(makePage(PAGE_2 as typeof COMMITS, 3, false))
+
+    renderTab()
+    await flush()
+    await flush()
+
+    const btn = loadMoreButton()
+    expect(btn).toBeTruthy()
+    await act(async () => { btn!.click(); btn!.click() })
+    // Mount + a single in-flight second page; the second click was a no-op.
+    expect(gitMocks.getGitHistory).toHaveBeenCalledTimes(2)
+
+    await act(async () => { resolveSecond?.(makePage(PAGE_2 as typeof COMMITS, 3, false)) })
+    await flush()
+    await flush()
+    expect(commitMessages()).toEqual(['feat: x', 'docs: readme', 'init'])
+  })
+
+  it('keeps Load more below the whole history (list wrapper opts out of flex-shrink)', async () => {
+    gitMocks.getGitHistory.mockResolvedValue(makePage(PAGE_1 as typeof COMMITS, 2, true))
+    renderTab()
+    await flush()
+    await flush()
+
+    const btn = loadMoreButton()
+    expect(btn).toBeTruthy()
+
+    // The button lives inside the scroll container (a flex column). Walk up
+    // to that container.
+    let scroll: HTMLElement | null = btn!.parentElement
+    while (scroll && !scroll.classList.contains('overflow-y-auto')) {
+      scroll = scroll.parentElement
+    }
+    expect(scroll).toBeTruthy()
+
+    // The virtualized list wrapper is a DIRECT child of the scroll container
+    // and must carry `shrink-0`: without it flex collapses the wrapper to the
+    // viewport height (its only children are absolutely positioned), which
+    // drags the in-flow button up to the bottom of the visible area where the
+    // overflowing rows paint over it.
+    const listWrapper = Array.from(scroll!.children).find((c) =>
+      c.classList.contains('shrink-0'),
+    )
+    expect(listWrapper).toBeTruthy()
+
+    // The button flows AFTER the full-height list (not inside it), so it only
+    // becomes visible once the user scrolls to the very bottom.
+    expect(listWrapper!.contains(btn!)).toBe(false)
+    expect(scroll!.lastElementChild).toBe(btn!.parentElement)
   })
 })

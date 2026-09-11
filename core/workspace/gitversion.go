@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/v0lka/c0wrk/internal/sysproc"
 )
@@ -68,13 +69,32 @@ func parseGitVersion(output string) (gitVersion, error) {
 }
 
 var (
-	// gitVersionOnce guards the single resolution of the git version for
-	// the process lifetime: `git --version` is a fixed property of the
-	// machine, so one probe is one too few to matter and N is waste.
-	gitVersionOnce sync.Once
+	// gitVersionMu guards the lazy resolution of the git version below. It
+	// replaces the sync.Once this gate used to carry: a Once freezes the
+	// FIRST probe outcome whatever it is, so a transient failure (git not
+	// yet on PATH in a freshly launched Finder app before shell-env
+	// expansion completes, an AV lock on Windows) would fail every
+	// include-bearing-repo git operation for the rest of the process
+	// lifetime. The mutex plus resolvedGitVersion retries failures and
+	// caches only completed resolutions.
+	gitVersionMu sync.Mutex
+
+	// resolvedGitVersion reports that a version was parsed — the verdict in
+	// resolvedGitVersionErr (nil when attr.tree-capable) is then final for
+	// the process lifetime, since the machine's git version does not
+	// change. It stays false on probe or parse failure, so the next call
+	// retries.
+	resolvedGitVersion bool
 
 	resolvedGitVersionErr error
 )
+
+// gitVersionProbeTimeout bounds each `git --version` probe. The probe
+// normally completes in single-digit milliseconds; the bound exists so a
+// hung git binary (wedged AV scan, unresponsive filesystem) fails the gate
+// instead of blocking callers indefinitely — exec.CommandContext kills the
+// probe once the deadline passes, and the next call retries.
+const gitVersionProbeTimeout = 5 * time.Second
 
 // gitVersionOutputFn is the seam unit tests use to inject `git --version`
 // output (mirroring scanGitConfigFn). Production resolves the real binary
@@ -98,30 +118,42 @@ var gitVersionOutputFn = func(ctx context.Context) (string, error) {
 // requireAttrTreeCapableGit returns nil when the resolved git version is
 // known to honor attr.tree (>= 2.45), and a fail-closed error otherwise —
 // including when the version cannot be resolved at all (git missing from
-// PATH, unparsable output). The version is resolved at most once per
-// process and cached; callers invoke this only on the include-bearing path
-// where the attr.tree pin is load-bearing.
+// PATH, unparsable output). A completed resolution (any verdict) is cached
+// for the process lifetime; probe and parse failures are treated as
+// transient and retried on the next call. Callers invoke this only on the
+// include-bearing path where the attr.tree pin is load-bearing.
 func requireAttrTreeCapableGit() error {
-	gitVersionOnce.Do(func() {
-		out, err := gitVersionOutputFn(context.Background())
-		if err != nil {
-			resolvedGitVersionErr = fmt.Errorf(
-				"cannot resolve the git version (fail closed: an include-bearing repository config needs the attr.tree neutralization, which requires git >= %d.%d): %w",
-				attrTreeMinGitVersion.major, attrTreeMinGitVersion.minor, err)
-			return
-		}
-		v, parseErr := parseGitVersion(out)
-		if parseErr != nil {
-			resolvedGitVersionErr = fmt.Errorf(
-				"cannot parse git version %q (fail closed: an include-bearing repository config needs the attr.tree neutralization, which requires git >= %d.%d): %w",
-				strings.TrimSpace(out), attrTreeMinGitVersion.major, attrTreeMinGitVersion.minor, parseErr)
-			return
-		}
-		if v.lessThan(attrTreeMinGitVersion) {
-			resolvedGitVersionErr = fmt.Errorf(
-				"git %d.%d predates attr.tree support (fail closed: the repository config contains include directives whose hidden keys are only covered by the attr.tree neutralization, which requires git >= %d.%d); refusing to run git in this repository",
-				v.major, v.minor, attrTreeMinGitVersion.major, attrTreeMinGitVersion.minor)
-		}
-	})
+	gitVersionMu.Lock()
+	defer gitVersionMu.Unlock()
+
+	if resolvedGitVersion {
+		return resolvedGitVersionErr
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), gitVersionProbeTimeout)
+	defer cancel()
+
+	out, err := gitVersionOutputFn(ctx)
+	if err != nil {
+		// Not cached: probe failures are routinely transient.
+		return fmt.Errorf(
+			"cannot resolve the git version (fail closed: an include-bearing repository config needs the attr.tree neutralization, which requires git >= %d.%d): %w",
+			attrTreeMinGitVersion.major, attrTreeMinGitVersion.minor, err)
+	}
+	v, parseErr := parseGitVersion(out)
+	if parseErr != nil {
+		// Not cached either: unparsable output is retried, not frozen.
+		return fmt.Errorf(
+			"cannot parse git version %q (fail closed: an include-bearing repository config needs the attr.tree neutralization, which requires git >= %d.%d): %w",
+			strings.TrimSpace(out), attrTreeMinGitVersion.major, attrTreeMinGitVersion.minor, parseErr)
+	}
+	if v.lessThan(attrTreeMinGitVersion) {
+		resolvedGitVersionErr = fmt.Errorf(
+			"git %d.%d predates attr.tree support (fail closed: the repository config contains include directives whose hidden keys are only covered by the attr.tree neutralization, which requires git >= %d.%d); refusing to run git in this repository",
+			v.major, v.minor, attrTreeMinGitVersion.major, attrTreeMinGitVersion.minor)
+	}
+	// Resolution succeeded: freeze the verdict (nil when capable) for the
+	// process lifetime.
+	resolvedGitVersion = true
 	return resolvedGitVersionErr
 }

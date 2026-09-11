@@ -33,13 +33,17 @@ type contextKey string
 // SessionIDKey is the context key for the session ID.
 const SessionIDKey contextKey = "session_id"
 
-// restoreDBReadTimeout bounds the two store reads at the head of a lazy
-// session restore (session row + project workspace). Both share the app's
-// single SQLite connection with all writes of all active sessions; without a
-// deadline a read queuing behind a write storm parks the restore — and, via
-// the restoreInFlight single-flight, every concurrent waiter — indefinitely.
-// Fifteen seconds is orders of magnitude above the normal point-read latency
-// and turns contention into a prompt, retryable error instead of a hang.
+// restoreDBReadTimeout bounds the store reads at the head of a lazy
+// session restore (the session row) plus the compaction forecast's app_state
+// load/save (manager_compaction.go). The session's project-workspace read is
+// performed by the project resolver, which applies its own deadline where it
+// is installed (desktop buildFrontendAPI), so it is bounded separately. All
+// the bounded reads share the app's single SQLite connection with all writes
+// of all active sessions; without a deadline a read queuing behind a write
+// storm parks the restore — and, via the restoreInFlight single-flight, every
+// concurrent waiter — indefinitely. Fifteen seconds is orders of magnitude
+// above the normal point-read latency and turns contention into a prompt,
+// retryable error instead of a hang.
 const restoreDBReadTimeout = 15 * time.Second
 
 // ContextWithSessionID returns a new context with the session ID attached.
@@ -460,10 +464,12 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	// project workspace — both go through the app's single SQLite connection
 	// (see OpenDatabase). Under heavy write load from active sessions these
 	// reads can queue at the connection pool; context.Background() would wait
-	// indefinitely, so bound the pair with a generous deadline and let the
-	// caller surface a retryable error instead of hanging. Restore is
-	// side-effect-free up to this point, so a timeout simply aborts cleanly
-	// and a later attempt retries from scratch.
+	// indefinitely, so bound the session read with a generous deadline (the
+	// resolver's own project read is separately deadline-bounded where it is
+	// installed, in buildFrontendAPI) and let the caller surface a retryable
+	// error instead of hanging. Restore is side-effect-free up to this point,
+	// so a timeout simply aborts cleanly and a later attempt retries from
+	// scratch.
 	restoreReadCtx, restoreReadCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
 	info, err := store.LoadSession(restoreReadCtx, id)
 	if err != nil {
@@ -1274,9 +1280,11 @@ func (m *Manager) GetSessionWorkspacePath(id string) (string, bool) {
 // restoreInFlight single-flight then parked every retry on the same stuck
 // restore — the terminal spinner never cleared.
 //
-// The ctx bounds BOTH store reads (sql.DB pool waits honor it), so callers
-// can turn contention into a prompt, retryable error instead of an indefinite
-// hang. The No Project per-session workspace derivation mirrors
+// The ctx bounds the session-row read (sql.DB pool waits honor it), and the
+// project resolver is itself deadline-bounded (installed in desktop startup
+// via buildFrontendAPI), so callers can turn contention into a prompt,
+// retryable error instead of an indefinite hang. The No Project per-session
+// workspace derivation mirrors
 // getOrRestoreSession, including directory creation — the caller needs a
 // usable working directory.
 func (m *Manager) WorkspacePathFor(ctx context.Context, id string) (string, bool) {

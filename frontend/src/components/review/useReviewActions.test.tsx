@@ -18,6 +18,7 @@ import { useReviewActions } from './useReviewActions'
 import { useReviewStore } from '@/stores/reviewStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
+import { logger } from '@/lib/logger'
 import type { ChatMessageUI } from '@/types/messages'
 
 // Spies exist before vi.mock factories run so they can be referenced there.
@@ -196,5 +197,42 @@ describe('useReviewActions.handleSubmit optimistic presentation', () => {
     expect(msgs).toHaveLength(1)
     expect(msgs[0]!.metadata?.['is_nudge']).toBe(true)
     expect(useChatStore.getState().taskActive['s1']).toBe(true)
+  })
+
+  it('closes the review UI and prevents a double send when the post-send teardown fails', async () => {
+    // The feedback RPC succeeded (the task is running on it), but the
+    // follow-up buffer RPCs fail (e.g. SQLite busy). The teardown is
+    // best-effort: the UI must still close (leaving the auto-reopen loop armed
+    // per specs/domains/review.md), and a re-invoked submit must be a no-op —
+    // otherwise the identical feedback would be delivered to the running task a
+    // second time.
+    seedReviewComment('s1', 'fix the null deref')
+    spies.clearReviewComments.mockRejectedValue(new Error('sqlite busy'))
+    act(() => {
+      useReviewStore.setState({ reviewPageOpen: true, activeReviewSession: 's1' })
+    })
+
+    await act(async () => {
+      await capturedSubmit!()
+    })
+
+    // Delivered exactly once; the teardown failure only warns.
+    expect(spies.sendMessage).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(logger.warn)).toHaveBeenCalled()
+
+    // The UI is closed regardless, and the auto-reopen loop stays ARMED (the
+    // next task_complete reopens the review page with the agent's fixes; the
+    // loop is disarmed only on Approve)…
+    expect(useReviewStore.getState().reviewPageOpen).toBe(false)
+    expect(useReviewStore.getState().activeReviewSession).toBeNull()
+    expect(useReviewStore.getState().reviewLoopActive['s1']).toBe(true)
+    // …and the client-side buffer is gone, so a re-invoked handleSubmit
+    // finds no reviewState and bails before sending.
+    expect(useReviewStore.getState().bySession['s1']).toBeUndefined()
+
+    await act(async () => {
+      await capturedSubmit!()
+    })
+    expect(spies.sendMessage).toHaveBeenCalledTimes(1)
   })
 })

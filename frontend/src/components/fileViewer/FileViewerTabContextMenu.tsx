@@ -3,6 +3,7 @@ import { X, Copy, FolderTree, Terminal } from 'lucide-react'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useInputModeStore } from '@/stores/inputModeStore'
+import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
 import { clipboardSetText, emit } from '@/api/runtime'
 import { revealInWorkspace } from '@/lib/revealInWorkspace'
 import { relativePath } from '@/lib/localFileLink'
@@ -12,7 +13,11 @@ import { cn } from '@/lib/utils'
 interface FileViewerTabContextMenuProps {
   /** The file path of the tab the menu was opened on. */
   path: string
-  /** Viewport coordinates where the menu appears; null renders nothing. */
+  /**
+   * Viewport coordinates where the menu appears (VISUAL px, as reported by
+   * `MouseEvent.clientX/clientY`); null renders nothing. Unit conversion and
+   * the viewport fit/flip decision live in {@link useCursorMenuPosition}.
+   */
   position: { x: number; y: number } | null
   /** Called when the menu should close. */
   onClose: () => void
@@ -32,6 +37,8 @@ interface FileViewerTabContextMenuProps {
  */
 export function FileViewerTabContextMenu({ path, position, onClose }: FileViewerTabContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
+  // Zoom-corrected, viewport-clamped placement (left/top in layout px).
+  const menuPosition = useCursorMenuPosition(position, menuRef)
 
   // The file tree's root is the authoritative workspace root: "Reveal In
   // Workspace" reveals inside that exact tree, and the relative path is
@@ -141,7 +148,13 @@ export function FileViewerTabContextMenu({ path, position, onClose }: FileViewer
           ref={menuRef}
           role="menu"
           aria-label="File viewer tab actions"
-          style={{ position: 'fixed', left: position.x, top: position.y, zIndex: 9999 }}
+          style={{
+            position: 'fixed',
+            left: menuPosition?.left ?? 0,
+            top: menuPosition?.top ?? 0,
+            visibility: menuPosition ? 'visible' : 'hidden',
+            zIndex: 9999,
+          }}
           className={cn(
             'min-w-[12rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md',
             'animate-in fade-in-0 zoom-in-95',

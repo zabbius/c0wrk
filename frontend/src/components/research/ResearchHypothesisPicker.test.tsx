@@ -487,6 +487,31 @@ describe('ResearchHypothesisPicker — pins', () => {
       'H-001': ['R-001-test/hypotheses/H-001.md'],
     })
   })
+
+  it('bails without an RPC when the snapshot belongs to another workspace project', async () => {
+    const container = await render(<ResearchHypothesisPicker />)
+    const menu = await openMenu(container)
+    const h001 = menuItems(menu).find((i) => i.textContent?.includes('H-001'))!
+    const pin = h001.querySelector('button')!
+
+    // Project switch after render: the research store still holds p1's
+    // graph while the project store moved to p2. H-001-style ids collide
+    // across projects, so the pin must never be sent.
+    useProjectStore.setState({ activeProjectId: 'p2' })
+
+    await act(async () => {
+      pin.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(setHypothesisPinned).not.toHaveBeenCalled()
+    // No refresh either — the mismatched store must not be reconciled.
+    expect(getResearchStatus).not.toHaveBeenCalled()
+    // The mismatch surfaces on the block's error line instead.
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      'different project',
+    )
+  })
 })
 
 describe('ResearchHypothesisPicker — Create hypothesis', () => {

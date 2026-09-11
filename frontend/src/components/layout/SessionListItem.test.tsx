@@ -96,3 +96,23 @@ describe('SessionItem busy-state guards', () => {
     expect(rename?.disabled).toBe(false)
   })
 })
+
+describe('SessionItem status dot', () => {
+  it('renders a red dot for a failed session', () => {
+    statusMock.value = 'failed'
+    const { container } = render(
+      <SessionItem variant="flat" session={makeSession()} isActive={false} onSelect={vi.fn()} onRename={vi.fn()} onArchive={vi.fn()} onPin={vi.fn()} onFork={vi.fn()} onDelete={vi.fn()} />,
+    )
+    const dot = container.querySelector('[title^="Task failed"]')
+    expect(dot).not.toBeNull()
+    expect(dot?.className).toContain('bg-destructive')
+  })
+
+  it('does not render the failure dot for an idle session', () => {
+    statusMock.value = 'idle'
+    const { container } = render(
+      <SessionItem variant="flat" session={makeSession()} isActive={false} onSelect={vi.fn()} onRename={vi.fn()} onArchive={vi.fn()} onPin={vi.fn()} onFork={vi.fn()} onDelete={vi.fn()} />,
+    )
+    expect(container.querySelector('[title^="Task failed"]')).toBeNull()
+  })
+})

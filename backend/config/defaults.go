@@ -42,6 +42,7 @@ var defaultSmallLLMAlwaysPresent = []string{
 	"glob",
 	"ripgrep",
 	"bash_exec",
+	"posh_exec",
 	"semantic_search",
 	"store_fact",
 	"search_facts",
@@ -443,6 +444,13 @@ func ApplyDefaults(cfg *Config) {
 		v := int(vectorindex.DefaultSearchWaitTimeout.Milliseconds())
 		cfg.VectorIndex.SearchWaitTimeoutMs = &v
 	}
+	// ParkCapacity is a pointer-int too: nil (unset) resolves to the default
+	// of 3, while an explicit 0 is preserved and disables parking (the
+	// historical reopen-every-switch behaviour).
+	if cfg.VectorIndex.ParkCapacity == nil {
+		v := vectorindex.DefaultParkCapacity
+		cfg.VectorIndex.ParkCapacity = &v
+	}
 
 	// Proxy defaults
 	if cfg.Proxy.BypassList == nil {
@@ -564,6 +572,21 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.Updates.CheckInterval == "" {
 		cfg.Updates.CheckInterval = "6h"
+	}
+
+	// Git auto-fetch defaults. AutoFetch is the master gate for every
+	// automatic fetch trigger (app startup, project switch, window focus,
+	// periodic ticker) and defaults to true (a pointer-bool so an explicit
+	// `auto_fetch: false` in YAML is respected rather than overwritten by the
+	// default). AutoFetchInterval defaults to 2m; the raw string is parsed by
+	// the consumer, and an explicit "0" is preserved here — it disables only
+	// the periodic ticker, leaving the event-driven triggers on.
+	if cfg.Git.AutoFetch == nil {
+		autoFetch := true
+		cfg.Git.AutoFetch = &autoFetch
+	}
+	if cfg.Git.AutoFetchInterval == "" {
+		cfg.Git.AutoFetchInterval = "2m"
 	}
 }
 

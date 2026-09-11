@@ -225,6 +225,19 @@ export interface GitHistoryCommit {
   refs: string[]
 }
 
+/**
+ * One page of the unified commit history. `GetGitHistory` is paginated
+ * (git log -n <limit> --skip <skip>): the hook accumulates pages and
+ * requests the next one with `skip = next_skip` while `has_more` is true.
+ */
+export interface GitHistoryPage {
+  commits: GitHistoryCommit[]
+  /** Offset to pass as `skip` when requesting the following page. */
+  next_skip: number
+  /** True when the backend filled the page (more commits may exist). */
+  has_more: boolean
+}
+
 /** Structured per-hunk diff info with staging status (for the hunk panel). */
 export interface HunkDiffInfo {
   old_start: number
@@ -499,6 +512,20 @@ export interface SecuritySettingsResponse {
 // (frontend/wailsjs/go/models.ts). Used by the "Small LLM" settings tab for
 // both reading (GetSmallLLMConfig) and writing (UpdateSmallLLMConfig).
 
+/** One pin-able built-in tool with its registry description (tooltip text). */
+export interface SmallLLMBuiltinTool {
+  name: string
+  description: string
+}
+
+/** A workflow cluster of built-in tools pinned together as one atomic entry. */
+export interface SmallLLMToolGroup {
+  id: string
+  title: string
+  description: string
+  tools: string[]
+}
+
 export interface SmallLLMEssentialTools {
   enabled: boolean
   always_present: string[]
@@ -509,6 +536,23 @@ export interface SmallLLMEssentialTools {
    * (unioned into always_present). Rendered as locked chips; ignored on write.
    */
   protected_tools: string[]
+  /**
+   * Read-only picker universe: every registered built-in tool that is neither
+   * MCP-sourced nor goal-mode-only (both are "pin-free" — MCP tools are always
+   * kept and goal-mode tools are stripped before any selection runs), sorted by
+   * name, each with its registry description. It still contains the
+   * always-protected tools (protected_tools), which the selection always keeps,
+   * so the picker must subtract the already-allowed set (always_present, into
+   * which the backend unions the protected set) before offering an entry.
+   * Ignored on write.
+   */
+  builtin_tools: SmallLLMBuiltinTool[]
+  /**
+   * Read-only: workflow clusters (plan, subagents) whose members are pinned
+   * together. The picker offers each as one atomic entry and renders the
+   * cluster description + member list in its hover tooltip; ignored on write.
+   */
+  tool_groups: SmallLLMToolGroup[]
 }
 
 export interface SmallLLMSystemPrompt {

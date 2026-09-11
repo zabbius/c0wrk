@@ -9,6 +9,7 @@
 | Layer boundaries, import rules           | [architecture/layers.md](architecture/layers.md)                         |
 | Request lifecycle end-to-end             | [architecture/data-flow.md](architecture/data-flow.md)                   |
 | Tool policies, confirmations, judge      | [architecture/security-model.md](architecture/security-model.md), [decisions/026-smart-approve-unified-funnel.md](decisions/026-smart-approve-unified-funnel.md), [decisions/028-session-pinned-judge.md](decisions/028-session-pinned-judge.md)         |
+| Shell path extraction, command substitution, symlink/containment false positives | [architecture/security-model.md](architecture/security-model.md), [decisions/038-validated-command-substitution.md](decisions/038-validated-command-substitution.md) |
 | Prompt injection defense, content wrapping | [architecture/security-model.md](architecture/security-model.md)         |
 | Orchestration overview (Conductor pipeline) | [domains/orchestration/README.md](domains/orchestration/README.md)    |
 | Conductor (top-level ReAct loop)         | [domains/orchestration/conductor.md](domains/orchestration/conductor.md) |
@@ -33,10 +34,13 @@
 | File tree, vector index, workspace       | [domains/workspace.md](domains/workspace.md)                             |
 | Themes (built-in + custom CSS import)    | [domains/theming.md](domains/theming.md)                                 |
 | Git subprocess hardening (untrusted repos, `.git/config` vectors, hooks/filters neutralization, `.git` write gate) + user trust/harden opt-out (snapshot-bound, recheck-with-diff, fail-closed) | [decisions/033-git-subprocess-hardening.md](decisions/033-git-subprocess-hardening.md), [decisions/034-git-trust-opt-out.md](decisions/034-git-trust-opt-out.md), [architecture/security-model.md](architecture/security-model.md) (Git Subprocess Hardening), [domains/workspace.md](domains/workspace.md) |
+| Git auto-fetch (background `git fetch`, switch/ticker/focus triggers) | [domains/git-auto-fetch.md](domains/git-auto-fetch.md)             |
 | Auxiliary work directories               | [architecture/security-model.md](architecture/security-model.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Work Directories section), [domains/frontend/stores.md](domains/frontend/stores.md) (`workDirsStore`) |
 | Frontend stores, state management        | [domains/frontend/stores.md](domains/frontend/stores.md)                 |
+| UI scale / zoom-safe sizing & popover placement | [domains/frontend/ui-scale.md](domains/frontend/ui-scale.md)       |
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
 | Message rendering, display items         | [domains/frontend/rendering.md](domains/frontend/rendering.md)           |
+| Sound notifications, audio reliability   | [domains/frontend/sound-notifications.md](domains/frontend/sound-notifications.md) |
 | Code review feature                      | [domains/review.md](domains/review.md)                                   |
 | RESEARCH mode (toggle, research skills seeding, hypothesis graph) | [domains/research.md](domains/research.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Research section), [contracts/event-catalog.md](contracts/event-catalog.md) (`research:*` events) |
 | Core-sp4rk interface boundary            | [contracts/core-sp4rk.md](contracts/core-sp4rk.md)                       |
@@ -47,7 +51,7 @@
 | macOS webview recovery / blank screen after sleep | [decisions/018-macos-webview-recovery.md](decisions/018-macos-webview-recovery.md) |
 | "Why was X designed this way?"           | [decisions/](decisions/)                                                 |
 | Multi-source AGENTS.md threat model     | [decisions/020-multi-source-agents-md-threat-model.md](decisions/020-multi-source-agents-md-threat-model.md) |
-| Subagent Profiles (`.agents/agents`, `#agent-name` mentions) | [decisions/021-subagents.md](decisions/021-subagents.md) |
+| Subagent Profiles (`.agents/agents`, `#agent-name` mentions, profile-required skills) | [decisions/021-subagents.md](decisions/021-subagents.md), [decisions/037-agent-profile-skills.md](decisions/037-agent-profile-skills.md) |
 | Tool-capability group policies (`security.groups`, group tool budgets) | [decisions/024-group-policies.md](decisions/024-group-policies.md), [decisions/026-smart-approve-unified-funnel.md](decisions/026-smart-approve-unified-funnel.md), [architecture/security-model.md](architecture/security-model.md) |
 | Dual-repo dev flow (unpublished sp4rk APIs, repo-root `go.work`, pin-advance release step) | [decisions/031-gowork-repo-root.md](decisions/031-gowork-repo-root.md) |
 
@@ -108,6 +112,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 
 - [llm-providers.md](domains/llm-providers.md) - Thin c0wrk wiring note (provider config → core/builder → sp4rk Router)
 - [crash-logging.md](domains/crash-logging.md) - Crash & exit diagnostics: fd-level stderr capture (panic/signal dumps), liveness marker, unclean-shutdown detection at next start, visible shutdown records
+- [git-auto-fetch.md](domains/git-auto-fetch.md) - Automatic background git fetch: three triggers (project switch incl. app startup, periodic ticker, window focus) through one gated quiet-failure funnel; config `git.auto_fetch` / `git.auto_fetch_interval`
 - [session-lifecycle.md](domains/session-lifecycle.md) - Session and task lifecycle
 - [goal-mode.md](domains/goal-mode.md) - Goal mode: multi-turn agent-driven loop over a user-approved success condition (derivation → approval → self-eval loop, budgets, anti-spin, pause/resume)
 - [small-llm.md](domains/small-llm.md) - Small-LLM profile: master-toggle + five variants (essential-tools narrowing, system-prompt Lite swap, sampling override, loop hardening, context management) for tuning c0wrk to small/local models
@@ -121,9 +126,11 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 ### domains/frontend/
 
 - [README.md](domains/frontend/README.md) - Frontend architecture overview
+- [ui-scale.md](domains/frontend/ui-scale.md) - UI scale feature and the zoom-safety invariant: coordinate spaces (visual vs layout px), percentage/`--ui-vh` sizing, pointer-anchored panel placement, floating-ui compensation, guard tests
 - [stores.md](domains/frontend/stores.md) - Zustand store catalog
 - [events.md](domains/frontend/events.md) - Event subscription and handling
 - [rendering.md](domains/frontend/rendering.md) - Message grouping and display pipeline
+- [sound-notifications.md](domains/frontend/sound-notifications.md) - Web Audio notification cues: event→tone pipeline, AudioContext lifecycle, recovery/replacement guarantees
 
 ### contracts/
 
@@ -171,3 +178,5 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [034-git-trust-opt-out.md](decisions/034-git-trust-opt-out.md) - Git config trust opt-out: trust = raw-git opt-out (snapshot-bound fingerprint + recheck-with-diff + fail-closed eviction), explicit harden list (mutually exclusive with trust), legacy-entry migration
 - [035-remove-small-llm-tool-budget.md](decisions/035-remove-small-llm-tool-budget.md) - Removes the Small-LLM Essential Tools `max_tools` slot budget, router tool matching, and the `tools_assigned` / over-budget diagnostics; every other ADR-022 decision stands → Partially supersedes ADR-022
 - [036-vector-index-embedding-optimization-policy.md](decisions/036-vector-index-embedding-optimization-policy.md) - Vector-index embedding optimization integration policy: confirmed optimizations on by default (accumulator, embedding cache, content filter, persistent fixed-shape sessions), gated SDK opt-ins (length buckets, batch pipeline) and NO-GO paths (persistence pipelining, parallel sessions) stay off; generic ONNX logic in sp4rk, persistence/cache in c0wrk; default flips require a new benchmark decision
+- [037-agent-profile-skills.md](decisions/037-agent-profile-skills.md) - Subagent Profile required skills: optional `skills:` frontmatter validated fail-closed at parse (sp4rk `agents`) and at resolution (c0wrk), activated for the subagent via the existing `ActiveSkills`/`## Active Skills` path (verbatim bodies) + a per-subagent `read_skill_resource` decorator, inherited first on redelegation; no trust-boundary change (skills grant no permissions) → Extends ADR-021
+- [038-validated-command-substitution.md](decisions/038-validated-command-substitution.md) - Validated command substitution: an assignment-form `VAR=$(...)` whose inner command is fully assessable (same recursive pipeline) no longer escalates, its name stays assessable-but-not-resolvable, and its inner literal paths are still surfaced; fail-closed union over all bindings, bare `$(...)` in argument position and unbound refs (e.g. `$HOME`) stay suspicious; PowerShell static `$NAME = <literal RHS>` parity (D1–D6); implemented in sp4rk, consumed via repo-root `go.work` (ADR-031); accepted residual risk — substitution stdout is not analyzed

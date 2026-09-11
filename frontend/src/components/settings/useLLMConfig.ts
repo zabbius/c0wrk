@@ -120,7 +120,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     const onDefaultModelChangeRef = useRef(onDefaultModelChange)
     onDefaultModelChangeRef.current = onDefaultModelChange
 
-    const { debouncedSave, cancelDebouncedSave, buildSafeUpdates } = useLLMConfigSave(onSettingsSaved)
+    const { saveFullConfig, debouncedSave, cancelDebouncedSave, buildSafeUpdates } = useLLMConfigSave(onSettingsSaved)
 
     const persistWhenDefaultIsValid = useCallback((model: string, configs: Record<string, ProviderConfig>) => {
         if (!defaultModelIsValid(model, configs)) {
@@ -132,6 +132,32 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         }
         debouncedSave(model, configs)
     }, [cancelDebouncedSave, debouncedSave])
+
+    /**
+     * Immediate variant of {@link persistWhenDefaultIsValid} for structural
+     * mutations (add/delete provider). The debounced path cancels its timer
+     * on unmount, and these mutations are followed by exactly that — closing
+     * the settings dialog or switching its tab unmounts LLMSettings — so a
+     * debounced save made within 300 ms of the click would be silently
+     * dropped. Saving synchronously closes that window; cancel any queued
+     * timer so its stale pre-mutation snapshot cannot land after this save,
+     * and hold the change locally (no RPC) until a valid default exists.
+     */
+    const persistImmediatelyWhenDefaultIsValid = useCallback((model: string, configs: Record<string, ProviderConfig>) => {
+        // Cancel any queued debounce timer on BOTH branches. The timer
+        // captures its (model, configs) arguments when it is queued, so a
+        // timer queued by an edit within the previous 300 ms holds the
+        // PRE-mutation snapshot and would otherwise fire AFTER this immediate
+        // save — silently reverting the structural change (a deleted provider
+        // resurrected / a just-added provider erased) on the backend while the
+        // UI still shows the new state. The immediate save carries the fresh
+        // configs, so dropping the timer loses nothing.
+        cancelDebouncedSave()
+        if (!defaultModelIsValid(model, configs)) {
+            return
+        }
+        saveFullConfig(model, configs)
+    }, [cancelDebouncedSave, saveFullConfig])
 
     const loadConfig = useCallback(async () => {
         try {
@@ -254,7 +280,10 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         // once, notably StrictMode in dev).
         const next = { ...configsRef.current, [name]: config }
         setProviderConfigs(next)
-        persistWhenDefaultIsValid(defaultModel, next)
+        // Structural change — persist immediately (not debounced): the
+        // debounce is cancelled on unmount, and the settings dialog closes /
+        // switches tabs right after this action.
+        persistImmediatelyWhenDefaultIsValid(defaultModel, next)
         // Track the compatible provider under the correct transport set so it
         // is saved to the right backend map (openai_compatible vs anthropic_compatible).
         if (config.type === 'anthropic') {
@@ -262,7 +291,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         } else {
             setOpenaiCompatibleProviderNames((prev) => new Set(prev).add(name))
         }
-    }, [defaultModel, persistWhenDefaultIsValid])
+    }, [defaultModel, persistImmediatelyWhenDefaultIsValid])
 
     const deleteProvider = useCallback((name: string) => {
         // Compute next state outside the setState updater so persistence and
@@ -281,7 +310,11 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             setDefaultModelState(effectiveDefault)
             onDefaultModelChangeRef.current?.(effectiveDefault)
         }
-        persistWhenDefaultIsValid(effectiveDefault, next)
+        // Structural change — persist immediately (not debounced): the
+        // debounce is cancelled on unmount, and the settings dialog closes /
+        // switches tabs right after this action. Deleting the LAST compatible
+        // provider relies on the explicit empty-map semantics in the request.
+        persistImmediatelyWhenDefaultIsValid(effectiveDefault, next)
         setOpenaiCompatibleProviderNames((prev) => {
             const next = new Set(prev)
             next.delete(name)
@@ -292,7 +325,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
             next.delete(name)
             return next
         })
-    }, [defaultModel, persistWhenDefaultIsValid])
+    }, [defaultModel, persistImmediatelyWhenDefaultIsValid])
 
     return {
         defaultModel,

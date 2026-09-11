@@ -167,7 +167,7 @@ function BookmarkRow({
           collisionPadding={32}
           avoidCollisions={true}
           updatePositionStrategy="always"
-          className="max-w-md w-auto max-h-[min(70vh,calc(var(--radix-tooltip-content-available-height)-32px))] overflow-y-auto custom-scrollbar p-3"
+          className="max-w-md w-auto max-h-[min(calc(var(--ui-vh)*0.7),calc(var(--radix-tooltip-content-available-height)-32px))] overflow-y-auto custom-scrollbar p-3"
         >
           {item
             ? <ChatMessageRenderer items={[item]} bookmarkable={false} />

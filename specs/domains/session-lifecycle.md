@@ -689,7 +689,7 @@ Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/sess
 
 - `projects` — project roster (in `backend/project/persistence.go`)
 - `project_ui_state` — project_id, saved_session_id, open_tabs (JSON), active_file, updated_at; stores per-project switch UI restoration state
-- `app_state` — key, value; app-level key-value state (in `backend/project/persistence.go`). Currently holds `last_active_project_id` (destination of the most recent `SwitchProject`, including `__no_project__`) for restart restore
+- `app_state` — key, value; app-level key-value state (in `backend/project/persistence.go`). Currently holds `last_active_project_id` (destination of the most recent `SwitchProject`, including `__no_project__`) for restart restore, and the manual-compaction EWMA forecast under `compaction_forecast` / `compaction_forecast:<model>`
 - `sessions` — id, project_id, name, created_at, last_active_at (stored column, updated on explicit selection via `UpdateSessionActivity`), archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent. List queries expose the computed effective activity (§ Session Activity Semantics) as `SessionInfo.last_active_at` — the stored column is only a fallback there
 - `session_messages` — id, session_id, role, content, reasoning_content, tool_calls, metadata (JSON), created_at
 - `tasks` — id, session_id, original_request, routing_decision (JSON), plan (JSON), reflections (JSON), final_output, attempt_count, status, created_at, completed_at

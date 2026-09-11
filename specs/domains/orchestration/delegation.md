@@ -54,7 +54,7 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
 | `tasks[].mode` | no | `"blocking"` (default): the tool result contains the subagent output. `"async"`: the tool result returns immediately with `delegation_id`; the Conductor reads results later via `read_step_output(id)`. |
 | `tasks[].max_steps` | no | Per-subagent ReAct iteration cap. Empty = derived from routing complexity (`complexity × 30`, same formula as the Conductor via `stepsPerComplexity`). A Subagent Profile's `max_steps` (when > 0) overrides this field and the default. |
 | `tasks[].allow_redelegate` | no | `true` grants the subagent the `delegate` and `cancel_delegation` tools (depth-capped by `OrchestratorConfig.MaxRedelegationDepth`, default 2). A Subagent Profile with `allow-redelegate: true` overrides this field to `true`. Default `false` (flat). |
-| `tasks[].agent` | no | Name of a Subagent Profile (`<workspace>/.agents/agents/<name>/AGENT.md`). When set, the launcher resolves the profile and applies it: the profile body replaces the orchestrator core directive (the shared project-context prefix is preserved via `buildSpecializedSystemPrompt`), and the profile's tool preference / `max_steps` / `model` / `allow-redelegate` override the task fields. Unknown name fails fast (delegate validation rejects it before any subagent launches). Empty = no profile (the legacy behavior). |
+| `tasks[].agent` | no | Name of a Subagent Profile (`<workspace>/.agents/agents/<name>/AGENT.md`). When set, the launcher resolves the profile and applies it: the profile body replaces the orchestrator core directive (the shared project-context prefix is preserved via `buildSpecializedSystemPrompt`), the profile's tool preference / `max_steps` / `model` / `allow-redelegate` override the task fields, and the profile's `skills:` frontmatter (when present) is activated for the subagent (see [Profile Required Skills](#profile-required-skills), [ADR-037](../../decisions/037-agent-profile-skills.md)). Unknown name fails fast (delegate validation rejects it before any subagent launches). Empty = no profile (the legacy behavior). |
 
 #### Execution Flow
 
@@ -83,6 +83,10 @@ delegate.Execute(ctx, input)
 │     ├─ System prompt = buildSystemPrompt; when an agent profile is set,
 │     │   buildSpecializedSystemPrompt applies it (profile body replaces the
 │     │   core directive, shared project-context prefix preserved)
+│     ├─ Skills = when the profile declares `skills:`, resolve each name
+│     │   against the skill catalog (fail-closed) and merge with inherited
+│     │   active skills → `## Active Skills` in the prompt + a per-subagent
+│     │   ToolExecutor decorator so read_skill_resource still resolves them
 │     ├─ ContextManager via contextFactory (isolated per subagent)
 │     ├─ Cooperative-pause checkpoint (when the blackboard result for this ID
 │     │   has Error == agent.ErrPaused): seed its Steps into both the
@@ -114,6 +118,22 @@ delegate.Execute(ctx, input)
        ├─ All async: list of { delegation_id, status: "pending" | "running" }
        └─ Mixed: blocking outputs + async IDs
 ```
+
+### Profile Required Skills
+
+A Subagent Profile may declare an optional `skills:` frontmatter field — a comma-separated list of Agent Skill names (`<workspace>/.agents/skills/<name>/SKILL.md`, activated for the main Conductor with `/skill-name`) that the subagent launched under the profile **must** run with. See [ADR-037](../../decisions/037-agent-profile-skills.md) (extends the profile format defined by [ADR-021](../../decisions/021-subagents.md)).
+
+Application at `buildSubAgentTask`:
+
+- **Strict parse.** `agents.Agent.RequiredSkills()` splits/trims and validates the list fail-closed — empty item, duplicate, or invalid name is a parse error, and the malformed profile is skipped from the catalog with a Warn. Absent/empty (whitespace tolerated) returns no requirements.
+- **Fail-closed resolution.** Each required name is resolved against the skill catalog via the launcher's `skillResolver` (built from the skill manager). A required name with no matching skill — or a non-empty requirement list when no skill manager is configured — fails the delegation with an error naming both the skill and the profile. The subagent never launches without the skills its profile mandates.
+- **Merge with inherited skills.** Resolved skills are merged with any skills already active in the context (inherited from the parent), inherited-first and deduplicated by name (first occurrence wins); the result is attached as the subagent's active skills.
+- **Verbatim prompt render.** The merged set renders through the same `formatActiveSkills` path as the main Conductor: an `## Active Skills` section with a `### Skill: <name>` block per skill and the **full skill body emitted verbatim** (bodies are never truncated).
+- **Tool addressability.** Because the context handed to the subagent runner cannot be mutated by `buildSubAgentTask` (a parallel wave shares one context across subagents), the profile skills also travel on a per-subagent `ToolExecutor` decorator that injects them into every tool call's context — so `read_skill_resource` resolves the profile's skills inside the subagent even when a wave carries several profiles with different skill sets.
+- **Inheritance on redelegation.** A redelegating subagent's `delegate` calls run through its decorator, so the parent's active skills are present in the context the child reads. The child inherits them, merged ahead of its own profile requirements.
+- **No trust-boundary change.** Skills contribute guidance text and a resolvable resource path only; they grant no permissions and never widen the tool budget or the policy applied to a tool call (see [ADR-024](../../decisions/024-group-policies.md)).
+
+A profile without `skills:` (and projects without skills) behave exactly as before — no decorator is installed and the exit path is untouched.
 
 ### Cooperative Subagent Pause and Resume
 

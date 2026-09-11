@@ -277,7 +277,7 @@ export function WorkDirsModal() {
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[640px] max-h-[80vh] flex flex-col overflow-hidden">
+      <DialogContent className="sm:max-w-[640px] max-h-[calc(var(--ui-vh)*0.8)] flex flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>Working Directories</DialogTitle>
         </DialogHeader>

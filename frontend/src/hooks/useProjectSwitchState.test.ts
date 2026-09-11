@@ -6,9 +6,11 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
-import type { ProjectSwitchState, SessionInfo } from '@/types/models'
+import * as projectSnapshotCache from '@/lib/projectSnapshotCache'
+import type { FileEntry, ProjectSwitchState, SessionInfo } from '@/types/models'
 
 const mocks = vi.hoisted(() => ({
   saveProjectSwitchStateMock: vi.fn<(...args: unknown[]) => Promise<void>>(),
@@ -59,9 +61,25 @@ function makeSession(overrides: Partial<SessionInfo> & { id: string; project_id:
   }
 }
 
+function makeEntry(path: string, isDir = false): FileEntry {
+  return {
+    name: path.split('/').pop() ?? path,
+    path,
+    is_dir: isDir,
+    hidden: false,
+    gitignored: false,
+    icon: '',
+    icon_color: '',
+  }
+}
+
 function resetStores() {
   useProjectStore.setState({ projects: null, activeProjectId: null })
   useSessionStore.setState({ sessions: null, activeSessionId: null })
+  useFileTreeStore.getState().clearTree()
+  // The snapshot cache is a module-level singleton: clear it between tests so
+  // a snapshot captured by one test cannot be hydrated by the next.
+  projectSnapshotCache.clear()
   useFileViewerStore.setState({
     files: {},
     openTabs: [],
@@ -484,6 +502,213 @@ describe('useProjectSwitchState', () => {
       await vi.advanceTimersByTimeAsync(0)
 
       expect(useSessionStore.getState().sessions).toBe(sessionsAfterSecond)
+      await expect(first).rejects.toThrow(/timed out/)
+      await second
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reconcile path: a click on the already-active project sends one switch RPC and skips the session teardown', async () => {
+    // Invariant: the active-project click is NOT short-circuited locally — the
+    // idempotent backend RPC still runs so it can re-emit project:switched and
+    // repair a frontend↔backend desync without an app restart. The heavy
+    // teardown must NOT run, though: no resetForProjectSwitch / listSessions
+    // reload (that would flash the UI — sessions briefly null).
+    useProjectStore.setState({ activeProjectId: 'p1' })
+    const existingSessions = [makeSession({ id: 's1', project_id: 'p1' })]
+    useSessionStore.setState({ sessions: existingSessions, activeSessionId: 's1' })
+
+    const resetSpy = vi.spyOn(useSessionStore.getState(), 'resetForProjectSwitch')
+    const setSessionsSpy = vi.spyOn(useSessionStore.getState(), 'setSessions')
+    try {
+      const { useProjectSwitchState } = await import('@/hooks/useProjectSwitchState')
+      const runSwitch = useProjectSwitchState()
+      await runSwitch('p1')
+
+      // Exactly one switch RPC reaches the backend...
+      expect(mocks.switchProjectMock).toHaveBeenCalledTimes(1)
+      expect(mocks.switchProjectMock).toHaveBeenCalledWith('p1')
+      // ...and none of the real-switch teardown runs.
+      expect(mocks.saveProjectSwitchStateMock).not.toHaveBeenCalled()
+      expect(resetSpy).not.toHaveBeenCalled()
+      expect(setSessionsSpy).not.toHaveBeenCalled()
+      expect(mocks.listSessionsMock).not.toHaveBeenCalled()
+      expect(mocks.getProjectSwitchStateMock).not.toHaveBeenCalled()
+      expect(mocks.createSessionMock).not.toHaveBeenCalled()
+      // The stores are left exactly as they were (no UI flash).
+      expect(useProjectStore.getState().activeProjectId).toBe('p1')
+      expect(useSessionStore.getState().sessions).toBe(existingSessions)
+      expect(useSessionStore.getState().activeSessionId).toBe('s1')
+    } finally {
+      resetSpy.mockRestore()
+      setSessionsSpy.mockRestore()
+    }
+  })
+
+  it('reconcile path: a body superseded while its switch RPC is in flight does not write to the stores', async () => {
+    vi.useFakeTimers()
+    try {
+      useProjectStore.setState({ activeProjectId: 'p1' })
+
+      // The reconcile switch's idempotent RPC stalls.
+      let releaseStalled: (() => void) | undefined
+      const stalled = new Promise<void>((resolve) => {
+        releaseStalled = () => resolve()
+      })
+      let firstCall = true
+      mocks.switchProjectMock.mockImplementation(() => {
+        if (firstCall) {
+          firstCall = false
+          return stalled
+        }
+        return Promise.resolve()
+      })
+
+      const { useProjectSwitchState } = await import('@/hooks/useProjectSwitchState')
+      const runSwitch = useProjectSwitchState()
+
+      const first = runSwitch('p1') // reconcile path (p1 already active)
+      void first.catch(() => { /* watchdog rejection asserted below */ })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mocks.switchProjectMock).toHaveBeenCalledWith('p1')
+      // The reconcile path never tears down sessions.
+      expect(useSessionStore.getState().sessions).toBeNull()
+
+      // A newer REAL switch supersedes the stalled reconcile body.
+      const second = runSwitch('p2')
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(useProjectStore.getState().activeProjectId).toBe('p2')
+      const sessionsAfterSecond = useSessionStore.getState().sessions
+
+      // The stalled reconcile RPC finally settles — its stale body must not
+      // write anything (the supersede guard returns before any store write).
+      releaseStalled?.()
+      await stalled
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(useProjectStore.getState().activeProjectId).toBe('p2')
+      expect(useSessionStore.getState().sessions).toBe(sessionsAfterSecond)
+      await expect(first).rejects.toThrow(/timed out/)
+      await second
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('A→B→A: a revisited project rehydrates from the snapshot before listSessions resolves', async () => {
+    useProjectStore.setState({ projects: null, activeProjectId: 'A' })
+    const rootEntriesA = [makeEntry('/A/a.ts'), makeEntry('/A/src', true)]
+    useFileTreeStore.setState({
+      rootPath: '/A',
+      tree: { '/A': rootEntriesA, '/A/src': [makeEntry('/A/src/b.ts')] },
+      expandedDirs: { '/A/src': true },
+      gitStatus: { '/A/a.ts': { status: 'M', staged: false, index_status: '', worktree_status: 'M' } },
+    })
+    const sessionsA = [makeSession({ id: 'a1', project_id: 'A', last_active_at: '2026-05-01T00:00:00Z' })]
+    useSessionStore.setState({ sessions: sessionsA, activeSessionId: 'a1' })
+
+    const { useProjectSwitchState } = await import('@/hooks/useProjectSwitchState')
+    const runSwitch = useProjectSwitchState()
+
+    // First hop A→B: A's UI state is captured; B has no snapshot to hydrate.
+    mocks.getProjectSwitchStateMock.mockResolvedValue(null)
+    mocks.listSessionsMock.mockResolvedValue([])
+    mocks.createSessionMock.mockResolvedValue(makeSession({ id: 'b-new', project_id: 'B' }))
+    await runSwitch('B')
+    expect(projectSnapshotCache.has('A')).toBe(true)
+
+    // Second hop B→A: gate the listSessions RPC so we can observe the
+    // synchronous hydration BEFORE the authoritative list lands.
+    let releaseList: (() => void) | undefined
+    const listGate = new Promise<SessionInfo[]>((resolve) => {
+      releaseList = () =>
+        resolve([makeSession({ id: 'a-fresh', project_id: 'A', last_active_at: '2026-06-01T00:00:00Z' })])
+    })
+    mocks.getProjectSwitchStateMock.mockResolvedValue(null)
+    mocks.listSessionsMock.mockReturnValueOnce(listGate)
+
+    const pending = runSwitch('A')
+    // Flush microtasks until performSwitch suspends on the gated listSessions.
+    for (let i = 0; i < 30; i++) await Promise.resolve()
+
+    // Snapshot A is painted synchronously — no listSessions RPC awaited yet.
+    const treeState = useFileTreeStore.getState()
+    expect(treeState.rootPath).toBe('/A')
+    expect(treeState.tree['/A']).toEqual(rootEntriesA)
+    expect(treeState.tree['/A/src']).toEqual([makeEntry('/A/src/b.ts')])
+    expect(treeState.expandedDirs).toEqual({ '/A/src': true })
+    expect(treeState.gitStatus['/A/a.ts']).toEqual({ status: 'M', staged: false, index_status: '', worktree_status: 'M' })
+    expect(useProjectStore.getState().activeProjectId).toBe('A')
+    expect(useSessionStore.getState().sessions?.map((s) => s.id)).toEqual(['a1'])
+    expect(useSessionStore.getState().activeSessionId).toBe('a1')
+
+    // The authoritative listSessions response then overwrites the hydrated list.
+    releaseList?.()
+    await pending
+    expect(useSessionStore.getState().sessions?.map((s) => s.id)).toEqual(['a-fresh'])
+    expect(useSessionStore.getState().activeSessionId).toBe('a-fresh')
+  })
+
+  it('a superseded switch does not rehydrate its snapshot over the newer project', async () => {
+    vi.useFakeTimers()
+    try {
+      useProjectStore.setState({ projects: null, activeProjectId: 'p0' })
+
+      // Preload a snapshot for project A directly into the cache.
+      useFileTreeStore.setState({
+        rootPath: '/A',
+        tree: { '/A': [makeEntry('/A/a.ts')] },
+        expandedDirs: {},
+        gitStatus: {},
+      })
+      useSessionStore.setState({ sessions: [makeSession({ id: 'a1', project_id: 'A' })], activeSessionId: 'a1' })
+      projectSnapshotCache.capture('A')
+      expect(projectSnapshotCache.has('A')).toBe(true)
+      // Neutralise the stores so a (buggy) hydrate would be observable.
+      useFileTreeStore.getState().clearTree()
+      useSessionStore.setState({ sessions: null, activeSessionId: null })
+
+      // The switch to A stalls inside its switchProject RPC.
+      let releaseStalled: (() => void) | undefined
+      const stalled = new Promise<void>((resolve) => {
+        releaseStalled = () => resolve()
+      })
+      let firstCall = true
+      mocks.switchProjectMock.mockImplementation(() => {
+        if (firstCall) {
+          firstCall = false
+          return stalled
+        }
+        return Promise.resolve()
+      })
+
+      const { useProjectSwitchState } = await import('@/hooks/useProjectSwitchState')
+      const runSwitch = useProjectSwitchState()
+
+      const first = runSwitch('A')
+      void first.catch(() => { /* watchdog rejection asserted below */ })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mocks.switchProjectMock).toHaveBeenCalledWith('A')
+
+      // A newer switch supersedes it and completes.
+      const second = runSwitch('B')
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(useProjectStore.getState().activeProjectId).toBe('B')
+      const sessionsAfterSecond = useSessionStore.getState().sessions
+
+      // The stalled RPC finally settles — the stale body must NOT hydrate A's
+      // snapshot over the newer project.
+      releaseStalled?.()
+      await stalled
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(useProjectStore.getState().activeProjectId).toBe('B')
+      expect(useFileTreeStore.getState().rootPath).not.toBe('/A')
+      expect(useSessionStore.getState().sessions).toBe(sessionsAfterSecond)
+      expect(useSessionStore.getState().activeSessionId).not.toBe('a1')
       await expect(first).rejects.toThrow(/timed out/)
       await second
     } finally {

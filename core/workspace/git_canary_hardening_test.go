@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/v0lka/c0wrk/internal/gittest"
@@ -28,22 +27,34 @@ import (
 
 // resetGitVersionCache clears the process-wide git version resolution so an
 // injected probe result takes effect (and so a restored probe re-resolves).
+// It mirrors the production retry semantics: only a completed resolution is
+// cached, so clearing resolvedGitVersion makes the next call re-probe.
 func resetGitVersionCache() {
-	gitVersionOnce = sync.Once{}
+	gitVersionMu.Lock()
+	defer gitVersionMu.Unlock()
+	resolvedGitVersion = false
 	resolvedGitVersionErr = nil
+}
+
+// swapGitVersionProbe replaces the `git --version` probe seam with probe for
+// the duration of the test, resetting the resolution cache around the swap
+// (and again on cleanup, so later tests re-resolve against the real seam).
+func swapGitVersionProbe(t *testing.T, probe func(context.Context) (string, error)) {
+	t.Helper()
+	orig := gitVersionOutputFn
+	gitVersionOutputFn = probe
+	resetGitVersionCache()
+	t.Cleanup(func() {
+		gitVersionOutputFn = orig
+		resetGitVersionCache()
+	})
 }
 
 // injectGitVersion pins gitVersionOutputFn's result for the duration of
 // the test and resets the version cache around the swap.
 func injectGitVersion(t *testing.T, out string, outErr error) {
 	t.Helper()
-	orig := gitVersionOutputFn
-	gitVersionOutputFn = func(context.Context) (string, error) { return out, outErr }
-	resetGitVersionCache()
-	t.Cleanup(func() {
-		gitVersionOutputFn = orig
-		resetGitVersionCache()
-	})
+	swapGitVersionProbe(t, func(context.Context) (string, error) { return out, outErr })
 }
 
 // skipUnlessAttrTreeCapableGit skips a test whose fixture leans on the

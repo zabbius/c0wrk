@@ -140,7 +140,7 @@ func TestEmbeddingCache_PathOutsideVectorStorageIsDisabled(t *testing.T) {
 		t.Fatalf("cache containment must fail open: %v", err)
 	}
 	t.Cleanup(func() { _ = svc.Close() })
-	if svc.embeddingCache != nil {
+	if svc.current.embeddingCache != nil {
 		t.Fatal("outside cache path was accepted")
 	}
 }
@@ -207,7 +207,7 @@ func TestEmbeddingCache_CorruptionFailsOpenAndRebuilds(t *testing.T) {
 	if _, _, err := first.resolveEmbeddingChunk(context.Background(), []string{text}); err != nil {
 		t.Fatal(err)
 	}
-	entryPath := first.embeddingCache.path(first.embeddingCache.key(text))
+	entryPath := first.current.embeddingCache.path(first.current.embeddingCache.key(text))
 	if err := os.WriteFile(entryPath, []byte("corrupt"), 0o600); err != nil {
 		t.Fatal(err)
 	}
