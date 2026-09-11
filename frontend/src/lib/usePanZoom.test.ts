@@ -14,6 +14,7 @@ import {
   usePanZoom,
   zoomToPoint,
 } from './usePanZoom'
+import { useUiScaleStore } from '@/stores/uiScaleStore'
 
 describe('clampScale', () => {
   it('passes in-range values through', () => {
@@ -256,6 +257,7 @@ function PanProbe() {
     ref: canvasRef,
     'data-testid': 'pan-canvas',
     'data-x': String(view.x),
+    'data-y': String(view.y),
     'data-scale': String(view.scale),
     'data-drag': didDragRef.current ? '1' : '0',
     onPointerDown,
@@ -550,5 +552,119 @@ describe('usePanZoom rAF-coalesced pan commits', () => {
     // waiting for an animation frame.
     expect(canvas.getAttribute('data-x')).toBe('10')
     expect(scheduledFrames()).toBe(0)
+  })
+})
+
+// ── UI-zoom compensation (visual px → layout px) ────────────────────────
+//
+// The app-wide UI scale (CSS `zoom` on <html>) multiplies what
+// getBoundingClientRect and pointer clientX/Y report (visual px) while the
+// view transform stays layout px. The hook must divide every visual input
+// by the zoom factor: wheel anchors, pan deltas and the fit measurement.
+
+describe('usePanZoom UI-zoom compensation', () => {
+  beforeEach(() => {
+    useUiScaleStore.setState({ scale: 100 })
+  })
+
+  it('compensates the wheel anchor: a zoom keeps the content point under the cursor fixed', () => {
+    const { canvas } = renderProbe()
+    // jsdom rects are 0x0, so the raw anchor is the bare clientX/Y.
+    // Simulate a 150% UI zoom: the browser would serve the same 60/40
+    // clientX/Y as visual px; without compensation the hook would feed
+    // zoom × anchor into the layout-px transform.
+    useUiScaleStore.setState({ scale: 150 })
+    // The canvas visual rect left/top are 0 in jsdom regardless of zoom, so
+    // the anchor is clientX/Y as-is; the hook must divide it by 1.5.
+    act(() => {
+      canvas.dispatchEvent(
+        new WheelEvent('wheel', { cancelable: true, deltaX: 0, deltaY: -100, clientX: 60, clientY: 40 }),
+      )
+    })
+    expect(canvas.getAttribute('data-scale')).toBe('1.25')
+    // Anchor (60/1.5, 40/1.5) = (40, 26.67): x = 40 − 1.25·40 = −10;
+    // y = 26.67 − 1.25·26.67 = −6.67.
+    expect(Number(canvas.getAttribute('data-x'))).toBeCloseTo(-10, 5)
+    expect(Number(canvas.getAttribute('data-y'))).toBeCloseTo(-40 / 1.5 * 0.25, 5)
+  })
+
+  it('wheel compensation is identity at 100% zoom', () => {
+    const { canvas } = renderProbe()
+    act(() => {
+      canvas.dispatchEvent(
+        new WheelEvent('wheel', { cancelable: true, deltaX: 0, deltaY: -100, clientX: 60, clientY: 40 }),
+      )
+    })
+    expect(canvas.getAttribute('data-scale')).toBe('1.25')
+    expect(Number(canvas.getAttribute('data-x'))).toBeCloseTo(-15, 5)
+    expect(Number(canvas.getAttribute('data-y'))).toBeCloseTo(-10, 5)
+  })
+
+  it('compensates pan deltas: a visual drag of 150px at 150% pans exactly 100 layout px', () => {
+    const { canvas } = renderProbe()
+    useUiScaleStore.setState({ scale: 150 })
+    act(() => {
+      firePointer(canvas, 'pointerdown', 100, 100)
+      firePointer(canvas, 'pointermove', 250, 100) // 150 visual px
+      firePointer(canvas, 'pointerup', 250, 100)
+    })
+    // 150 visual px / 1.5 = 100 layout px; the content on screen moves
+    // 100 × 1.5 = 150 visual px — glued to the cursor.
+    expect(canvas.getAttribute('data-x')).toBe('100')
+  })
+
+  it('compensates pan deltas at 70% zoom', () => {
+    const { canvas } = renderProbe()
+    useUiScaleStore.setState({ scale: 70 })
+    act(() => {
+      firePointer(canvas, 'pointerdown', 100, 100)
+      firePointer(canvas, 'pointermove', 170, 100) // 70 visual px
+      firePointer(canvas, 'pointerup', 170, 100)
+    })
+    // 70 visual px / 0.7 = 100 layout px.
+    expect(canvas.getAttribute('data-x')).toBe('100')
+  })
+
+  it('pan-delta compensation is identity at 100% zoom', () => {
+    const { canvas } = renderProbe()
+    act(() => {
+      firePointer(canvas, 'pointerdown', 100, 100)
+      firePointer(canvas, 'pointermove', 200, 100)
+      firePointer(canvas, 'pointerup', 200, 100)
+    })
+    expect(canvas.getAttribute('data-x')).toBe('100')
+  })
+
+  it('reads the zoom factor live, so a mid-gesture scale change applies from that point', () => {
+    const { canvas } = renderProbe()
+    act(() => {
+      firePointer(canvas, 'pointerdown', 100, 100)
+      firePointer(canvas, 'pointermove', 150, 100) // 50 px @100% → 50 layout px
+    })
+    act(() => flushRaf())
+    expect(canvas.getAttribute('data-x')).toBe('50')
+    useUiScaleStore.setState({ scale: 150 })
+    act(() => {
+      firePointer(canvas, 'pointermove', 225, 100) // pointer now 125 visual px from origin
+      firePointer(canvas, 'pointerup', 225, 100)
+    })
+    // dx is recomputed from the drag origin with the LIVE zoom: the whole
+    // displacement (125 visual px) is compensated at 150% → 83.33 layout px,
+    // which renders as 125 visual px — the content stays glued to the cursor.
+    expect(Number(canvas.getAttribute('data-x'))).toBeCloseTo(125 / 1.5, 5)
+  })
+
+  it('keeps DRAG_CLICK_THRESHOLD_PX in visual px (threshold semantics unaffected by zoom)', () => {
+    const { canvas, captureSpy } = renderProbe()
+    useUiScaleStore.setState({ scale: 150 })
+    act(() => {
+      firePointer(canvas, 'pointerdown', 100, 100)
+      // 5 visual px > 4px threshold → pan engages even at 150% (3.33 layout
+      // px would fail a layout-px threshold read).
+      firePointer(canvas, 'pointermove', 105, 100)
+    })
+    expect(captureSpy).toHaveBeenCalledTimes(1)
+    act(() => flushRaf())
+    expect(canvas.getAttribute('data-drag')).toBe('1')
   })
 })

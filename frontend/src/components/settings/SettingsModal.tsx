@@ -9,6 +9,7 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { ConfigWarningBanner } from './ConfigWarningBanner'
 import { LogLevelSelector } from './LogLevelSelector'
 import { ThemeSelector } from './ThemeSelector'
+import { UIScaleSelector } from './UIScaleSelector'
 import { ProxySettings } from './ProxySettings'
 import { SoundSettings } from './SoundSettings'
 import { SessionStatsSettings } from './SessionStatsSettings'
@@ -186,6 +187,7 @@ export function SettingsModal() {
           <TabsContent value="general" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
             <div className="space-y-6">
               <ThemeSelector />
+              <UIScaleSelector />
               <LogLevelSelector />
               <div className="border-t border-border pt-4">
                 <SoundSettings />

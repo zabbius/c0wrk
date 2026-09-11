@@ -68,6 +68,10 @@ export function useVerticalSplit({
       if (!dragging.current) return
       const rect = container.getBoundingClientRect()
       if (rect.height <= 0) return
+      // Zoom-invariant by construction: both clientY and rect.top/bottom come
+      // from the same getBoundingClientRect()/mouse-event visual-pixel space,
+      // so CSS `zoom` on <html> cancels out of the ratio. No scale
+      // compensation is needed here (unlike the pixel-based useResize).
       const next = (ev.clientY - rect.top) / rect.height
       onChangeRef.current(clamp(next, min, max))
     }
