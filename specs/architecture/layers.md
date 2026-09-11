@@ -95,6 +95,9 @@ TypeScript/React application. Communicates with Go exclusively through:
 
 1. **RPC**: `window.go.desktop.App.*` — async promise-based calls
 2. **Events**: `window.runtime.EventsOn/EventsEmit` — real-time streaming
+3. **Window control**: `window.runtime.WindowSetTitle` — native window state driven from UI state (the title tracks the active project/session)
+
+All three go through the single gateway `frontend/src/api/runtime.ts`; components and hooks never touch `window.runtime` or `window.go` directly.
 
 No direct Go imports. Auto-generated bindings at `frontend/wailsjs/go/desktop/App.{js,d.ts}`.
 

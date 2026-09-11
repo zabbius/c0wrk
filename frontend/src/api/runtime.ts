@@ -26,6 +26,7 @@ declare global {
       EventsEmit(eventName: string, ...data: unknown[]): void
       ClipboardSetText(text: string): Promise<boolean>
       BrowserOpenURL(url: string): void
+      WindowSetTitle(title: string): void
     }
   }
 }
@@ -41,6 +42,7 @@ export function getRuntime(): {
   EventsEmit(eventName: string, ...data: unknown[]): void
   ClipboardSetText(text: string): Promise<boolean>
   BrowserOpenURL(url: string): void
+  WindowSetTitle(title: string): void
 } {
   if (typeof window === 'undefined' || !window.runtime) {
     throw new Error('Wails runtime is not available')
@@ -96,6 +98,18 @@ export function emit(eventName: string, data?: unknown): void {
 export function clipboardSetText(text: string): Promise<boolean> {
   const rt = getRuntime()
   return rt.ClipboardSetText(text)
+}
+
+/** Set the native window title.
+ *
+ *  Unlike the other wrappers here this one NO-OPS when the runtime is absent
+ *  instead of throwing, mirroring `subscribe`: the title is a purely cosmetic
+ *  side effect driven from a `useEffect`, and every hook test runs under
+ *  jsdom without `window.runtime`. A throw would turn a decorative update
+ *  into a render-time failure. */
+export function setWindowTitle(title: string): void {
+  if (typeof window === 'undefined' || !window.runtime) return
+  getRuntime().WindowSetTitle(title)
 }
 
 /** Open a URL in the user's default system browser.
