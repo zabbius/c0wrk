@@ -117,5 +117,5 @@ require (
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
-replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk v0.0.0-20260910210425-1c3aa3e9df74
-replace github.com/v0lka/c0wrk => github.com/zabbius/c0wrk v0.7.4-0.20260910230055-cdf01febc675
+replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk staging
+replace github.com/v0lka/c0wrk => github.com/zabbius/c0wrk staging
