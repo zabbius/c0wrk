@@ -255,6 +255,16 @@ func (s *SQLiteSessionStore) createTables() error {
 		updated_at TIMESTAMP NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS task_delegations (
+		task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+		delegation_id TEXT NOT NULL,
+		parent_id TEXT DEFAULT '',
+		depth INTEGER DEFAULT 0,
+		spec TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		PRIMARY KEY (task_id, delegation_id)
+	);
+
 	CREATE TABLE IF NOT EXISTS terminal_commands (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -1132,6 +1142,18 @@ type TaskStepRecord struct {
 	CreatedAt  time.Time       `json:"created_at"`
 }
 
+// TaskDelegationRecord represents a persisted delegation spec — everything
+// needed to rebuild a subagent after a pause (task text, tools, agent profile,
+// mode, deps) plus the re-delegation topology (parent step ID and depth).
+type TaskDelegationRecord struct {
+	DelegationID string          `json:"delegation_id"`
+	TaskID       string          `json:"task_id"`
+	ParentID     string          `json:"parent_id"`
+	Depth        int             `json:"depth"`
+	Spec         json.RawMessage `json:"spec"` // JSON-marshaled tools.DelegationSpec
+	CreatedAt    time.Time       `json:"created_at"`
+}
+
 // ---------------------------------------------------------------------------
 // TaskStore interface
 // ---------------------------------------------------------------------------
@@ -1171,6 +1193,11 @@ type TaskStore interface {
 	// LoadGoalState loads the goal-loop state for a task.
 	// Returns nil, nil when no goal state has been persisted.
 	LoadGoalState(ctx context.Context, taskID string) (json.RawMessage, error)
+	// SaveDelegationSpec inserts or replaces a delegation spec for a task.
+	SaveDelegationSpec(ctx context.Context, taskID string, rec TaskDelegationRecord) error
+	// LoadDelegationSpecs loads all delegation specs for a task, ordered by
+	// creation time. Returns an empty slice when none have been persisted.
+	LoadDelegationSpecs(ctx context.Context, taskID string) ([]TaskDelegationRecord, error)
 	GetUnfinishedTask(ctx context.Context, sessionID string) (*TaskRecord, error)
 	GetLatestTaskID(ctx context.Context, sessionID string) (string, error)
 	ReactivateTask(ctx context.Context, taskID string) error
@@ -1603,4 +1630,49 @@ func (s *SQLiteSessionStore) LoadGoalState(ctx context.Context, taskID string) (
 		return nil, fmt.Errorf("failed to load goal state: %w", err)
 	}
 	return json.RawMessage(goalStateStr), nil
+}
+
+// SaveDelegationSpec inserts or replaces a delegation spec for a task.
+func (s *SQLiteSessionStore) SaveDelegationSpec(ctx context.Context, taskID string, rec TaskDelegationRecord) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO task_delegations (task_id, delegation_id, parent_id, depth, spec, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		taskID, rec.DelegationID, rec.ParentID, rec.Depth, string(rec.Spec), rec.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save delegation spec: %w", err)
+	}
+	return nil
+}
+
+// LoadDelegationSpecs loads all delegation specs for a task in creation
+// order. Returns an empty slice when none have been persisted.
+func (s *SQLiteSessionStore) LoadDelegationSpecs(ctx context.Context, taskID string) ([]TaskDelegationRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT delegation_id, task_id, parent_id, depth, spec, created_at
+		FROM task_delegations WHERE task_id = ? ORDER BY created_at, delegation_id`, taskID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load delegation specs: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			s.log().Warn("failed to close database rows", "error", err)
+		}
+	}()
+
+	var recs []TaskDelegationRecord
+	for rows.Next() {
+		var rec TaskDelegationRecord
+		var specStr string
+		if err := rows.Scan(&rec.DelegationID, &rec.TaskID, &rec.ParentID, &rec.Depth, &specStr, &rec.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan delegation spec: %w", err)
+		}
+		rec.Spec = json.RawMessage(specStr)
+		recs = append(recs, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate delegation specs: %w", err)
+	}
+	return recs, nil
 }

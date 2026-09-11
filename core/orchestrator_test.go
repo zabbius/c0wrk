@@ -193,6 +193,12 @@ func (m *mockTaskStore) SaveTrajectory(taskID string, steps []agent.Step) error 
 func (m *mockTaskStore) LoadTrajectory(taskID string) ([]agent.Step, error)       { return nil, nil }
 func (m *mockTaskStore) PersistGoalState(taskID string, gs *goal.GoalState) error { return nil }
 func (m *mockTaskStore) LoadGoalState(taskID string) (*goal.GoalState, error)     { return nil, nil }
+func (m *mockTaskStore) PersistDelegationSpec(taskID string, spec coretools.DelegationSpec) error {
+	return nil
+}
+func (m *mockTaskStore) LoadDelegationSpecs(taskID string) ([]coretools.DelegationSpec, error) {
+	return nil, nil
+}
 func (m *mockTaskStore) LoadTaskState(taskID string) (*TaskState, error) {
 	if m.loadErr != nil {
 		return nil, m.loadErr
@@ -472,6 +478,12 @@ func (m *mockTaskStoreWithReactivate) PersistGoalState(taskID string, gs *goal.G
 	return nil
 }
 func (m *mockTaskStoreWithReactivate) LoadGoalState(taskID string) (*goal.GoalState, error) {
+	return nil, nil
+}
+func (m *mockTaskStoreWithReactivate) PersistDelegationSpec(taskID string, spec coretools.DelegationSpec) error {
+	return nil
+}
+func (m *mockTaskStoreWithReactivate) LoadDelegationSpecs(taskID string) ([]coretools.DelegationSpec, error) {
 	return nil, nil
 }
 func (m *mockTaskStoreWithReactivate) LoadTaskState(taskID string) (*TaskState, error) {

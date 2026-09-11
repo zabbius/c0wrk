@@ -9,6 +9,7 @@ import {
   type SetStateAction,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
+import { getUiZoomFactor } from '@/stores/uiScaleStore'
 
 /** Default lower zoom limit (inclusive). */
 export const DEFAULT_MIN_SCALE = 0.2
@@ -101,10 +102,13 @@ export function isHorizontalWheelGesture(deltaX: number, deltaY: number): boolea
 function measureSvgNaturalSize(container: HTMLElement | null, activeScale: number): Size | null {
   const svgEl = container?.querySelector('svg')
   if (!svgEl) return null
+  // getBoundingClientRect() reports visual px (layout × UI zoom); the view
+  // transform we recover from it is layout px — divide the zoom out first.
+  const zoom = getUiZoomFactor()
   const rect = svgEl.getBoundingClientRect()
   const prevScale = activeScale || 1
-  let width = rect.width / prevScale
-  let height = rect.height / prevScale
+  let width = rect.width / zoom / prevScale
+  let height = rect.height / zoom / prevScale
   if (!width || !height) {
     const attrW = parseFloat(svgEl.getAttribute('width') ?? '')
     const attrH = parseFloat(svgEl.getAttribute('height') ?? '')
@@ -280,7 +284,9 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
     (factor: number) => {
       const rect = canvasRef.current?.getBoundingClientRect()
       if (!rect) return
-      zoomAt(factor, rect.width / 2, rect.height / 2)
+      // rect is visual px; the view transform is layout px.
+      const zoom = getUiZoomFactor()
+      zoomAt(factor, rect.width / zoom / 2, rect.height / zoom / 2)
     },
     [zoomAt],
   )
@@ -302,10 +308,13 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
       if (e.deltaX === 0 && e.deltaY === 0) return
       e.preventDefault()
       const rect = canvas.getBoundingClientRect()
+      // Pointer coords and the rect are both visual px, so their difference
+      // is visual too; the view transform is layout px — divide the zoom out.
+      const zoom = getUiZoomFactor()
       zoomAt(
         e.deltaY < 0 ? zoomStep : 1 / zoomStep,
-        e.clientX - rect.left,
-        e.clientY - rect.top,
+        (e.clientX - rect.left) / zoom,
+        (e.clientY - rect.top) / zoom,
       )
     }
     canvas.addEventListener('wheel', onWheel, { passive: false })
@@ -447,12 +456,18 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
         finishDrag(e.pointerId)
         return
       }
-      const dx = e.clientX - drag.startX
-      const dy = e.clientY - drag.startY
+      // clientX/Y are visual px (layout × UI zoom) while view.x/y are layout
+      // px: divide the displacement by the zoom factor or the content would
+      // track the cursor at ×zoom speed (1.5× too fast at 150%).
+      const zoom = getUiZoomFactor()
+      const dx = (e.clientX - drag.startX) / zoom
+      const dy = (e.clientY - drag.startY) / zoom
       // Drag-distance counter: once the pointer has travelled further than the
       // click threshold, the gesture is a pan — consumers checking didDragRef
-      // in onClick suppress the trailing click.
-      if (!didDragRef.current && Math.hypot(dx, dy) > DRAG_CLICK_THRESHOLD_PX) {
+      // in onClick suppress the trailing click. The threshold stays in visual
+      // px on purpose: it expresses pointer intent (a real hand movement),
+      // which zoom does not change.
+      if (!didDragRef.current && Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > DRAG_CLICK_THRESHOLD_PX) {
         didDragRef.current = true
         // The gesture is now definitively a pan (not a click), so it is safe —
         // and necessary — to capture the pointer: tracking continues even when

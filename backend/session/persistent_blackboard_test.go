@@ -12,6 +12,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core"
 	coregoal "github.com/v0lka/c0wrk/core/goal"
+	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -180,6 +181,16 @@ func (m *mockTaskPersistence) PersistGoalState(taskID string, gs *coregoal.GoalS
 }
 
 func (m *mockTaskPersistence) LoadGoalState(taskID string) (*coregoal.GoalState, error) {
+	return nil, nil
+}
+
+func (m *mockTaskPersistence) PersistDelegationSpec(taskID string, spec tools.DelegationSpec) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.persistError
+}
+
+func (m *mockTaskPersistence) LoadDelegationSpecs(taskID string) ([]tools.DelegationSpec, error) {
 	return nil, nil
 }
 

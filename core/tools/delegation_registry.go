@@ -37,6 +37,20 @@ type Delegation struct {
 	CompletedAt time.Time
 }
 
+// DelegationSpec is the persistable form of a delegation task: everything the
+// system needs to rebuild and re-launch the subagent after a pause — without
+// any LLM decision. The registry fires its spec sink (when wired) at
+// RegisterTask time, so the spec survives even if the run later pauses or the
+// app exits. Top-level delegations carry an empty ParentID and Depth 0;
+// sub-delegations (allow_redelegate) reference the delegating subagent's step
+// ID and an incremented depth so a resume wave can order children before
+// parents.
+type DelegationSpec struct {
+	Task     DelegationTask `json:"task"`
+	ParentID string         `json:"parent_id,omitempty"`
+	Depth    int            `json:"depth,omitempty"`
+}
+
 // DelegationRegistry tracks active and completed delegations for one
 // Conductor run. It is injected into the Conductor context at launch and
 // does not outlive the run. Child registries (for allow_redelegate) are
@@ -50,6 +64,14 @@ type DelegationRegistry struct {
 	order       []string
 	cancelFuncs map[string]context.CancelFunc
 	depth       int
+	// parentID is the step ID of the delegating subagent for child registries
+	// (allow_redelegate), empty for the root registry. It stamps every spec
+	// emitted by the sink so a resume wave can order children before parents.
+	parentID string
+	// specSink, when non-nil, is invoked once per RegisterTask with the full
+	// persistable spec. Wired by the launcher (which owns the task store);
+	// plan-step local registries and test registries leave it nil.
+	specSink func(DelegationSpec)
 }
 
 // NewDelegationRegistry creates a root registry (depth 0).
@@ -77,6 +99,40 @@ func (r *DelegationRegistry) Depth() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.depth
+}
+
+// SetSpecSink wires a persistence callback fired by RegisterTask with the full
+// delegation spec. parentID stamps specs emitted by this registry: "" for the
+// root (top-level) registry, or the delegating subagent's step ID for a child
+// registry. The sink must be installed before RegisterTask calls and must not
+// block (persistence implementations make it best-effort).
+func (r *DelegationRegistry) SetSpecSink(parentID string, sink func(DelegationSpec)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.parentID = parentID
+	r.specSink = sink
+}
+
+// RegisterTask registers a full delegation task (delegate-tool form) and
+// fires the spec sink when one is wired, persisting everything a later resume
+// needs to rebuild the subagent. The registry entry itself stays lean (ID,
+// summary, deps, mode) — the full task lives on in the emitted spec.
+func (r *DelegationRegistry) RegisterTask(t DelegationTask) error {
+	if t.Mode == "" {
+		t.Mode = "blocking"
+	}
+	if err := r.Register(t.ID, t.Summary, t.DependsOn, t.Mode); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	sink := r.specSink
+	parentID := r.parentID
+	depth := r.depth
+	r.mu.Unlock()
+	if sink != nil {
+		sink(DelegationSpec{Task: t, ParentID: parentID, Depth: depth})
+	}
+	return nil
 }
 
 // Register adds a new delegation as "pending". Returns an error if the ID

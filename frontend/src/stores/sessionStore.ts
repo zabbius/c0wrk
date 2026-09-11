@@ -18,7 +18,7 @@ function sortByActivity(sessions: SessionInfo[]): SessionInfo[] {
 
 // --- State types ---
 
-interface SessionState {
+export interface SessionState {
   sessions: SessionInfo[] | null // null = not yet loaded
   activeSessionId: string | null
 }
@@ -137,3 +137,25 @@ export const useSessionStore = create<SessionState & SessionActions>((set, get) 
     }
   }),
 }))
+
+// --- Selectors (pure functions; usable both in render via
+// useSessionStore(selector) and in event handlers via selector(getState())) ---
+
+/**
+ * Name of the active session, or null when sessions are not loaded yet, no
+ * session is selected, or the selected id is not in the current list (the
+ * transient state during a project switch, where `resetForProjectSwitch`
+ * clears both fields before the destination list arrives).
+ *
+ * Returns a PRIMITIVE rather than the SessionInfo object so that consumers
+ * driven by an effect (the native window title) re-run only on a real name
+ * change: `touchSession` rebuilds the entry on every activity bump without
+ * touching the name.
+ */
+export function selectActiveSessionName(state: SessionState): string | null {
+  if (state.sessions === null || state.activeSessionId === null) return null
+  const active = state.sessions.find((sess) => sess.id === state.activeSessionId)
+  if (!active) return null
+  const name = active.name.trim()
+  return name === '' ? null : name
+}

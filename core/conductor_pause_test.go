@@ -116,6 +116,13 @@ func (r *cmRecorder) add(cm *seedableRecordingCM) {
 	r.cms = append(r.cms, cm)
 }
 
+// snapshot returns every recorded context manager in creation order.
+func (r *cmRecorder) snapshot() []*seedableRecordingCM {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*seedableRecordingCM(nil), r.cms...)
+}
+
 func (r *cmRecorder) withTaskSubstring(substr string) []*seedableRecordingCM {
 	r.mu.Lock()
 	defer r.mu.Unlock()

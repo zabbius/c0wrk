@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	chromem "github.com/philippgille/chromem-go"
@@ -88,6 +89,9 @@ type IndexerConfig struct {
 	MaxFileSize      int64
 	MaxChunksPerFile int
 	Overlap          int
+	// ContentFilter controls deterministic early rejection before chunking.
+	// Nil selects DefaultContentFilterConfig; a non-nil config is exact.
+	ContentFilter *ContentFilterConfig
 
 	// PrepWorkers is the number of goroutines that run file preparation
 	// (read/hash/chunk — pure I/O+CPU work) in parallel with the embedding
@@ -102,6 +106,8 @@ type IndexerConfig struct {
 	PrepWorkers int
 	OnProgress  ProgressCallback
 	Logger      *slog.Logger
+	// Telemetry optionally collects bounded, content-free stage aggregates.
+	Telemetry *Telemetry
 }
 
 // Indexer orchestrates initial and incremental indexing of project files.
@@ -113,9 +119,11 @@ type Indexer struct {
 	maxFileSize      int64
 	maxChunksPerFile int
 	overlap          int
+	contentFilter    ContentFilterConfig
 	prepWorkers      int
 	onProgress       ProgressCallback
 	logger           *slog.Logger
+	telemetry        *Telemetry
 
 	// ignoreMu guards ignoreRoot / ignoreChecker, a cache of the workspace's
 	// ignore.Resolver (.gitignore + .aiignore, root and nested) built once
@@ -149,6 +157,7 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 	if overlap <= 0 {
 		overlap = DefaultChunkOverlap
 	}
+	contentFilter := resolveContentFilterConfig(cfg.ContentFilter)
 	prepWorkers := cfg.PrepWorkers
 	if prepWorkers <= 0 {
 		prepWorkers = DefaultPrepWorkers
@@ -169,9 +178,11 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 		maxFileSize:      maxFileSize,
 		maxChunksPerFile: maxChunksPerFile,
 		overlap:          overlap,
+		contentFilter:    contentFilter,
 		prepWorkers:      prepWorkers,
 		onProgress:       onProgress,
 		logger:           logger,
+		telemetry:        cfg.Telemetry,
 	}
 }
 
@@ -196,7 +207,9 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 		}
 	}()
 
+	walkStarted := time.Now()
 	files, err := walkProjectFiles(workspacePath, idx.resolverFor(workspacePath), idx.maxFileSize)
+	idx.telemetry.observe(StageWalkValidation, len(files), time.Since(walkStarted))
 	if err != nil {
 		return fmt.Errorf("walking project files: %w", err)
 	}
@@ -252,7 +265,9 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 		return fmt.Errorf("waiting for file-hash migration: %w", err)
 	}
 
+	validationStarted := time.Now()
 	stale, newFiles, deleted, err := idx.service.ValidateCollection(ctx, workspacePath, idx.resolverFor(workspacePath))
+	idx.telemetry.observe(StageWalkValidation, len(stale)+len(newFiles)+len(deleted), time.Since(validationStarted))
 	if err != nil {
 		return fmt.Errorf("validating collection: %w", err)
 	}
@@ -409,6 +424,17 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 		return nil, nil, nil
 	}
 
+	// Content policy is evaluated on the SAME raw bytes ValidateCollection
+	// reads, so the skip verdict is identical on both paths regardless of
+	// UTF-8 validity (the detector tolerates invalid sequences
+	// deterministically). Skipped files produce no documents; the raw-hash
+	// sidecar entry is simply never written, and validation treats the file
+	// as intentionally excluded.
+	if reason, skip := DetectContentSkip(content, idx.contentFilter); skip {
+		idx.logger.Info("skipping file by content policy", "path", filePath, "reason", reason)
+		return nil, nil, nil
+	}
+
 	hash := idx.hashFn(content)
 
 	// The embedding tokenizer (sugarme/tokenizer v0.3.0, via sp4rk) panics
@@ -439,8 +465,8 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 	// the embedder (30k ONNX passes). The cap turns such a file into a clean
 	// skip logged at WARN, leaving the rest of the index pass intact. It is
 	// also a second line of defense against future chunker regressions.
-	// Embedding itself is sub-batched (embeddingSubBatchSize), so the cap's
-	// job is to catch the pathological case, not to bound every per-call
+	// Embedding is bounded by the configured inference batch and the separate
+	// embeddingCommitWindowSize, so the cap's job is to catch the pathological
 	// batch; the default (4000) sits above any legitimate source file.
 	if len(chunks) > idx.maxChunksPerFile {
 		idx.logger.Warn("skipping file: chunk count exceeds per-file cap",
@@ -530,7 +556,9 @@ func (idx *Indexer) streamPreparedFiles(ctx context.Context, paths []string, ski
 				if ctx.Err() != nil {
 					continue
 				}
+				prepStarted := time.Now()
 				vecDocs, lexDocs, err := idx.processFile(path)
+				idx.telemetry.observe(StageReadHashChunk, len(vecDocs), time.Since(prepStarted))
 				unit := prepUnit{path: path, vecDocs: vecDocs, lexDocs: lexDocs}
 				if err != nil {
 					idx.logger.Warn(skipLogLabel, "path", path, "error", err)
@@ -590,14 +618,154 @@ type indexPipelineOpts struct {
 	skipLogLabel  string
 }
 
+type pendingDocument struct {
+	vec  chromem.Document
+	lex  lexical.Doc
+	file *pendingFile
+}
+
+type pendingFile struct {
+	total          int
+	completed      int
+	representative chromem.Document
+	published      bool
+}
+
+// documentAccumulator decouples ONNX inference batches from chromem commit
+// windows. pendingInference is kept below one configured inference batch
+// between Add calls, while pendingCommit is kept below one bounded commit
+// window between inference drains.
+type documentAccumulator struct {
+	service          *Service
+	telemetry        *Telemetry
+	pendingInference []pendingDocument
+	pendingCommit    []pendingDocument
+}
+
+func newDocumentAccumulator(service *Service, telemetry *Telemetry) *documentAccumulator {
+	return &documentAccumulator{
+		service:          service,
+		telemetry:        telemetry,
+		pendingInference: make([]pendingDocument, 0, service.embeddingBatchSize),
+		pendingCommit:    make([]pendingDocument, 0, embeddingCommitWindowSize),
+	}
+}
+
+func (a *documentAccumulator) addFile(ctx context.Context, vecDocs []chromem.Document, lexDocs []lexical.Doc) error {
+	if len(vecDocs) != len(lexDocs) {
+		return fmt.Errorf("vector/lexical document count mismatch: %d != %d", len(vecDocs), len(lexDocs))
+	}
+	if len(vecDocs) == 0 {
+		return nil
+	}
+	file := &pendingFile{total: len(vecDocs), representative: vecDocs[0]}
+	for i := range vecDocs {
+		if vecDocs[i].ID != lexDocs[i].ID {
+			return fmt.Errorf("vector/lexical document ID mismatch at offset %d: %q != %q", i, vecDocs[i].ID, lexDocs[i].ID)
+		}
+		a.pendingInference = append(a.pendingInference, pendingDocument{vec: vecDocs[i], lex: lexDocs[i], file: file})
+		if len(a.pendingInference) == a.service.embeddingBatchSize {
+			if err := a.embedPending(ctx); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (a *documentAccumulator) finish(ctx context.Context) error {
+	if err := a.embedPending(ctx); err != nil {
+		return err
+	}
+	return a.commitPending(ctx)
+}
+
+func (a *documentAccumulator) embedPending(ctx context.Context) error {
+	if len(a.pendingInference) == 0 {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("embedding accumulated documents: %w", err)
+	}
+
+	docs := make([]chromem.Document, len(a.pendingInference))
+	for i := range a.pendingInference {
+		docs[i] = a.pendingInference[i].vec
+	}
+	a.telemetry.observeBatch(len(docs), a.service.embeddingBatchSize)
+	embedStarted := time.Now()
+	kept, dropped, err := a.service.embedSubBatch(ctx, docs)
+	a.telemetry.observe(StageEmbedding, len(docs), time.Since(embedStarted))
+	if err != nil {
+		return err
+	}
+	if len(kept)+len(dropped) != len(docs) {
+		return fmt.Errorf("embedding accumulator lost documents: kept=%d dropped=%d input=%d", len(kept), len(dropped), len(docs))
+	}
+
+	keptIdx := 0
+	for i := range a.pendingInference {
+		item := a.pendingInference[i]
+		if _, drop := dropped[item.vec.ID]; drop {
+			item.file.completed++
+			a.publishFileIfComplete(item.file)
+			continue
+		}
+		if keptIdx >= len(kept) || kept[keptIdx].ID != item.vec.ID {
+			return fmt.Errorf("embedded document order mismatch at input offset %d", i)
+		}
+		item.vec = kept[keptIdx]
+		keptIdx++
+		a.pendingCommit = append(a.pendingCommit, item)
+		if len(a.pendingCommit) == embeddingCommitWindowSize {
+			if err := a.commitPending(ctx); err != nil {
+				return err
+			}
+		}
+	}
+	a.pendingInference = a.pendingInference[:0]
+	return nil
+}
+
+func (a *documentAccumulator) commitPending(ctx context.Context) error {
+	if len(a.pendingCommit) == 0 {
+		return nil
+	}
+	vecDocs := make([]chromem.Document, len(a.pendingCommit))
+	lexDocs := make([]lexical.Doc, len(a.pendingCommit))
+	for i := range a.pendingCommit {
+		vecDocs[i] = a.pendingCommit[i].vec
+		lexDocs[i] = a.pendingCommit[i].lex
+	}
+	if err := a.service.commitEmbeddedDocuments(ctx, vecDocs, lexDocs); err != nil {
+		return err
+	}
+	for i := range a.pendingCommit {
+		file := a.pendingCommit[i].file
+		file.completed++
+		a.publishFileIfComplete(file)
+	}
+	a.pendingCommit = a.pendingCommit[:0]
+	return nil
+}
+
+func (a *documentAccumulator) publishFileIfComplete(file *pendingFile) {
+	if file.published || file.completed != file.total {
+		return
+	}
+	a.service.upsertFileHashes([]chromem.Document{file.representative})
+	file.published = true
+}
+
 // indexPrepared runs one indexing pass over paths: a bounded pool of
 // idx.prepWorkers goroutines prepares files (read/hash/chunk) while this
-// single consumer accumulates the resulting documents and flushes them into
-// Service.AddDocuments in batches of addDocumentBatchSize. Embedding stays
-// single-threaded — only this goroutine calls AddDocuments — and the caller
-// must already hold the service write lock, exactly as the former serial
-// loops did. PrepWorkers=1 reproduces the serial behavior: one file prepared
-// at a time, in input order.
+// single consumer streams their documents through one configured-capacity
+// inference accumulator and a separate bounded chromem commit window. The
+// inference tail crosses file and commit boundaries and is flushed only once,
+// at the end of the pass. Embedding stays single-threaded, and the caller must
+// already hold the service write lock, exactly as the former serial loops did.
+// PrepWorkers=1 reproduces serial file preparation while retaining full
+// inference batches.
 //
 // It returns the number of files counted toward pass progress. Per-file prep
 // failures are logged and skipped; ctx cancellation aborts the pass with an
@@ -614,6 +782,10 @@ func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPi
 	progress := o.progressStart
 	var vecBatch []chromem.Document
 	var lexBatch []lexical.Doc
+	var accumulator *documentAccumulator
+	if idx.service.batchEmbedder != nil {
+		accumulator = newDocumentAccumulator(idx.service, idx.telemetry)
+	}
 
 	for unit := range units {
 		if err := ctx.Err(); err != nil {
@@ -623,17 +795,24 @@ func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPi
 			continue
 		}
 		if !unit.skipped {
-			vecBatch = append(vecBatch, unit.vecDocs...)
-			lexBatch = append(lexBatch, unit.lexDocs...)
-			if len(vecBatch) >= addDocumentBatchSize {
-				idx.logger.Debug("embedding document batch"+o.batchLogLabel,
-					"batchSize", len(vecBatch), "progress", progress, "total", o.total)
-				if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
-					return progress, fmt.Errorf("adding document batch: %w", addErr)
+			if accumulator != nil {
+				if addErr := accumulator.addFile(ctx, unit.vecDocs, unit.lexDocs); addErr != nil {
+					return progress, fmt.Errorf("accumulating documents: %w", addErr)
 				}
-				idx.logger.Debug("batch embedded successfully")
-				vecBatch = vecBatch[:0]
-				lexBatch = lexBatch[:0]
+			} else {
+				vecBatch = append(vecBatch, unit.vecDocs...)
+				lexBatch = append(lexBatch, unit.lexDocs...)
+				if len(vecBatch) >= addDocumentBatchSize {
+					idx.logger.Debug("embedding document batch"+o.batchLogLabel,
+						"batchSize", len(vecBatch), "progress", progress, "total", o.total)
+					idx.telemetry.observeBatch(len(vecBatch), addDocumentBatchSize)
+					if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
+						return progress, fmt.Errorf("adding document batch: %w", addErr)
+					}
+					idx.logger.Debug("batch embedded successfully")
+					vecBatch = vecBatch[:0]
+					lexBatch = lexBatch[:0]
+				}
 			}
 		}
 		progress++
@@ -647,10 +826,17 @@ func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPi
 		return progress, fmt.Errorf("%s: %w", o.cancelMsg, err)
 	}
 
-	// Flush remaining documents.
-	if len(vecBatch) > 0 || len(lexBatch) > 0 {
+	// Flush remaining documents. The batch path carries inference tails across
+	// file boundaries and commit windows, so only the final pass drain may be
+	// underfilled. The legacy path retains its historical 50-document flush.
+	if accumulator != nil {
+		if finishErr := accumulator.finish(ctx); finishErr != nil {
+			return progress, fmt.Errorf("flushing accumulated documents: %w", finishErr)
+		}
+	} else if len(vecBatch) > 0 || len(lexBatch) > 0 {
 		idx.logger.Debug("embedding final document batch"+o.batchLogLabel,
 			"batchSize", len(vecBatch), "progress", progress, "total", o.total)
+		idx.telemetry.observeBatch(len(vecBatch), addDocumentBatchSize)
 		if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
 			return progress, fmt.Errorf("adding final document batch: %w", addErr)
 		}
@@ -946,9 +1132,9 @@ const DefaultMaxChunkSize = 1500
 // skipped wholesale, because its chunks are accumulated into AddDocuments and
 // a runaway count (tens of thousands from a data-format file that the
 // structure-aware splitter fragments per-entry — e.g. a HuggingFace BPE
-// vocab/merges tokenizer.json) hangs/OOMs the embedder. Embedding is itself
-// sub-batched (embeddingSubBatchSize), so the per-call work is already
-// bounded; this cap is a backstop that turns a pathological file into a clean
+// vocab/merges tokenizer.json) hangs/OOMs the embedder. Embedding is bounded
+// by the configured inference batch and embeddingCommitWindowSize, so the cap
+// remains a backstop that turns a pathological file into a clean
 // skip rather than a tight per-call limit. The default (4000) sits above the
 // worst legitimate source file — a 4 MiB file chunked at 1500 chars yields
 // ~3230 chunks — so no real source file is dropped, while the 30k-chunk data

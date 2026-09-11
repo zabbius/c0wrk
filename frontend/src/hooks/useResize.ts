@@ -1,4 +1,23 @@
 import { useRef, useCallback, useEffect, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useUiScaleStore } from '@/stores/uiScaleStore'
+
+/**
+ * Converts a pointer displacement measured in on-screen (device/visual)
+ * pixels into CSS-layout pixels by dividing out the UI zoom factor.
+ *
+ * The app-wide UI scale is applied via CSS `zoom` on <html>, so mouse event
+ * coordinates arrive zoom-multiplied while the panel widths this hook
+ * reports are layout pixels. Without the division the divider would
+ * overshoot the cursor by exactly the zoom factor: at 150% a 100px visual
+ * drag must grow the panel by 100 visual px = ~66.7 layout px, not 100.
+ *
+ * A non-finite or non-positive scale (defensive: corrupt persisted state)
+ * falls back to the raw delta, i.e. behaves like scale 100%.
+ */
+export function pointerDeltaToLayout(delta: number, uiScalePercent: number): number {
+  if (!Number.isFinite(uiScalePercent) || uiScalePercent <= 0) return delta
+  return (delta * 100) / uiScalePercent
+}
 
 interface UseResizeOptions {
   initialWidth: number
@@ -63,7 +82,12 @@ export function useResize({ initialWidth, min, max, direction = 1, axis = 'x', o
 
     const onMouseMove = (ev: MouseEvent) => {
       if (!dragging.current) return
-      const delta = ((axis === 'y' ? ev.clientY : ev.clientX) - startX.current) * direction
+      // Compensate the visual-pixel pointer delta for the app-wide UI zoom
+      // so the divider stays glued to the cursor at any scale (150% → /1.5).
+      // Read per-move via getState(): keeps the handler free of stale
+      // closures and tracks a scale change even mid-drag.
+      const rawDelta = ((axis === 'y' ? ev.clientY : ev.clientX) - startX.current) * direction
+      const delta = pointerDeltaToLayout(rawDelta, useUiScaleStore.getState().scale)
       onChangeRef.current(clamp(startWidth.current + delta, min, max))
     }
 

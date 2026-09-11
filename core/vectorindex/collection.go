@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	chromem "github.com/philippgille/chromem-go"
 
@@ -23,17 +24,11 @@ import (
 // sanitizeRe matches characters that are not alphanumeric, hyphens, or underscores.
 var sanitizeRe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
-// embeddingSubBatchSize bounds the number of documents handed to chromem's
-// AddDocuments in a single call. A batch is embedded end-to-end with ONNX
-// inference and held in memory as a unit, so an unbounded call (e.g. a
-// pathological file that chunked into tens of thousands of pieces) hangs
-// the embedder and risks OOM. 200 keeps each invocation short enough to
-// stay responsive to context cancellation and bounded in memory. Because
-// the indexer flushes at addDocumentBatchSize (50) docs, sub-batching
-// activates whenever a single AddDocuments call receives more than 200
-// docs — i.e. routinely for any file producing more than ~150 chunks
-// appended to a near-full batch, not only the pathological extremes.
-const embeddingSubBatchSize = 200
+// embeddingCommitWindowSize bounds the number of already-embedded documents
+// retained and handed to chromem in one commit. Inference batching is managed
+// independently by documentAccumulator, so this limit controls only commit
+// memory and cancellation latency.
+const embeddingCommitWindowSize = 200
 
 // collectionName returns a deterministic, sanitized collection name for a branch.
 func collectionName(branch string) string {
@@ -190,13 +185,19 @@ func fileHashEntryHash(entry string) string {
 
 // ChunkerFingerprint returns a short stable fingerprint of the chunker
 // configuration (max chunk size + overlap — the two ChunkerConfig inputs
-// that determine how a file's content is split). It is embedded as the 4th
-// field of new sidecar entries so ValidateCollection can detect files whose
-// chunks were produced under a different chunking configuration
-// (vector_index.chunk_overlap / max_chunk_size changes) and re-chunk them
-// even though their content hash is unchanged.
-func ChunkerFingerprint(maxChunkSize, overlap int) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("v1|max=%d|overlap=%d", maxChunkSize, overlap)))
+// that determine how a file's content is split — plus the content-filter
+// policy that decides whether a file is chunked at all). It is embedded as
+// the 4th field of new sidecar entries so ValidateCollection can detect
+// files whose chunks were produced under a different chunking configuration
+// (vector_index.chunk_overlap / max_chunk_size / content_filter changes) and
+// re-chunk them even though their content hash is unchanged. Including the
+// content-filter fingerprint means a policy change also invalidates the
+// stat fast-path for affected files, so previously-indexed files that the
+// new policy excludes are re-read, re-evaluated, and their documents
+// removed (they stop being "seen"); identical re-chunks then hit the
+// content-addressed embedding cache instead of ONNX.
+func ChunkerFingerprint(maxChunkSize, overlap int, contentPolicy string) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("v2|max=%d|overlap=%d|filter=%s", maxChunkSize, overlap, contentPolicy)))
 	return hex.EncodeToString(sum[:6]) // 12 hex chars, plenty for a config fingerprint
 }
 
@@ -241,7 +242,9 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 	}
 
 	// Get stored file hashes from the collection.
+	cacheStarted := time.Now()
 	storedHashes, err := s.getCollectionFileHashes()
+	s.telemetry.observe(StageCacheLookup, len(storedHashes), time.Since(cacheStarted))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("getting collection file hashes: %w", err)
 	}
@@ -357,6 +360,19 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 		}
 		if len(content) == 0 {
 			return nil //nolint:nilerr // skip empty files
+		}
+
+		// Content policy: files the filter excludes are intentionally not
+		// part of the collection. Returning without marking the file seen
+		// means a previously-indexed file that the active policy now
+		// excludes (e.g. content_filter.enabled flipped) is reported as
+		// deleted so its documents and sidecar entry are removed; a
+		// never-indexed excluded file never enters newFiles. The check
+		// runs on the same raw bytes processFile filters, and the filter
+		// config is part of the chunker fingerprint, so the stat fast-path
+		// above only shortcuts files whose verdict cannot have changed.
+		if _, skip := DetectContentSkip(content, s.contentFilter); skip {
+			return nil //nolint:nilerr // excluded by content policy
 		}
 
 		currentHash := computeHash(content)
@@ -699,17 +715,54 @@ type BatchEmbedder interface {
 	EmbedDocuments(ctx context.Context, texts []string) ([][]float32, error)
 }
 
+// commitEmbeddedDocuments persists one bounded window of documents whose
+// embeddings have already been populated and mirrors the same IDs into the
+// lexical index. It deliberately does not update the file-hash sidecar: the
+// streaming index accumulator publishes a file hash only after every chunk of
+// that file has either committed or been deliberately dropped by the poisoned-
+// text fallback.
+// Caller must hold s.mu (write lock).
+func (s *Service) commitEmbeddedDocuments(ctx context.Context, vecDocs []chromem.Document, lexDocs []lexical.Doc) error {
+	if len(vecDocs) == 0 {
+		return nil
+	}
+	if len(vecDocs) > embeddingCommitWindowSize {
+		return fmt.Errorf("embedded commit window contains %d documents; limit is %d", len(vecDocs), embeddingCommitWindowSize)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("committing embedded documents: %w", err)
+	}
+
+	commitStarted := time.Now()
+	commitErr := s.collection.AddDocuments(ctx, vecDocs, 1)
+	s.telemetry.observe(StageChromemCommit, len(vecDocs), time.Since(commitStarted))
+	if commitErr != nil {
+		return fmt.Errorf("committing %d embedded documents: %w", len(vecDocs), commitErr)
+	}
+
+	if s.lexical != nil && len(lexDocs) > 0 {
+		upsertStarted := time.Now()
+		upsertErr := s.lexical.Upsert(ctx, lexDocs)
+		s.telemetry.observe(StageBleveUpsert, len(lexDocs), time.Since(upsertStarted))
+		if upsertErr != nil {
+			s.logger.Warn("lexical upsert failed; will be repaired via RebuildLexical",
+				"branch", s.currentBranch, "docs", len(lexDocs), "error", upsertErr)
+		}
+	}
+	return nil
+}
+
 // AddDocuments adds documents to the current collection and mirrors them
 // to the per-branch lexical index. Chromem commits first; lexical errors
 // are logged but not returned, since the reconciliation loop in the
 // manager will repair drift via RebuildLexical on the next project open.
 //
-// Oversized vecDocs are embedded in fixed-size sub-batches (at most
-// embeddingSubBatchSize each): a single chromem AddDocuments call
-// processes its entire slice with onnx inference, so a runaway batch
-// (tens of thousands of chunks from a pathological data file) would
-// otherwise hang the embedder and exhaust memory. Sub-batching bounds
-// the per-call work and lets ctx cancellation interrupt mid-batch.
+// Oversized vecDocs are processed in fixed-size commit windows (at most
+// embeddingCommitWindowSize each). This standalone API also embeds each
+// window in configured-capacity chunks. The indexer uses documentAccumulator
+// instead, carrying its inference tail across file and commit boundaries while
+// preserving the same commit bound. Both paths check cancellation between
+// bounded operations.
 //
 // When a BatchEmbedder is configured, each sub-batch is embedded up-front
 // (see embedSubBatch) in chunks of at most the configured embedding batch
@@ -732,17 +785,19 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 	// never diverge.
 	var droppedIDs map[string]struct{}
 
-	for start := 0; start < len(vecDocs); start += embeddingSubBatchSize {
+	for start := 0; start < len(vecDocs); start += embeddingCommitWindowSize {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("adding documents (cancelled mid-batch): %w", err)
 		}
-		end := start + embeddingSubBatchSize
+		end := start + embeddingCommitWindowSize
 		if end > len(vecDocs) {
 			end = len(vecDocs)
 		}
 		sub := vecDocs[start:end]
 		if s.batchEmbedder != nil {
+			embedStarted := time.Now()
 			kept, dropped, embErr := s.embedSubBatch(ctx, sub)
+			s.telemetry.observe(StageEmbedding, len(sub), time.Since(embedStarted))
 			if embErr != nil {
 				return fmt.Errorf("embedding %d documents (offset %d of %d): %w", len(sub), start, len(vecDocs), embErr)
 			}
@@ -759,8 +814,11 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 		if len(sub) == 0 {
 			continue
 		}
-		if err := s.collection.AddDocuments(ctx, sub, 1); err != nil {
-			return fmt.Errorf("adding %d documents (offset %d of %d): %w", len(sub), start, len(vecDocs), err)
+		commitStarted := time.Now()
+		commitErr := s.collection.AddDocuments(ctx, sub, 1)
+		s.telemetry.observe(StageChromemCommit, len(sub), time.Since(commitStarted))
+		if commitErr != nil {
+			return fmt.Errorf("adding %d documents (offset %d of %d): %w", len(sub), start, len(vecDocs), commitErr)
 		}
 	}
 	// Record the file-hash sidecar only after the full batch commits, not per
@@ -790,9 +848,12 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 			}
 			lexDocs = filtered
 		}
-		if err := s.lexical.Upsert(ctx, lexDocs); err != nil {
+		upsertStarted := time.Now()
+		upsertErr := s.lexical.Upsert(ctx, lexDocs)
+		s.telemetry.observe(StageBleveUpsert, len(lexDocs), time.Since(upsertStarted))
+		if upsertErr != nil {
 			s.logger.Warn("lexical upsert failed; will be repaired via RebuildLexical",
-				"branch", s.currentBranch, "docs", len(lexDocs), "error", err)
+				"branch", s.currentBranch, "docs", len(lexDocs), "error", upsertErr)
 		}
 	}
 	return nil
@@ -833,40 +894,24 @@ func (s *Service) embedSubBatch(ctx context.Context, sub []chromem.Document) ([]
 	for i := range sub {
 		if len(sub[i].Embedding) == 0 {
 			targets = append(targets, i)
-			texts = append(texts, sub[i].Content)
+			texts = append(texts, normalizeEmbeddingChunk(sub[i].Content))
 		}
 	}
 
 	failedTargets := make(map[int]struct{}) // indices into targets/texts dropped via the per-text fallback
-
-	for start := 0; start < len(texts); start += s.embeddingBatchSize {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, fmt.Errorf("embedding documents (cancelled mid-batch): %w", err)
+	vecs, failed, err := s.resolveEmbeddingChunk(ctx, texts)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i, vec := range vecs {
+		if _, drop := failed[i]; drop {
+			failedTargets[i] = struct{}{}
+			continue
 		}
-		end := start + s.embeddingBatchSize
-		if end > len(texts) {
-			end = len(texts)
+		if len(vec) == 0 {
+			return nil, nil, fmt.Errorf("batch embedder returned an empty vector (text %d of %d)", i, len(texts))
 		}
-		chunk := texts[start:end]
-		vecs, err := s.batchEmbedder.EmbedDocuments(ctx, chunk)
-		if err != nil {
-			vecs, err = s.embedChunkPerText(ctx, chunk, start, len(texts), failedTargets)
-			if err != nil {
-				return nil, nil, err
-			}
-		}
-		if len(vecs) != len(chunk) {
-			return nil, nil, fmt.Errorf("batch embedder returned %d vectors for %d texts", len(vecs), len(chunk))
-		}
-		for j, vec := range vecs {
-			if _, drop := failedTargets[start+j]; drop {
-				continue
-			}
-			if len(vec) == 0 {
-				return nil, nil, fmt.Errorf("batch embedder returned an empty vector (chunk offset %d of %d, text %d)", start, len(texts), j)
-			}
-			sub[targets[start+j]].Embedding = vec
-		}
+		sub[targets[i]].Embedding = vec
 	}
 
 	if len(failedTargets) == 0 {
@@ -890,6 +935,93 @@ func (s *Service) embedSubBatch(ctx context.Context, sub []chromem.Document) ([]
 		kept = append(kept, sub[i])
 	}
 	return kept, dropped, nil
+}
+
+// resolveEmbeddingChunk fills one ordered chunk from the persistent cache and
+// embeds only unique misses. The returned failed map is keyed by chunk-local
+// index so duplicate poisoned chunks are dropped consistently.
+func (s *Service) resolveEmbeddingChunk(ctx context.Context, texts []string) (vecs [][]float32, failed map[int]struct{}, err error) {
+	vecs = make([][]float32, len(texts))
+	positions := make(map[string][]int, len(texts))
+	uniqueTexts := make([]string, 0, len(texts))
+	for i, text := range texts {
+		if _, exists := positions[text]; !exists {
+			uniqueTexts = append(uniqueTexts, text)
+		}
+		positions[text] = append(positions[text], i)
+	}
+
+	misses := make([]string, 0, len(uniqueTexts))
+	for _, text := range uniqueTexts {
+		if s.embeddingCache != nil {
+			vec, ok := s.embeddingCache.get(text)
+			s.telemetry.observeEmbeddingCache(ok)
+			if ok {
+				for _, pos := range positions[text] {
+					vecs[pos] = vec
+				}
+				continue
+			}
+		}
+		misses = append(misses, text)
+	}
+	if len(misses) == 0 {
+		return vecs, nil, nil
+	}
+
+	missVecs := make([][]float32, len(misses))
+	failedMisses := make(map[int]struct{})
+	for start := 0; start < len(misses); start += s.embeddingBatchSize {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, fmt.Errorf("embedding documents (cancelled mid-batch): %w", err)
+		}
+		end := start + s.embeddingBatchSize
+		if end > len(misses) {
+			end = len(misses)
+		}
+		chunk := misses[start:end]
+		chunkVecs, err := s.batchEmbedder.EmbedDocuments(ctx, chunk)
+		chunkFailed := make(map[int]struct{})
+		if err != nil {
+			chunkVecs, err = s.embedChunkPerText(ctx, chunk, 0, len(chunk), chunkFailed)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+		if len(chunkVecs) != len(chunk) {
+			return nil, nil, fmt.Errorf("batch embedder returned %d vectors for %d unique texts", len(chunkVecs), len(chunk))
+		}
+		copy(missVecs[start:end], chunkVecs)
+		for local := range chunkFailed {
+			failedMisses[start+local] = struct{}{}
+		}
+	}
+
+	failed = make(map[int]struct{})
+	for missIdx, text := range misses {
+		if _, drop := failedMisses[missIdx]; drop {
+			for _, pos := range positions[text] {
+				failed[pos] = struct{}{}
+			}
+			continue
+		}
+		vec := missVecs[missIdx]
+		if len(vec) == 0 {
+			return nil, nil, fmt.Errorf("batch embedder returned an empty vector for unique text %d", missIdx)
+		}
+		if s.embeddingDimension > 0 && len(vec) != s.embeddingDimension {
+			return nil, nil, fmt.Errorf("batch embedder returned dimension %d, want %d", len(vec), s.embeddingDimension)
+		}
+		s.embeddingCache.put(text, vec)
+		for _, pos := range positions[text] {
+			vecs[pos] = vec
+		}
+	}
+	s.embeddingCache.prune()
+	if len(failed) == 0 {
+		failed = nil
+	}
+	return vecs, failed, nil
 }
 
 // embedChunkPerText isolates failures inside a chunk whose batched

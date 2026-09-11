@@ -184,7 +184,7 @@ func newFormatEntry(t *testing.T, content []byte, info os.FileInfo) string {
 	return computeHash(content) + fileHashEntrySep +
 		strconv.FormatInt(info.Size(), 10) + fileHashEntrySep +
 		strconv.FormatInt(info.ModTime().UnixNano(), 10) + fileHashEntrySep +
-		ChunkerFingerprint(DefaultMaxChunkSize, DefaultChunkOverlap)
+		ChunkerFingerprint(DefaultMaxChunkSize, DefaultChunkOverlap, DefaultContentFilterConfig().Fingerprint())
 }
 
 // newFormatMetadata returns document metadata carrying the size/mtime fields

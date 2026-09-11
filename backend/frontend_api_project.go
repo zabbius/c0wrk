@@ -654,7 +654,7 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 	// background indexing goroutine. Emit a disabled status so the frontend
 	// reflects the dormant state rather than the previous project's status.
 	if p.IsNoProject {
-		if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, config.ProjectVectorIndexPath(f.agentDir, p.ID), vectorindex.ProjectCallbacks{}); switchErr != nil {
+		if switchErr := vm.SwitchProject(p.ID, p.WorkspacePath, config.ProjectVectorIndexPath(f.agentDir, p.ID), vectorindex.ProjectCallbacks{}, config.ProjectEmbeddingCachePath(f.agentDir, p.ID)); switchErr != nil {
 			return fmt.Errorf("switching vector index project: %w", switchErr)
 		}
 		st := VectorIndexStatus{State: "unavailable", Indices: []string{}}
@@ -701,7 +701,7 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 			f.applyEmbedderInfo(&st)
 			f.emitEvent(EventVectorIndexStatus, st)
 		},
-	}); switchErr != nil {
+	}, config.ProjectEmbeddingCachePath(f.agentDir, p.ID)); switchErr != nil {
 		return fmt.Errorf("switching vector index project: %w", switchErr)
 	}
 

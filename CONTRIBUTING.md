@@ -144,7 +144,8 @@ make frontend-deps   # npm install in frontend/
 make test            # go test ./... && cd frontend && npm test (vitest)
 make fmt-check       # fail if gofmt would rewrite any Go source
 make lint            # make fmt-check + golangci-lint + frontend ESLint
-make dev-desktop     # frontend Vite dev server only
+make dev-desktop     # full desktop hot-reload loop (wails dev + platform tags)
+make dev-frontend    # frontend Vite dev server only (no Go bridge)
 make build           # versioned wails build + ONNX runtime + embedding model
 make bump            # update the pinned sp4rk revision with GOWORK=off (release point only)
 make clean           # remove build/bin, .cache, frontend/dist
@@ -180,16 +181,23 @@ Frontend tests use **vitest** (`npm test` / `npm run test:watch`); test files li
 
 ### Development
 
-Frontend-only development server:
+Full desktop hot-reload workflow — builds and runs the app with the live
+frontend dev server attached:
 
 ```bash
 make dev-desktop
 ```
 
-Full desktop hot-reload workflow (from repo root):
+On Linux this passes `-tags webkit2_41`. Invoking `wails dev` directly without
+that tag fails the cgo build against `webkit2gtk-4.0` (absent on Ubuntu 24.04+
+and Arch) — and `wails dev` does not exit on that failure, so it looks like it
+is running while no window ever appears.
+
+Frontend-only development server (markup and HMR work; no Go bridge, so the UI
+stays on the startup splash):
 
 ```bash
-wails dev
+make dev-frontend
 ```
 
 ### Production build
@@ -238,7 +246,8 @@ Vector index needs ONNX Runtime plus a quantized embedding model + tokenizer (fe
 - **Config not detected**: ensure the file is exactly at `~/.c0wrk/config.yaml`.
 - **App fails after build due to missing ONNX library**: run `make fetch-onnx`.
 - **Missing embedding model files**: run `make fetch-embedding-model`.
-- **`make dev-desktop` shows only frontend**: this command runs Vite only; use `wails dev` for the full desktop runtime loop.
+- **`make dev-frontend` shows only the splash screen**: expected — it runs Vite alone, with no Wails runtime behind it. Use `make dev-desktop` for the full desktop loop.
+- **`wails dev` prints `Package 'webkit2gtk-4.0' not found` and never opens a window**: pass the Linux build tag (`wails dev -tags webkit2_41`), or just use `make dev-desktop`, which applies it for you. The command deliberately keeps running after a failed build, so the missing window is the only symptom.
 - **Generated Wails bindings drift** (`frontend/wailsjs/go/desktop/App.*`): regenerate via `wails build` or `wails dev` (do not hand-edit generated files).
 
 ## Continuous integration

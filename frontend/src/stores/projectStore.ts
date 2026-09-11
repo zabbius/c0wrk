@@ -1,6 +1,11 @@
 import { create } from 'zustand'
 import type { ProjectInfo } from '@/types/models'
 
+// --- Constants ---
+
+/** Window-title label for the No Project pseudo-project (CHAT mode). */
+export const CHAT_LABEL = 'CHAT'
+
 // --- Helpers ---
 
 function sortByActivity(projects: ProjectInfo[]): ProjectInfo[] {
@@ -80,6 +85,33 @@ export const useProjectStore = create<ProjectState & ProjectActions>((set) => ({
 
 // --- Selectors (pure functions; usable both in render via
 // useProjectStore(selector) and in event handlers via selector(getState())) ---
+
+/**
+ * Scope segment for the native window title: the label that identifies which
+ * project the window is currently looking at.
+ *
+ * Returns the literal {@link CHAT_LABEL} for the No Project pseudo-project
+ * rather than its stored name ("No Project") — the UI calls that mode CHAT,
+ * and the title bar should match what the user sees in the sidebar toggle.
+ *
+ * Returns null while projects are still loading (`projects === null`) or when
+ * nothing is active, so the caller can fall back to the bare app name instead
+ * of rendering an empty segment.
+ *
+ * Deliberately returns a PRIMITIVE, not the ProjectInfo object: the title
+ * effect must re-run only when the visible text changes. `updateProject` and
+ * `setProjects` rebuild the array (and the touched entry) on every activity
+ * bump, so an object-returning selector would fire the effect for changes the
+ * title cannot show.
+ */
+export function selectTitleScope(state: ProjectState): string | null {
+  if (state.projects === null || state.activeProjectId === null) return null
+  const active = state.projects.find((p) => p.id === state.activeProjectId)
+  if (!active) return null
+  if (active.is_no_project) return CHAT_LABEL
+  const name = active.name.trim()
+  return name === '' ? null : name
+}
 
 /**
  * Returns true when the active project is the No Project (CHAT mode) entry.
