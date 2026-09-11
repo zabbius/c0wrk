@@ -54,3 +54,20 @@ func TestAttachmentFilterPattern_NoDuplicates(t *testing.T) {
 		seen[e] = true
 	}
 }
+
+// TestPickAndImportTheme_NilContext mirrors the PickDirectory /
+// SaveMessageAsMarkdown guards: calling the picker before Startup binds the
+// Wails context must fail with a descriptive error instead of panicking on
+// a nil context (and never reach the dialog or the import path).
+func TestPickAndImportTheme_NilContext(t *testing.T) {
+	theme, err := (&App{}).PickAndImportTheme()
+	if err == nil {
+		t.Fatal("expected an error when the application context is not initialized")
+	}
+	if !strings.Contains(err.Error(), "context is not initialized") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+	if theme != nil {
+		t.Errorf("expected nil theme on error, got %+v", theme)
+	}
+}

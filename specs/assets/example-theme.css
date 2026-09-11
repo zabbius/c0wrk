@@ -1,0 +1,80 @@
+/* c0wrk-theme: Solar Light | light */
+/*
+  Example c0wrk theme — starting point for authors.
+  Full authoring reference: specs/domains/theming.md
+
+  Import rules (enforced by backend validation):
+    - no external stylesheet imports
+    - embedded resources must be inline data URIs (no remote or file references)
+    - max 512 KiB
+    - --color-background and --color-foreground are required
+
+  Every token below overrides the One Dark default from
+  frontend/src/index.css @theme; tokens you omit keep their default,
+  so you can delete lines you don't want to change.
+*/
+
+:root {
+    /* Core palette */
+    --color-background: #fdf6e3;
+    --color-foreground: #657b83;
+
+    /* Surfaces */
+    --color-card: #eee8d5;
+    --color-card-foreground: #586e75;
+    --color-popover: #eee8d5;
+    --color-popover-foreground: #586e75;
+
+    /* Primary / Accent */
+    --color-primary: #268bd2;
+    --color-primary-foreground: #fdf6e3;
+    --color-accent: #268bd2;
+    --color-accent-foreground: #fdf6e3;
+
+    /* Secondary / Muted */
+    --color-secondary: #e2ddc8;
+    --color-secondary-foreground: #657b83;
+    --color-muted: #e9e4d1;
+    --color-muted-foreground: #93a1a1;
+
+    /* Semantic */
+    --color-destructive: #dc322f;
+    --color-destructive-foreground: #fdf6e3;
+    --color-success: #859900;
+    --color-warning: #b58900;
+    --color-info: #268bd2;
+    --color-highlight: #b58900;
+
+    /* Borders & inputs */
+    --color-border: #ddd6c1;
+    --color-input: #ddd6c1;
+    --color-ring: #268bd2;
+
+    /* RGB variants for rgba() usage — keep in sync with the base colors */
+    --color-success-rgb: 133, 153, 0;
+    --color-destructive-rgb: 220, 50, 47;
+    --color-primary-rgb: 38, 139, 210;
+
+    /* highlight.js tokens */
+    --color-hljs-comment: #93a1a1;
+    --color-hljs-keyword: #859900;
+    --color-hljs-literal: #2aa198;
+
+    /* Terminal (XTerm) tokens */
+    --color-terminal-cursor: #268bd2;
+    --color-terminal-selection: #ddd6c1;
+    --color-terminal-bright-white: #073642;
+
+    /* Elevation — softer on light backgrounds */
+    --color-shadow: rgba(0, 0, 0, 0.12);
+
+    color-scheme: light;
+}
+
+/*
+  Radii are theme-independent in practice but overridable the same way:
+      --radius-sm: 0.25rem;
+      --radius-md: 0.375rem;
+      --radius-lg: 0.5rem;
+      --radius-xl: 0.75rem;
+*/

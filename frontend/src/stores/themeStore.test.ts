@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // jsdom in this environment does not expose `window.localStorage`, which
 // zustand's `persist` middleware captures at store-creation time (via
@@ -19,40 +19,220 @@ vi.hoisted(() => {
   }
 })
 
-import { useThemeStore, applyThemeToDocument } from '@/stores/themeStore'
+import {
+  useThemeStore,
+  applyThemeToDocument,
+  selectActiveThemeType,
+  BUILTIN_THEMES,
+  type ThemeStore,
+} from '@/stores/themeStore'
+import type { ThemeInfo } from '@/api/themes'
+
+// Mock the RPC layer: loadThemes() must not touch window.go in tests.
+vi.mock('@/api/themes', () => ({
+  listThemes: vi.fn().mockResolvedValue([]),
+}))
+
+const customLight: ThemeInfo = { id: 'nord', name: 'Nord', type: 'light' }
+const customDark: ThemeInfo = { id: 'gruvbox', name: 'Gruvbox', type: 'dark' }
+const NORD_CSS = ':root{--color-background:#2e3440;--color-foreground:#d8dee9;color-scheme:light}'
+
+/** Re-run the persist rehydration against whatever localStorage currently
+ *  holds — the same path zustand runs at store creation. Used to exercise
+ *  the v1→v2 migrate() with a legacy persisted payload. */
+function rehydrate(): void {
+  const api = useThemeStore.persist
+  const opts = api.getOptions()
+  const stored = localStorage.getItem(opts.name as string)
+  const persisted = stored ? (JSON.parse(stored) as { state?: unknown; version?: number }) : undefined
+  if (!persisted) return
+  void api.rehydrate()
+}
 
 describe('themeStore', () => {
   beforeEach(() => {
-    // Reset to default and clear any persisted state between tests.
-    useThemeStore.setState({ theme: 'dark' })
+    // Reset to defaults and clear any persisted state between tests.
+    useThemeStore.setState({
+      themeId: 'default-dark',
+      themeCss: '',
+      customThemes: [],
+    })
     localStorage.clear()
     document.documentElement.removeAttribute('data-theme')
+    document.getElementById('c0wrk-custom-theme')?.remove()
   })
 
-  it('defaults to dark', () => {
-    expect(useThemeStore.getState().theme).toBe('dark')
+  afterEach(() => {
+    document.getElementById('c0wrk-custom-theme')?.remove()
   })
 
-  it('setTheme updates the store state', () => {
-    const { setTheme } = useThemeStore.getState()
-    setTheme('light')
-    expect(useThemeStore.getState().theme).toBe('light')
-    setTheme('dark')
-    expect(useThemeStore.getState().theme).toBe('dark')
-  })
+  // ── v1 → v2 migration ─────────────────────────────────────────────
 
-  it('setTheme applies the data-theme attribute to <html>', () => {
-    const { setTheme } = useThemeStore.getState()
-    setTheme('light')
+  it('migrates a v1 {theme:"light"} payload to themeId default-light', () => {
+    localStorage.setItem(
+      'c0wrk-theme',
+      JSON.stringify({ state: { theme: 'light' }, version: 1 }),
+    )
+    rehydrate()
+    expect(useThemeStore.getState().themeId).toBe('default-light')
+    expect(useThemeStore.getState().themeCss).toBe('')
+    // main.tsx applies the rehydrated state before first paint — the same
+    // chain must land on data-theme="light" for a migrated light user.
+    const s = useThemeStore.getState()
+    applyThemeToDocument(s.themeId, s.themeCss)
     expect(document.documentElement.getAttribute('data-theme')).toBe('light')
-    setTheme('dark')
+  })
+
+  it('migrates a v1 {theme:"dark"} payload to themeId default-dark', () => {
+    localStorage.setItem(
+      'c0wrk-theme',
+      JSON.stringify({ state: { theme: 'dark' }, version: 1 }),
+    )
+    rehydrate()
+    expect(useThemeStore.getState().themeId).toBe('default-dark')
+  })
+
+  it('migrates a v1 payload with unknown theme value to default-dark', () => {
+    localStorage.setItem(
+      'c0wrk-theme',
+      JSON.stringify({ state: { theme: 'gruvbox' }, version: 1 }),
+    )
+    rehydrate()
+    expect(useThemeStore.getState().themeId).toBe('default-dark')
+  })
+
+  // ── data-theme application ────────────────────────────────────────
+
+  it('defaults to default-dark', () => {
+    expect(useThemeStore.getState().themeId).toBe('default-dark')
+  })
+
+  it('setTheme updates the store state and applies data-theme for built-ins', () => {
+    const { setTheme } = useThemeStore.getState()
+    setTheme('default-light')
+    expect(useThemeStore.getState().themeId).toBe('default-light')
+    expect(useThemeStore.getState().themeCss).toBe('')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+    setTheme('default-dark')
+    expect(useThemeStore.getState().themeId).toBe('default-dark')
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
   })
 
-  it('applyThemeToDocument writes the attribute directly', () => {
-    applyThemeToDocument('light')
-    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
-    applyThemeToDocument('dark')
+  it('setTheme applies a custom theme: data-theme=<id> and one injected style', () => {
+    const { setTheme } = useThemeStore.getState()
+    setTheme('nord', NORD_CSS)
+    expect(useThemeStore.getState().themeId).toBe('nord')
+    expect(useThemeStore.getState().themeCss).toBe(NORD_CSS)
+    expect(document.documentElement.getAttribute('data-theme')).toBe('nord')
+
+    const styles = document.querySelectorAll('style#c0wrk-custom-theme')
+    expect(styles.length).toBe(1)
+    const style = styles[0] as HTMLStyleElement
+    expect(style.textContent).toContain('--color-background:#2e3440')
+    // The injected sheet must also pin color-scheme to the theme type.
+    expect(style.textContent).toContain(':root{color-scheme:light}')
+    expect(style.parentElement).toBe(document.head)
+  })
+
+  it('switching back to a built-in removes the injected style element', () => {
+    const { setTheme } = useThemeStore.getState()
+    setTheme('nord', NORD_CSS)
+    expect(document.getElementById('c0wrk-custom-theme')).toBeTruthy()
+    setTheme('default-dark')
+    expect(document.getElementById('c0wrk-custom-theme')).toBeNull()
+    expect(useThemeStore.getState().themeCss).toBe('')
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+  })
+
+  it('re-applying a custom theme reuses the single style element', () => {
+    const { setTheme } = useThemeStore.getState()
+    setTheme('nord', NORD_CSS)
+    setTheme('gruvbox', ':root{--color-background:#282828;--color-foreground:#ebdbb2}')
+    const styles = document.querySelectorAll('style#c0wrk-custom-theme')
+    expect(styles.length).toBe(1)
+    expect(styles[0]?.textContent).toContain('#282828')
+    expect(styles[0]?.textContent).toContain(':root{color-scheme:dark}')
+  })
+
+  it('applyThemeToDocument is a no-op without a document', () => {
+    const doc = globalThis.document
+    // @ts-expect-error simulate a non-DOM environment (SSR/tests)
+    delete globalThis.document
+    expect(() => applyThemeToDocument('default-light', '')).not.toThrow()
+    globalThis.document = doc
+  })
+
+  // ── applyThemes catalog updates ───────────────────────────────────
+
+  it('applyThemes updates customThemes and keeps the active builtin theme', () => {
+    const { applyThemes } = useThemeStore.getState()
+    applyThemes([customLight, customDark])
+    expect(useThemeStore.getState().customThemes.map((t) => t.id)).toEqual(['nord', 'gruvbox'])
+    expect(useThemeStore.getState().themeId).toBe('default-dark')
+  })
+
+  it('applyThemes resets to default-dark when the active custom theme disappears', () => {
+    const { setTheme, applyThemes } = useThemeStore.getState()
+    setTheme('nord', NORD_CSS)
+    applyThemes([customDark]) // nord deleted on disk
+    expect(useThemeStore.getState().themeId).toBe('default-dark')
+    expect(useThemeStore.getState().themeCss).toBe('')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(document.getElementById('c0wrk-custom-theme')).toBeNull()
+  })
+
+  it('applyThemes keeps an active custom theme that is still present', () => {
+    const { setTheme, applyThemes } = useThemeStore.getState()
+    setTheme('nord', NORD_CSS)
+    applyThemes([customLight, customDark])
+    expect(useThemeStore.getState().themeId).toBe('nord')
+    expect(useThemeStore.getState().themeCss).toBe(NORD_CSS)
+    expect(document.documentElement.getAttribute('data-theme')).toBe('nord')
+  })
+
+  it('loadThemes fetches the catalog through listThemes', async () => {
+    const { listThemes } = await import('@/api/themes')
+    const mock = vi.mocked(listThemes)
+    mock.mockResolvedValueOnce([customLight])
+    await useThemeStore.getState().loadThemes()
+    expect(mock).toHaveBeenCalledTimes(1)
+    expect(useThemeStore.getState().customThemes).toEqual([customLight])
+  })
+
+  it('loadThemes swallows backend errors', async () => {
+    const { listThemes } = await import('@/api/themes')
+    const mock = vi.mocked(listThemes)
+    mock.mockRejectedValueOnce(new Error('backend not ready'))
+    await expect(useThemeStore.getState().loadThemes()).resolves.toBeUndefined()
+    expect(useThemeStore.getState().themeId).toBe('default-dark')
+  })
+
+  // ── selectActiveThemeType ─────────────────────────────────────────
+
+  it('selectActiveThemeType resolves builtin and custom descriptors', () => {
+    useThemeStore.setState({ themeId: 'default-light', customThemes: [] })
+    expect(selectActiveThemeType(useThemeStore.getState())).toBe('light')
+    useThemeStore.setState({ themeId: 'nord', customThemes: [customLight, customDark] })
+    expect(selectActiveThemeType(useThemeStore.getState())).toBe('light')
+    useThemeStore.setState({ themeId: 'gruvbox', customThemes: [customLight, customDark] })
+    expect(selectActiveThemeType(useThemeStore.getState())).toBe('dark')
+  })
+
+  it('selectActiveThemeType falls back to dark for an unknown active id', () => {
+    useThemeStore.setState({ themeId: 'missing', customThemes: [] })
+    expect(selectActiveThemeType(useThemeStore.getState())).toBe('dark')
+  })
+
+  it('selectActiveThemeType returns a referentially stable primitive', () => {
+    useThemeStore.setState({ themeId: 'nord', customThemes: [customLight] })
+    const s = useThemeStore.getState() as ThemeStore
+    expect(selectActiveThemeType(s)).toBe(selectActiveThemeType(s))
+    // Same descriptor shape, different object identity → same primitive.
+    const s2 = { ...s, customThemes: [{ ...customLight }] }
+    expect(selectActiveThemeType(s2)).toBe(selectActiveThemeType(s))
+  })
+
+  it('exposes the two builtin theme descriptors', () => {
+    expect(BUILTIN_THEMES.map((t) => t.id)).toEqual(['default-dark', 'default-light'])
   })
 })

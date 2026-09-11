@@ -225,6 +225,45 @@ func (a *App) PickAttachmentFiles() ([]string, error) {
 	})
 }
 
+// PickAndImportTheme opens a native single-select file picker restricted to
+// CSS files and imports the chosen file as a user theme in one action. This
+// must remain on App (not FrontendAPI) because it requires the Wails context,
+// exactly like PickDirectory.
+//
+// On cancel, OpenFileDialog returns ("", nil); the method then returns
+// (nil, nil) — nothing is imported and the frontend maps the null result to
+// "user cancelled". A chosen path is delegated to the embedded
+// FrontendAPI.ImportThemeFromPath, which validates the CSS and installs it
+// into the global themes directory (~/.c0wrk/themes/).
+func (a *App) PickAndImportTheme() (*backend.ThemeDTO, error) {
+	if a.ctx == nil {
+		return nil, errors.New("PickAndImportTheme: application context is not initialized")
+	}
+
+	path, err := wailsRuntime.OpenFileDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+		Title: "Import Theme",
+		Filters: []wailsRuntime.FileFilter{
+			{
+				DisplayName: "Theme files",
+				Pattern:     "*.css",
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if path == "" {
+		// Cancelled: import nothing and report no error.
+		return nil, nil
+	}
+
+	theme, err := a.ImportThemeFromPath(path)
+	if err != nil {
+		return nil, err
+	}
+	return &theme, nil
+}
+
 // log returns the instance logger, falling back to slog.Default() when nil.
 func (a *App) log() *slog.Logger {
 	if a.logger != nil {

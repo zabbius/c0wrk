@@ -1179,6 +1179,24 @@ export namespace backend {
 	
 	
 	
+	export class ThemeDTO {
+	    id: string;
+	    name: string;
+	    type: string;
+	    css: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ThemeDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.css = source["css"];
+	    }
+	}
 	export class ToolInfo {
 	    name: string;
 	    description: string;
