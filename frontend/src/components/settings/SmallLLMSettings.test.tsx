@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
@@ -18,6 +18,19 @@ vi.mock('@/lib/logger', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
+// Radix popper positioning (autoUpdate) observes the trigger/content with
+// ResizeObserver, which jsdom does not provide — the always-present combobox
+// portals its menu into document.body.
+vi.stubGlobal(
+  'ResizeObserver',
+  class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  },
+)
+
+import { TooltipProvider, TOOLTIP_DELAY_MS } from '@/components/ui/tooltip'
 import { SmallLLMSettings } from './SmallLLMSettings'
 
 const baseConfig = {
@@ -27,6 +40,33 @@ const baseConfig = {
     always_present: ['finish', 'read_file'],
     compact_descriptions: false,
     protected_tools: ['ask_user', 'finish'],
+    builtin_tools: [
+      { name: 'ask_user', description: 'ask the user a question' },
+      {
+        name: 'bash_exec',
+        description:
+          'Purpose: run shell commands.\nUse when: you need a shell.\nInputs: command.\nAnti-example: not for file reads.',
+      },
+      { name: 'cancel_delegation', description: 'cancel a running delegation' },
+      { name: 'delegate', description: 'delegate work to a subagent' },
+      { name: 'finish', description: 'finish the task' },
+      { name: 'read_file', description: 'read a file' },
+      {
+        name: 'read_skill_resource',
+        description:
+          "Purpose: read a resource file bundled with an activated skill — its reference material, scripts, or other supporting files — by skill name and a path relative to that skill's directory.\nUse when: a skill's instructions point you at a bundled file (e.g. \"see references/api.md\"); the skill must already be active on the current request.\nInputs: skill (name of the active skill that contains the resource); path (relative path within the skill directory, e.g. 'references/api.md').\nOutputs: the resource file's raw contents as text.\nExample: skill=\"pdf-processing\", path=\"references/forms.md\".\nAnti-example: not for reading a skill's instruction body or arbitrary workspace files (use read_file with a path).",
+      },
+      { name: 'reflect', description: 'reflect on the trajectory' },
+      { name: 'web_search', description: 'search the web' },
+    ],
+    tool_groups: [
+      {
+        id: 'subagents',
+        title: 'Subagents & reflection',
+        description: 'Delegate work to subagents and read their results.',
+        tools: ['delegate', 'cancel_delegation', 'reflect'],
+      },
+    ],
   },
   system_prompt: { lite: false, few_shot: false, reasoning_scaffold: false },
   sampling: {
@@ -66,9 +106,25 @@ beforeEach(() => {
   root = createRoot(container)
 })
 
+afterEach(() => {
+  // Unmount explicitly so a test's portaled Radix menus (the always-present
+  // combobox renders its list into document.body) are torn down before the
+  // next test replaces document.body. Leaving a stale root attached makes
+  // React throw "the node to be removed is not a child of this node" when it
+  // reacts to the swap.
+  act(() => {
+    root.unmount()
+  })
+  document.body.innerHTML = ''
+})
+
 const render = () =>
   act(async () => {
-    await root.render(<SmallLLMSettings />)
+    await root.render(
+      <TooltipProvider>
+        <SmallLLMSettings />
+      </TooltipProvider>,
+    )
   })
 
 const field = (label: string) => container.querySelector(`input[data-field="${label}"]`) as HTMLInputElement | null
@@ -230,6 +286,126 @@ describe('SmallLLMSettings — essential tools static selection & locked tools',
     })
     const sent = updateSmallLLMConfigMock.mock.calls[updateSmallLLMConfigMock.mock.calls.length - 1]?.[0]
     expect(sent.essential_tools.compact_descriptions).toBe(true)
+  })
+})
+
+describe('SmallLLMSettings — essential tools picker (combobox)', () => {
+  const picker = () =>
+    container.querySelector('button[aria-label="Add Always-present tools"]') as HTMLButtonElement | null
+
+  /** Open the picker's Radix menu (toggles on pointerdown, not click). */
+  async function openPicker(): Promise<void> {
+    const btn = picker()
+    expect(btn).not.toBeNull()
+    await act(async () => {
+      btn!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      await new Promise((r) => setTimeout(r, 10))
+    })
+  }
+
+  const menuItems = (): string[] =>
+    Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')).map(
+      (o) => o.textContent?.trim() ?? '',
+    )
+
+  function menuItem(label: string): HTMLElement {
+    const el = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((o) =>
+      o.textContent?.includes(label),
+    )
+    if (!el) throw new Error(`Menu item "${label}" not found`)
+    return el
+  }
+
+  /** Hover a menu item long enough for its Radix tooltip to open (real delay). */
+  async function hoverMenuItem(label: string): Promise<void> {
+    const el = menuItem(label)
+    await act(async () => {
+      el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }))
+      el.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse' }))
+      await new Promise((r) => setTimeout(r, TOOLTIP_DELAY_MS + 50))
+    })
+  }
+
+  const lastSent = () =>
+    updateSmallLLMConfigMock.mock.calls[updateSmallLLMConfigMock.mock.calls.length - 1]?.[0]
+
+  it('offers the workflow cluster plus only the built-ins that are not already allowed', async () => {
+    await render()
+    await openPicker()
+    const items = menuItems()
+    // The cluster is offered once…
+    expect(items).toContain('Subagents & reflection')
+    // …and its members are NOT offered individually (atomic selection).
+    expect(items).not.toContain('delegate')
+    expect(items).not.toContain('reflect')
+    // Ungrouped, not-yet-allowed built-ins are offered…
+    expect(items).toContain('bash_exec')
+    expect(items).toContain('web_search')
+    // …while already-allowed ones (always_present ∪ protected) are not.
+    expect(items).not.toContain('read_file')
+    expect(items).not.toContain('finish')
+    expect(items).not.toContain('ask_user')
+  })
+
+  it('picking a group pins every member of the cluster at once', async () => {
+    await render()
+    await openPicker()
+    await act(async () => {
+      menuItem('Subagents & reflection').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    const sent = lastSent()
+    expect(sent.essential_tools.always_present).toContain('delegate')
+    expect(sent.essential_tools.always_present).toContain('cancel_delegation')
+    expect(sent.essential_tools.always_present).toContain('reflect')
+    // Existing pins are preserved.
+    expect(sent.essential_tools.always_present).toContain('read_file')
+  })
+
+  it('shows a hover tooltip with the cluster description and member list (rendered markdown)', async () => {
+    await render()
+    await openPicker()
+    await hoverMenuItem('Subagents & reflection')
+    const tip = document.body.querySelector('[data-slot="tooltip-content"]')
+    expect(tip).not.toBeNull()
+    expect(tip!.textContent).toContain('Delegate work to subagents and read their results.')
+    // The member tools render as a real <ul>/<li> list under a bold label —
+    // proving the tooltip content is markdown-rendered, not raw text. (Radix's
+    // Presence may remount the portaled content in jsdom, so assert membership
+    // rather than an exact, possibly-duplicated sequence.)
+    expect(tip!.querySelector('strong')?.textContent).toBe('Tools:')
+    const items = Array.from(tip!.querySelectorAll('li')).map((li) => li.textContent)
+    for (const name of ['delegate', 'cancel_delegation', 'reflect']) {
+      expect(items).toContain(name)
+    }
+  })
+
+  it('renders a tool tooltip description as markdown (bold rubric labels)', async () => {
+    await render()
+    await openPicker()
+    await hoverMenuItem('bash_exec')
+    const tip = document.body.querySelector('[data-slot="tooltip-content"]')
+    expect(tip).not.toBeNull()
+    // Each rubric section becomes a paragraph with a bold label.
+    const strongs = Array.from(tip!.querySelectorAll('strong')).map((s) => s.textContent)
+    expect(strongs).toContain('Purpose:')
+    expect(strongs).toContain('Anti-example:')
+    expect(tip!.textContent).toContain('Purpose: run shell commands.')
+    expect(tip!.textContent).toContain('Anti-example: not for file reads.')
+  })
+
+  it('renders the read_skill_resource tooltip as markdown (bold rubric labels)', async () => {
+    await render()
+    await openPicker()
+    await hoverMenuItem('read_skill_resource')
+    const tip = document.body.querySelector('[data-slot="tooltip-content"]')
+    expect(tip).not.toBeNull()
+    // The SDK tool's description carries the same rubric as every other tool, so
+    // it formats identically — each section a paragraph with a bold label.
+    const strongs = Array.from(tip!.querySelectorAll('strong')).map((s) => s.textContent)
+    expect(strongs).toContain('Purpose:')
+    expect(strongs).toContain('Use when:')
+    expect(strongs).toContain('Anti-example:')
+    expect(tip!.textContent).toContain('read a resource file bundled with an activated skill')
   })
 })
 

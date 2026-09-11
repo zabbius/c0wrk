@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/smallllm"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/llm"
+	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
 // maskedAPIKey is the placeholder returned for configured API keys in the UI.
@@ -702,17 +705,113 @@ func responseToGroupPolicies(groups map[string]GroupPolicyResponse) (map[string]
 }
 
 // GetSmallLLMConfig returns the current effective small-LLM profile
-// configuration. Returns a zero value when config is not yet initialized.
+// configuration, plus the read-only always-present picker universe
+// (essential_tools.builtin_tools / tool_groups) read from the live tool
+// registry. When config is not yet initialized the profile fields stay
+// zero-valued, but the picker universe is still populated and always_present is
+// normalized to a non-nil empty slice.
 func (f *FrontendAPI) GetSmallLLMConfig() SmallLLMConfigResponse {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
 
+	// Picker universe (built-in tools + workflow clusters) comes from the live
+	// tool registry, not from config, so it is read here rather than in the
+	// pure smallLLMToResponse.
+	builtinTools, toolGroups := f.smallLLMPickerData()
+
 	if f.config == nil {
 		return SmallLLMConfigResponse{
-			EssentialTools: SmallLLMEssentialToolsResp{AlwaysPresent: []string{}},
+			EssentialTools: SmallLLMEssentialToolsResp{
+				AlwaysPresent: []string{},
+				BuiltinTools:  builtinTools,
+				ToolGroups:    toolGroups,
+			},
 		}
 	}
-	return smallLLMToResponse(f.config.SmallLLM)
+	resp := smallLLMToResponse(f.config.SmallLLM)
+	resp.EssentialTools.BuiltinTools = builtinTools
+	resp.EssentialTools.ToolGroups = toolGroups
+	return resp
+}
+
+// smallLLMPickerData returns the read-only picker universe for the
+// always-present picker: every registered built-in tool that is neither
+// MCP-sourced nor goal-mode-only, with its description, plus the workflow
+// clusters (each restricted to that universe). Both slices are non-nil, so JSON
+// serializes them as []. Returns empty slices when the application is
+// unavailable (before construction, or in unit tests built without an
+// Application).
+func (f *FrontendAPI) smallLLMPickerData() ([]SmallLLMBuiltinTool, []SmallLLMToolGroup) {
+	if f.app == nil {
+		return []SmallLLMBuiltinTool{}, []SmallLLMToolGroup{}
+	}
+	tools := builtinToolInfos(f.app.ListTools())
+	return tools, smallLLMToolGroups(tools)
+}
+
+// builtinToolInfos extracts the picker universe from a descriptor list, sorted
+// by name, each with its registry description. Two classes of built-in are
+// excluded because pinning them would be inert:
+//
+//   - MCP tools — the essential-tools selection always keeps them implicitly,
+//     so pinning one is a no-op;
+//   - goal-mode-only tools (propose_goal / declare_goal_status /
+//     declare_verification) — they are stripped from every non-goal run before
+//     the selection runs (tools.StripGoalModeTools) and the selection is not
+//     applied in goal mode at all, so their availability never depends on the
+//     user's selection.
+//
+// Everything else is returned, including the reserved system/orchestration
+// group and the protected tools (smallllm.ProtectedToolNames) — the latter are
+// the selection's un-narrowable members, so the picker subtracts the
+// already-allowed set before offering an entry (see SmallLLMEssentialToolsResp).
+// Deterministic (sorted) and freshly allocated so callers may mutate it.
+//
+// The description is the tool's registry text verbatim: every built-in — c0wrk
+// and sp4rk alike — follows the purpose/when-to-use/inputs/outputs/example/
+// anti-example rubric (guarded in core/tools and sp4rk/tools/builtins), so the
+// UI can reformat it into markdown for the picker's hover tooltip.
+func builtinToolInfos(descriptors []sdktools.ToolDescriptor) []SmallLLMBuiltinTool {
+	out := make([]SmallLLMBuiltinTool, 0, len(descriptors))
+	for _, d := range descriptors {
+		if d.SourceCategory == sdktools.SourceCategoryMCP || coretools.IsGoalModeTool(d.Name) {
+			continue
+		}
+		out = append(out, SmallLLMBuiltinTool{Name: d.Name, Description: d.Description})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// smallLLMToolGroups projects the workflow-cluster catalog onto the picker
+// universe: a cluster is kept when at least one of its members is in the
+// universe (members are filtered to it), and a cluster with no surviving member
+// is dropped. The result is freshly allocated.
+func smallLLMToolGroups(tools []SmallLLMBuiltinTool) []SmallLLMToolGroup {
+	registered := make(map[string]struct{}, len(tools))
+	for _, t := range tools {
+		registered[t.Name] = struct{}{}
+	}
+	catalog := smallllm.ToolGroupCatalog()
+	out := make([]SmallLLMToolGroup, 0, len(catalog))
+	for _, g := range catalog {
+		members := make([]string, 0, len(g.Tools))
+		for _, name := range g.Tools {
+			if _, ok := registered[name]; ok {
+				members = append(members, name)
+			}
+		}
+		if len(members) == 0 {
+			continue
+		}
+		out = append(out, SmallLLMToolGroup{
+			ID:          g.ID,
+			Title:       g.Title,
+			Description: g.Description,
+			Tools:       members,
+		})
+	}
+	return out
 }
 
 // UpdateSmallLLMConfig validates, persists, and applies a new small-LLM
@@ -887,7 +986,9 @@ func validateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
 // orchestration tools (finish, fact memory, ask_user) are unioned into the
 // response's always_present so the UI can render them as permanently present
 // ("locked") — they are always kept by SelectTools regardless of the user's
-// list.
+// list. BuiltinTools and ToolGroups are left zero here: they are derived from
+// the live tool registry and populated by GetSmallLLMConfig, so this converter
+// stays pure.
 func smallLLMToResponse(c config.SmallLLMConfig) SmallLLMConfigResponse {
 	return SmallLLMConfigResponse{
 		Enabled: c.Enabled,

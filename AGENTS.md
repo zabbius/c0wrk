@@ -134,6 +134,8 @@ The identifier is derived from the repository's **absolute path**: replace every
 - Don't `go install` the ONNX runtime differently per-machine — always go through `make fetch-onnx` so `.cache/` stays consistent.
 - Don't commit `coverage*.out`, `*_cov.out`, `config.local.yaml`, `.cache/`, `build/bin/`, or anything matched in `.gitignore`.
 - Don't create new arrays or objects inside Zustand selectors (e.g. `useStore(s => s.items.map(…))` or `useStore(s => condition ? derive(s) : [])`). React 19's `useSyncExternalStore` compares snapshots by reference — a new object/array on every call causes an infinite re-render loop (React error #185). Return direct store references from selectors and derive values with `useMemo` in a custom hook.
+- Don't size anything with a raw viewport unit (`100vh`/`100vw`/`vmin`/`vmax`/`vi`/`vb`/`dvh`/`dvw`/`svh`/`svw`/`lvh`/`lvw`) or a Tailwind `*-screen` utility (`h-screen`/`w-screen`/`max-h-screen`). The UI Scale applies CSS `zoom` on `<html>`, which magnifies viewport units, so such a size is blown past the window and forces horizontal + vertical scrollbars around the whole app at any scale ≠ 100%. Use percentages for the shell/full-height containers and the `--ui-vh` primitive for viewport-derived sizes (see **UI Scale** in Frontend architecture). A project-wide test fails the build on any violation.
+- Don't position a floating panel from a raw pointer coordinate (`MouseEvent.clientX/clientY`, `getBoundingClientRect()`, or a bare `.x`/`.y`). Those are VISUAL px while `style.left/top` is LAYOUT px under the UI Scale zoom, so the panel lands `coordinate × (zoom − 1)` away from the cursor and can run off-screen. Route it through `lib/cursorMenuPosition` (pointer-anchored) or `lib/layoutSpace` (trigger-anchored).
 
 ## Frontend architecture
 
@@ -169,6 +171,7 @@ Three-column panel layout (no router): Sidebar (persisted width, clamped 180-500
 | `settingsStore`      | Settings modal open/close, active tab                                                          |
 | `uiStore`            | Sidebar collapsed state, log level                                                             |
 | `themeStore`         | App theme (`dark` \| `light`), persisted; writes `data-theme` to `<html>`                       |
+| `uiScaleStore`       | App-wide UI scale in percent (50–200, persisted `c0wrk-ui-scale`); applies CSS `zoom` on `<html>` and the `--ui-zoom`/`--ui-vh` primitives; see **UI Scale** in Frontend architecture |
 | `soundStore`         | Persisted master toggle for synthesized foreground/background notification sounds               |
 | `vectorIndexStore`   | Vector index status/progress                                                                   |
 | `goalStore`          | Goal lifecycle: pending proposal (condition/verify/clarification), status verdict, progress    |
@@ -207,6 +210,17 @@ Cross-component scroll coordination uses a React context (`ScrollContext.tsx`), 
 
 One Dark is the default theme; a One Light override activates under `<html data-theme="light">` (toggled via `themeStore`). All colors as Tailwind v4 `@theme` custom properties (background `#282c34`, foreground `#abb2bf`, primary `#abb2bf` with primary-rgb `82,139,255` for rgba), destructive `#e06c75`, success `#98c379`, warning `#d19a66`, info `#61afef`, highlight `#e5c07b`). Base font 14px, dark color-scheme. Focus outlines globally suppressed. Custom scrollbar class (`.custom-scrollbar`, 8px, semi-transparent thumb).
 
+### UI Scale (zoom-safety)
+
+App-wide UI scale (`uiScaleStore`, persisted `c0wrk-ui-scale`, 50–200%, default 100) is applied as CSS `zoom` on `<html>`. `zoom` pre-multiplies the used value of every `<length>` (including `100vh`/`100vw`) but leaves `auto`/percentages untouched, and it splits geometry into two coordinate spaces: `MouseEvent.clientX/clientY`, `getBoundingClientRect()` and `window.innerWidth/innerHeight` report **VISUAL px** (layout × zoom), while `style.left/top`, `offsetWidth/offsetHeight` and `100vh`/`100vw` are **LAYOUT px**. Every frontend change MUST stay zoom-safe:
+
+- **Size full-height/full-bleed containers with percentages** — the `html`/`body`/`#root` `height: 100%` chain plus `AppLayout`'s `h-full w-full`. Never a raw viewport unit or `*-screen` utility.
+- **Size viewport-derived regions with `--ui-vh`** — the zoom-corrected `100vh` (`calc(100vh / var(--ui-zoom, 1))`, defined in `index.css`, kept in sync by `applyScaleToDocument`). Write `max-h-[calc(var(--ui-vh)*0.8)]`, never `max-h-[80vh]`; fixed/portaled overlays may use a percentage instead. Absolute lengths (`px`/`rem`) intentionally scale and stay as-is.
+- **Position pointer-anchored panels via `lib/cursorMenuPosition`** (`useCursorMenuPosition` + pure `computeCursorMenuPlacement`) — it converts the pointer anchor to layout px, measures the panel, and flips/clamps it so it opens at the cursor and entirely inside the visible window at any scale.
+- **Feed trigger-anchored dropdowns through `lib/layoutSpace`** (`toLayoutTriggerRect`, `getLayoutViewport`) before `computeDropdownPosition`, and divide pointer deltas by `getUiZoomFactor()` when they feed layout-px sizes (panel resize via `useResize.pointerDeltaToLayout`, canvas pan/zoom via `usePanZoom`). Radix popovers/tooltips/selects need no per-component handling — `lib/floatingUiZoom.ts` compensates the shared `@floating-ui/dom` platform globally (installed once in `main.tsx`).
+
+At 100% scale every compensation is an identity. The invariant is guarded by `frontend/src/test/zoomViewportInvariant.test.ts` (project-wide source scan for raw viewport units, `*-screen` utilities, and raw-anchor `left`/`top`) plus `AppLayout.test.tsx`, `lib/cursorMenuPosition.test.tsx`, `lib/layoutSpace.test.ts`, `stores/uiScaleStore.test.ts`, `lib/floatingUiZoom.test.ts`, `hooks/useResize.test.ts`, `lib/usePanZoom.test.ts`. Full coordinate model and rules: `specs/domains/frontend/ui-scale.md`.
+
 ### Event handling pattern
 
 Session event handler subscribes to all session-scoped events on session change. Each handler: validates data with type guard → updates activity status → adds/updates chat store message → updates plan store. Streaming: `assistant_chunk` sets/appends text, `assistant_done` flushes to permanent message.
@@ -224,6 +238,7 @@ Session event handler subscribes to all session-scoped events on session change.
 - Declarative persistence. Use Zustand middleware, not manual localStorage calls.
 - No module-level side effects. Store files define stores. Initialization happens in React lifecycle hooks after runtime readiness confirmed.
 - Event handlers are testable. Each event type has focused handler function testable in isolation without React rendering.
+- Zoom-safe geometry. Anything touching viewport-derived sizes or pointer-anchored placement must be correct under the UI Scale (see **UI Scale** in Frontend architecture): percentages for the shell, `--ui-vh` for viewport-derived sizes, and `lib/cursorMenuPosition`/`lib/layoutSpace` for anchored panels — never raw viewport units or raw pointer coordinates.
 
 ## Pre-PR checklist
 

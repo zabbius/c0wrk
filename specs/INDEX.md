@@ -36,6 +36,7 @@
 | Git auto-fetch (background `git fetch`, switch/ticker/focus triggers) | [domains/git-auto-fetch.md](domains/git-auto-fetch.md)             |
 | Auxiliary work directories               | [architecture/security-model.md](architecture/security-model.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Work Directories section), [domains/frontend/stores.md](domains/frontend/stores.md) (`workDirsStore`) |
 | Frontend stores, state management        | [domains/frontend/stores.md](domains/frontend/stores.md)                 |
+| UI scale / zoom-safe sizing & popover placement | [domains/frontend/ui-scale.md](domains/frontend/ui-scale.md)       |
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
 | Message rendering, display items         | [domains/frontend/rendering.md](domains/frontend/rendering.md)           |
 | Sound notifications, audio reliability   | [domains/frontend/sound-notifications.md](domains/frontend/sound-notifications.md) |
@@ -123,6 +124,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 ### domains/frontend/
 
 - [README.md](domains/frontend/README.md) - Frontend architecture overview
+- [ui-scale.md](domains/frontend/ui-scale.md) - UI scale feature and the zoom-safety invariant: coordinate spaces (visual vs layout px), percentage/`--ui-vh` sizing, pointer-anchored panel placement, floating-ui compensation, guard tests
 - [stores.md](domains/frontend/stores.md) - Zustand store catalog
 - [events.md](domains/frontend/events.md) - Event subscription and handling
 - [rendering.md](domains/frontend/rendering.md) - Message grouping and display pipeline

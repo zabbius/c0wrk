@@ -19,9 +19,11 @@ import (
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/proxy"
 	"github.com/v0lka/c0wrk/core/smallllm"
+	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/skills"
+	sdktools "github.com/v0lka/sp4rk/tools"
 	_ "modernc.org/sqlite"
 )
 
@@ -1552,6 +1554,118 @@ func TestGetSmallLLMConfig_NilConfigReturnsZero(t *testing.T) {
 	got := f.GetSmallLLMConfig()
 	if got.Enabled {
 		t.Error("Enabled = true, want false for nil config")
+	}
+}
+
+// TestBuiltinToolInfos_ExcludesNonNarrowable verifies the always-present picker
+// universe helper: MCP-sourced tools are excluded (the selection always keeps
+// them implicitly, so pinning one is a no-op) and goal-mode-only tools too (they
+// are stripped from every non-goal run before the selection runs and the
+// selection is not applied in goal mode), while every remaining built-in —
+// including the reserved system/orchestration group — is included, sorted by
+// name for a stable UI list, each carrying its registry description.
+func TestBuiltinToolInfos_ExcludesNonNarrowable(t *testing.T) {
+	descriptors := []sdktools.ToolDescriptor{
+		{Name: "web_search", SourceCategory: sdktools.SourceCategoryCore, Description: "search the web"},
+		{Name: "read_file", SourceCategory: sdktools.SourceCategoryCore, Description: "read a file"},
+		{Name: "delegate", SourceCategory: sdktools.SourceCategoryCore, Description: "run a subagent"},
+		{Name: "finish", SourceCategory: sdktools.SourceCategoryCore, Description: "finish the task"},
+		{Name: "mcp_linter", SourceCategory: sdktools.SourceCategoryMCP, Description: "lint"},
+		{Name: "propose_goal", SourceCategory: sdktools.SourceCategoryCore, Description: "propose a goal"},
+		{Name: "declare_verification", SourceCategory: sdktools.SourceCategoryCore, Description: "verify"},
+	}
+
+	got := builtinToolInfos(descriptors)
+	wantNames := []string{"delegate", "finish", "read_file", "web_search"}
+	gotNames := make([]string, 0, len(got))
+	for _, g := range got {
+		if g.Description == "" {
+			t.Errorf("tool %q has an empty description", g.Name)
+		}
+		gotNames = append(gotNames, g.Name)
+	}
+	if !slices.Equal(gotNames, wantNames) {
+		t.Errorf("builtinToolInfos names = %v, want %v (narrowable built-ins only, sorted)", gotNames, wantNames)
+	}
+	for _, g := range got {
+		if g.Name == "mcp_linter" {
+			t.Error("MCP-sourced tool leaked into the built-in tool universe")
+		}
+		if coretools.IsGoalModeTool(g.Name) {
+			t.Errorf("goal-mode-only tool %q leaked into the built-in tool universe", g.Name)
+		}
+	}
+}
+
+// TestSmallLLMToolGroups_FilteredToRegistered verifies the cluster projection:
+// member names absent from the picker universe are dropped, a cluster left with
+// no surviving member is omitted, and the surviving members keep catalog order.
+func TestSmallLLMToolGroups_FilteredToRegistered(t *testing.T) {
+	// A subset of the plan cluster plus a delegate tool is in the universe, so
+	// the subagents cluster keeps only delegate and the plan cluster only its two
+	// present members.
+	universe := []SmallLLMBuiltinTool{
+		{Name: "declare_plan"},
+		{Name: "update_checklist"},
+		{Name: "delegate"},
+		{Name: "unrelated_tool"},
+	}
+
+	got := smallLLMToolGroups(universe)
+	byID := make(map[string]SmallLLMToolGroup, len(got))
+	for _, g := range got {
+		byID[g.ID] = g
+	}
+
+	plan, ok := byID["plan"]
+	if !ok {
+		t.Fatal("plan cluster missing despite two present members")
+	}
+	if want := []string{"declare_plan", "update_checklist"}; !slices.Equal(plan.Tools, want) {
+		t.Errorf("plan members = %v, want %v (present only, catalog order)", plan.Tools, want)
+	}
+	if plan.Title == "" || plan.Description == "" {
+		t.Error("plan cluster is missing title/description")
+	}
+
+	subagents, ok := byID["subagents"]
+	if !ok {
+		t.Fatal("subagents cluster missing despite delegate being present")
+	}
+	if want := []string{"delegate"}; !slices.Equal(subagents.Tools, want) {
+		t.Errorf("subagents members = %v, want %v (only delegate is present)", subagents.Tools, want)
+	}
+
+	if len(got) != 2 {
+		t.Errorf("got %d clusters, want 2 (plan and subagents)", len(got))
+	}
+
+	// A cluster whose members are all absent from the universe is dropped: with
+	// only a plan member present, the subagents cluster has no surviving member.
+	onlyPlan := smallLLMToolGroups([]SmallLLMBuiltinTool{{Name: "execute_plan"}})
+	if len(onlyPlan) != 1 || onlyPlan[0].ID != "plan" {
+		t.Errorf("clusters = %v, want just plan (subagents has no present member)", onlyPlan)
+	}
+}
+
+// TestGetSmallLLMConfig_BuiltinToolsAlwaysNonNil verifies the JSON contract: the
+// read-only builtin_tools and tool_groups fields are always non-nil slices
+// ([] not null), even when the application — and therefore the tool registry —
+// is unavailable.
+func TestGetSmallLLMConfig_BuiltinToolsAlwaysNonNil(t *testing.T) {
+	f := &FrontendAPI{} // no app: registry unavailable
+	got := f.GetSmallLLMConfig()
+	if got.EssentialTools.BuiltinTools == nil {
+		t.Error("BuiltinTools is nil, want non-nil (normalized to [])")
+	}
+	if len(got.EssentialTools.BuiltinTools) != 0 {
+		t.Errorf("BuiltinTools = %v, want empty when the registry is unavailable", got.EssentialTools.BuiltinTools)
+	}
+	if got.EssentialTools.ToolGroups == nil {
+		t.Error("ToolGroups is nil, want non-nil (normalized to [])")
+	}
+	if len(got.EssentialTools.ToolGroups) != 0 {
+		t.Errorf("ToolGroups = %v, want empty when the registry is unavailable", got.EssentialTools.ToolGroups)
 	}
 }
 

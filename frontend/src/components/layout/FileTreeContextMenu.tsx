@@ -8,6 +8,7 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
 import { logger } from '@/lib/logger'
 import type { FileEntry } from '@/types/models'
 
@@ -15,7 +16,11 @@ interface FileTreeContextMenuProps {
   entry: FileEntry
   /** Workspace root — when provided, stripped to form the relative path. */
   workspaceRoot: string | null
-  /** Viewport coordinates where the menu appears; null renders nothing. */
+  /**
+   * Viewport coordinates where the menu appears (VISUAL px, as reported by
+   * `MouseEvent.clientX/clientY`); null renders nothing. Unit conversion and
+   * the viewport fit/flip decision live in {@link useCursorMenuPosition}.
+   */
   position: { x: number; y: number } | null
   /** Called when the menu should close. */
   onClose: () => void
@@ -52,6 +57,8 @@ export function FileTreeContextMenu({
   const menuRef = useRef<HTMLDivElement>(null)
   const [isIgnoring, setIsIgnoring] = useState(false)
   const relativePath = toRelativePath(entry.path, workspaceRoot ?? undefined)
+  // Zoom-corrected, viewport-clamped placement (left/top in layout px).
+  const menuPosition = useCursorMenuPosition(position, menuRef)
 
   // Git-only actions ("Add to .gitignore", "View History") make no sense in
   // a project whose workspace is not a git repository — the Git panel does
@@ -177,7 +184,13 @@ export function FileTreeContextMenu({
           ref={menuRef}
           role="menu"
           aria-label="File tree actions"
-          style={{ position: 'fixed', left: position.x, top: position.y, zIndex: 9999 }}
+          style={{
+            position: 'fixed',
+            left: menuPosition?.left ?? 0,
+            top: menuPosition?.top ?? 0,
+            visibility: menuPosition ? 'visible' : 'hidden',
+            zIndex: 9999,
+          }}
           className={cn(
             'min-w-[12rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md',
             'animate-in fade-in-0 zoom-in-95',

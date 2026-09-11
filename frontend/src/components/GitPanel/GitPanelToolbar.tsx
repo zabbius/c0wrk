@@ -1,4 +1,4 @@
-import { Settings } from 'lucide-react'
+import { GitGraph } from 'lucide-react'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { BranchDropdown } from './BranchDropdown'
 
@@ -26,7 +26,7 @@ export function GitPanelToolbar() {
         aria-label="Manage branches"
         className="mr-1 flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
       >
-        <Settings className="size-3.5" />
+        <GitGraph className="size-3.5" />
       </button>
     </div>
   )

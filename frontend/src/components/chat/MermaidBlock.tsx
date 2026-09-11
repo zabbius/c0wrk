@@ -161,7 +161,7 @@ export function MermaidBlock({ code }: MermaidBlockProps) {
         // dominating the chat while leaving room to scroll large ones; the
         // min/max clamps prevent collapse on short viewports and runaway
         // height on large monitors.
-        className="mermaid-canvas relative h-[44vh] max-h-[520px] min-h-[160px] w-full cursor-grab touch-none select-none overflow-hidden active:cursor-grabbing"
+        className="mermaid-canvas relative h-[calc(var(--ui-vh)*0.44)] max-h-[520px] min-h-[160px] w-full cursor-grab touch-none select-none overflow-hidden active:cursor-grabbing"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}

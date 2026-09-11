@@ -375,4 +375,37 @@ describe('GitHistoryTab pagination', () => {
     await flush()
     expect(commitMessages()).toEqual(['feat: x', 'docs: readme', 'init'])
   })
+
+  it('keeps Load more below the whole history (list wrapper opts out of flex-shrink)', async () => {
+    gitMocks.getGitHistory.mockResolvedValue(makePage(PAGE_1 as typeof COMMITS, 2, true))
+    renderTab()
+    await flush()
+    await flush()
+
+    const btn = loadMoreButton()
+    expect(btn).toBeTruthy()
+
+    // The button lives inside the scroll container (a flex column). Walk up
+    // to that container.
+    let scroll: HTMLElement | null = btn!.parentElement
+    while (scroll && !scroll.classList.contains('overflow-y-auto')) {
+      scroll = scroll.parentElement
+    }
+    expect(scroll).toBeTruthy()
+
+    // The virtualized list wrapper is a DIRECT child of the scroll container
+    // and must carry `shrink-0`: without it flex collapses the wrapper to the
+    // viewport height (its only children are absolutely positioned), which
+    // drags the in-flow button up to the bottom of the visible area where the
+    // overflowing rows paint over it.
+    const listWrapper = Array.from(scroll!.children).find((c) =>
+      c.classList.contains('shrink-0'),
+    )
+    expect(listWrapper).toBeTruthy()
+
+    // The button flows AFTER the full-height list (not inside it), so it only
+    // becomes visible once the user scrolls to the very bottom.
+    expect(listWrapper!.contains(btn!)).toBe(false)
+    expect(scroll!.lastElementChild).toBe(btn!.parentElement)
+  })
 })

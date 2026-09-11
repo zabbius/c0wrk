@@ -87,7 +87,7 @@ function App() {
   // fresh app-wide; the indicator is now a pure consumer of that store.
   useActiveSessionsRefresh()
   useUpdateChecker()
-  // Native window title (c0wrk - Project - Session) — mounted at the root so
+  // Native window title (c0wrk - Project: Session) — mounted at the root so
   // the title tracks the active context in every app phase.
   useWindowTitle()
   // Fetch-on-focus (git auto-fetch, window-focus trigger): the hook arms

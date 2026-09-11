@@ -10,10 +10,10 @@ React 19 application providing the user interface for c0wrk: chat interaction, p
 - `frontend/src/stores/` — Zustand state management (22 stores)
 - `frontend/src/hooks/` — custom React hooks (event handlers, data loading)
 - `frontend/src/api/` — backend RPC wrapper layer
-- `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config + local image resolution, local file link detection, CodeMirror extensions)
+- `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config + local image resolution, local file link detection, CodeMirror extensions, the UI-scale geometry helpers `layoutSpace` + `cursorMenuPosition`, and the `@floating-ui/dom` zoom compensation `floatingUiZoom`)
 - `frontend/src/components/` — UI component tree
 - `frontend/src/types/` — TypeScript type definitions
-- `frontend/src/index.css` — design tokens (Tailwind v4 @theme)
+- `frontend/src/index.css` — design tokens (Tailwind v4 @theme), the `height: 100%` base-sizing chain, and the zoom-corrected `--ui-vh` primitive
 
 ## Core Types
 
@@ -173,6 +173,7 @@ Project switching is orchestrated by `useProjectSwitchState`: it saves source-pr
 - An unpinned expanded file viewer overlays the chat and auto-collapses on an outside pointerdown, or on focus leaving it once it held focus (a freshly expanded viewer ignores the Radix focus-restore that follows opening a file from a portal menu — e.g. the Research panel's "View artifacts" dropdown); a pinned viewer remains an in-flow resizable column
 - Collapsing an unpinned viewer preserves the unpinned preference and renders a 40px in-flow reopen rail
 - Persisted desktop window dimensions are accepted only at or above the minimum usable size; invalid state falls back to defaults
+- The frontend is **zoom-safe** under the app-wide UI Scale (`zoom` on `<html>`, see [ui-scale.md](ui-scale.md)): the shell and full-height containers size with percentages, viewport-derived sizes use the `--ui-vh` primitive, and pointer-anchored floating panels open at the cursor and fully inside the visible window at any scale — enforced by `frontend/src/test/zoomViewportInvariant.test.ts` plus the per-primitive guards
 
 ## Configuration
 
@@ -204,6 +205,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 
 ## Related Specs
 
+- [ui-scale.md](ui-scale.md) — UI scale feature and the zoom-safety invariant
 - [stores.md](stores.md) — Zustand store catalog
 - [events.md](events.md) — event handling architecture
 - [rendering.md](rendering.md) — message display pipeline

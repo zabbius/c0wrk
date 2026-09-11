@@ -18,6 +18,7 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 - `frontend/src/stores/gitPanelStore.ts`
 - `frontend/src/stores/settingsStore.ts`
 - `frontend/src/stores/uiStore.ts`
+- `frontend/src/stores/uiScaleStore.ts`
 - `frontend/src/stores/vectorIndexStore.ts`
 - `frontend/src/stores/attachmentsStore.ts`
 - `frontend/src/stores/workDirsStore.ts`
@@ -46,6 +47,7 @@ Zustand stores provide normalized, reactive state management. Each store owns on
 | `gitPanelStore`      | Git panel UI state (branch info ahead/behind, merge/rebase state, sort/filter), a **per-project active-tab map** `activeTabByProject` (`files` \| `changes` \| `history`, keyed by project id; an absent key — or no active project — defaults to `files` via `selectGitPanelTab`), and a transient per-project commit-box slice `commitByProject` (draft message, AI-generate/commit in-flight flags, error, success SHA). Both per-project maps are keyed by project id so they survive project switches and GitPanel unmounts, with async writes keyed to the project captured at click time; `activeTabByProject` is **persisted** (validated entry-by-entry on rehydrate) and **dropped per project** via `dropProjectTabs`, while `commitByProject` is in-memory only and dropped via `dropProjectCommitState` | localStorage (view/expanded/sort/group prefs + `activeTabByProject`) |
 | `settingsStore`      | Settings modal open/close, active tab                              | No           |
 | `uiStore`            | Sidebar collapsed state and clamped width, a **per-project active workspace-tab map** `workspaceTabByProject` (`explorer` \| `git` \| `semantics` \| `research`, keyed by project id; an absent key — or no active project — defaults to `explorer` via `selectWorkspaceTab`), chat session-list/workspace split ratio (`chatSessionListRatio`), and session-stats row visibility (`showSessionStats`) (log level is fetched via `GetLogLevel` RPC, not stored) | localStorage (`workspaceTabByProject` included) |
+| `uiScaleStore`       | App-wide UI scale in percent (`50`–`200`, default `100`). `setScale` normalizes/clamps, applies the factor as CSS `zoom` on `<html>` via `applyScaleToDocument`, and dispatches a window `resize` so open floating-ui popovers recompute against the new geometry. Re-applied pre-paint in `main.tsx`; `getUiZoomFactor()` reads the live factor outside React for coordinate compensation (resize drags, pan/zoom, floating-ui), and `applyScaleToDocument` mirrors it as the `--ui-zoom` CSS custom property that index.css turns into the zoom-corrected `--ui-vh` length. See [ui-scale.md](ui-scale.md) for the zoom-safety invariant. | localStorage (`c0wrk-ui-scale`) |
 | `vectorIndexStore`   | Vector index status, progress, and search mode                     | localStorage (mode only) |
 | `workDirsStore`      | Auxiliary work directories (project-scoped + session-scoped lists), modal open/close state | No           |
 | `goalStore`          | Goal-mode state per session (lifecycle status, turn/budget, active goal condition+verify, pending proposal, verdict reason+evidence, independent verifier outcome `verification`/`verificationReason`/`verificationEvidence`, per-goal `verificationMode`); reconciled from `goal_status`/`goal_progress` service-phase events. The status-bar indicator (`GoalStatusIndicator`) is a **read-only** badge (icon + turn + budget) that reads `useGoalStatus` (primitive string) + `useActiveGoal` (direct ref) — it offers no Pause/Resume/Clear controls (pause/resume is session-level, driven from `chatStore.paused`). | No           |
@@ -116,6 +118,7 @@ const active = useStore((s) => s.activeId);
 - Store actions are synchronous (async operations in hooks that call actions)
 - Project switch orchestration executes in hooks (`useProjectSwitchState`) with ordered cross-store updates: reset `sessionStore` before destination session load, then restore `fileViewerStore` tabs/files from persisted project state
 - Session activation after project switch uses deterministic saved-first fallback via the shared `resolveRestoreSession` helper (`lib/sessionRestore.ts`): saved session ID when valid and non-archived, otherwise latest non-archived session by effective activity, otherwise newly created session; archived sessions are never auto-selected. App startup restores the exact last active context (`useProjectLoader` → `GetLastActiveProjectID`, including No Project/CHAT) with the CODE-first heuristic as fallback — see `session-lifecycle.md` § Startup Context Restoration
+- The app shell, every viewport-derived size, and every floating panel are **zoom-safe** under the app-wide UI scale (applied as CSS `zoom` on `<html>`): the shell and full-height containers size with percentages (`height: 100%` chain + `h-full w-full`), viewport-derived sizes go through the `--ui-vh` primitive, and pointer-anchored panels derive their `left`/`top` from `lib/cursorMenuPosition`/`lib/layoutSpace` so they open at the cursor and fully inside the visible window at any scale. The full coordinate model, rules, and guard tests live in [ui-scale.md](ui-scale.md).
 
 ## Error Handling
 
@@ -129,5 +132,6 @@ const active = useStore((s) => s.activeId);
 ## Related Specs
 
 - [README.md](README.md) — frontend architecture overview
+- [ui-scale.md](ui-scale.md) — UI scale feature and the zoom-safety invariant
 - [events.md](events.md) — how events update stores
 - [rendering.md](rendering.md) — how stores drive rendering

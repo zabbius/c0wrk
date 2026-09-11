@@ -128,7 +128,7 @@ function HunkComboBox({ entries, currentIndex, onSelect }: HunkComboBoxProps) {
       <DropdownMenuContent
         align="start"
         style={{ minWidth: 'var(--radix-dropdown-menu-trigger-width)' }}
-        className="max-h-[min(60vh,24rem)]"
+        className="max-h-[min(calc(var(--ui-vh)*0.6),24rem)]"
       >
         {entries.map((entry) => {
           const isCurrent = entry.index === currentIndex

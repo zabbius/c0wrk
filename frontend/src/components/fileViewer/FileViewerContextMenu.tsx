@@ -4,6 +4,7 @@ import { useInputModeStore } from '@/stores/inputModeStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
+import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
 import { cn } from '@/lib/utils'
 
 interface FileViewerContextMenuProps {
@@ -11,7 +12,12 @@ interface FileViewerContextMenuProps {
   reference: string
   /** Selected source text to seed a "Find similar" vector search. */
   selectedText: string
-  /** Viewport coordinates where the menu should appear. */
+  /**
+   * Viewport coordinates where the menu should appear (VISUAL px, as reported
+   * by `MouseEvent.clientX/clientY`); null renders nothing. Conversion to the
+   * layout-px `left/top` the panel is styled with — and the viewport fit/flip
+   * decision — is handled by {@link useCursorMenuPosition}.
+   */
   position: { x: number; y: number } | null
   /** Called when the menu should close. */
   onClose: () => void
@@ -33,6 +39,8 @@ export function FileViewerContextMenu({ reference, selectedText, position, onClo
   // state live while the menu is open, e.g. when indexing finishes mid-hover.
   const indexState = useVectorIndexStore((s) => s.status.state)
   const findSimilarReady = indexState === 'ready'
+  // Zoom-corrected, viewport-clamped placement (left/top in layout px).
+  const menuPosition = useCursorMenuPosition(position, menuRef)
 
   const handleAddToChat = useCallback(() => {
     insertTextIntoInput(reference)
@@ -109,8 +117,11 @@ export function FileViewerContextMenu({ reference, selectedText, position, onClo
       aria-label="File viewer context menu"
       style={{
         position: 'fixed',
-        left: position.x,
-        top: position.y,
+        // Layout px (see useCursorMenuPosition): 'hidden' holds the first frame
+        // until the panel is measured — the layout effect lands before paint.
+        left: menuPosition?.left ?? 0,
+        top: menuPosition?.top ?? 0,
+        visibility: menuPosition ? 'visible' : 'hidden',
         zIndex: 9999,
       }}
       className={cn(

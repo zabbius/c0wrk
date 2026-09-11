@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useDropdown } from '@/hooks/useDropdown'
 import { computeDropdownPosition, type DropdownPosition } from '@/lib/dropdownPosition'
+import { getLayoutViewport, toLayoutTriggerRect } from '@/lib/layoutSpace'
 import { compositeModelId, bareModel, findModelRef, type ModelRef } from '@/lib/modelId'
 import { cn } from '@/lib/utils'
 
@@ -199,17 +200,29 @@ export function ModelPickerMenu({
     const recompute = () => {
       const trigger = triggerRef.current
       if (!trigger) return
+      // getBoundingClientRect() and window.innerWidth/innerHeight report VISUAL
+      // px (magnified by the UI-scale `zoom` on <html>), while the menu's
+      // style.left/top are LAYOUT px. `toLayoutTriggerRect`/`getLayoutViewport`
+      // move the viewport-derived inputs into layout px (offsetHeight already
+      // is) so the menu lands where intended at any scale — a raw visual rect
+      // would displace it by `coordinate × (zoom − 1)`.
       const rect = trigger.getBoundingClientRect()
       const menu = menuRef.current
       // Use the rendered height once available; otherwise fall back to the
       // max-height cap so the direction decision is correct on first paint.
       const dropdownHeight = menu && menu.offsetHeight > 0 ? menu.offsetHeight : MAX_DROPDOWN_HEIGHT
+      const viewport = getLayoutViewport()
       setPosition(
         computeDropdownPosition({
-          triggerRect: { top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width },
+          triggerRect: toLayoutTriggerRect({
+            top: rect.top,
+            bottom: rect.bottom,
+            left: rect.left,
+            width: rect.width,
+          }),
           dropdownHeight,
-          viewportHeight: window.innerHeight,
-          viewportWidth: window.innerWidth,
+          viewportHeight: viewport.height,
+          viewportWidth: viewport.width,
           gap: GAP,
           minWidth: MIN_WIDTH,
         }),

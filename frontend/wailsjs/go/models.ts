@@ -1002,6 +1002,20 @@ export namespace backend {
 	        this.description = source["description"];
 	    }
 	}
+	export class SmallLLMBuiltinTool {
+	    name: string;
+	    description: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SmallLLMBuiltinTool(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	    }
+	}
 	export class SmallLLMCompactionResp {
 	    keep_last: number;
 	    block_size: number;
@@ -1116,11 +1130,31 @@ export namespace backend {
 	        this.reasoning_scaffold = source["reasoning_scaffold"];
 	    }
 	}
+	export class SmallLLMToolGroup {
+	    id: string;
+	    title: string;
+	    description: string;
+	    tools: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SmallLLMToolGroup(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.description = source["description"];
+	        this.tools = source["tools"];
+	    }
+	}
 	export class SmallLLMEssentialToolsResp {
 	    enabled: boolean;
 	    always_present: string[];
 	    compact_descriptions: boolean;
 	    protected_tools: string[];
+	    builtin_tools: SmallLLMBuiltinTool[];
+	    tool_groups: SmallLLMToolGroup[];
 	
 	    static createFrom(source: any = {}) {
 	        return new SmallLLMEssentialToolsResp(source);
@@ -1132,7 +1166,27 @@ export namespace backend {
 	        this.always_present = source["always_present"];
 	        this.compact_descriptions = source["compact_descriptions"];
 	        this.protected_tools = source["protected_tools"];
+	        this.builtin_tools = this.convertValues(source["builtin_tools"], SmallLLMBuiltinTool);
+	        this.tool_groups = this.convertValues(source["tool_groups"], SmallLLMToolGroup);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class SmallLLMConfigResponse {
 	    enabled: boolean;

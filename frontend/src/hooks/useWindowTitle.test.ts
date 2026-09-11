@@ -63,28 +63,28 @@ describe('buildWindowTitle', () => {
     expect(buildWindowTitle(null, 'Refactor auth')).toBe('c0wrk')
   })
 
-  it('renders two segments when a project is active without a session', () => {
+  it('renders the app name and project scope without a session', () => {
     expect(buildWindowTitle('MyProject', null)).toBe('c0wrk - MyProject')
   })
 
-  it('renders three segments for a project with an active session', () => {
-    expect(buildWindowTitle('MyProject', 'Refactor auth')).toBe('c0wrk - MyProject - Refactor auth')
+  it('renders the full `APP_NAME - <scope>: <session>` template', () => {
+    expect(buildWindowTitle('MyProject', 'Refactor auth')).toBe('c0wrk - MyProject: Refactor auth')
   })
 
   it('renders the CHAT scope the same way', () => {
-    expect(buildWindowTitle(CHAT_LABEL, 'Quick question')).toBe('c0wrk - CHAT - Quick question')
+    expect(buildWindowTitle(CHAT_LABEL, 'Quick question')).toBe('c0wrk - CHAT: Quick question')
   })
 
   it('treats a blank scope as absent', () => {
     expect(buildWindowTitle('   ', 'Refactor auth')).toBe('c0wrk')
   })
 
-  it('treats a blank session name as absent', () => {
+  it('treats a blank session name as absent (no trailing colon)', () => {
     expect(buildWindowTitle('MyProject', '   ')).toBe('c0wrk - MyProject')
   })
 
   it('trims surrounding whitespace from both segments', () => {
-    expect(buildWindowTitle('  MyProject  ', '  Refactor auth  ')).toBe('c0wrk - MyProject - Refactor auth')
+    expect(buildWindowTitle('  MyProject  ', '  Refactor auth  ')).toBe('c0wrk - MyProject: Refactor auth')
   })
 
   it('exports the app name used as the first segment', () => {
@@ -163,7 +163,7 @@ describe('useWindowTitle', () => {
     expect(lastTitle()).toBe('c0wrk - MyProject')
   })
 
-  it('adds the session segment once a session is selected', () => {
+  it('adds the session segment after the project scope once a session is selected', () => {
     const project = makeProject({ id: 'proj-a', name: 'MyProject' })
     const session = makeSession({ id: 'sess-1', name: 'Refactor auth' })
     renderHook()
@@ -175,7 +175,7 @@ describe('useWindowTitle', () => {
       useSessionStore.getState().setActiveSessionId('sess-1')
     })
 
-    expect(lastTitle()).toBe('c0wrk - MyProject - Refactor auth')
+    expect(lastTitle()).toBe('c0wrk - MyProject: Refactor auth')
   })
 
   it('shows CHAT instead of the No Project name', () => {
@@ -190,7 +190,7 @@ describe('useWindowTitle', () => {
       useSessionStore.getState().setActiveSessionId('sess-1')
     })
 
-    expect(lastTitle()).toBe('c0wrk - CHAT - Quick question')
+    expect(lastTitle()).toBe('c0wrk - CHAT: Quick question')
   })
 
   it('follows a project rename without a project switch', () => {
@@ -220,13 +220,13 @@ describe('useWindowTitle', () => {
       useSessionStore.getState().setSessions([session])
       useSessionStore.getState().setActiveSessionId('sess-1')
     })
-    expect(lastTitle()).toBe('c0wrk - MyProject - Session sess-1')
+    expect(lastTitle()).toBe('c0wrk - MyProject: Session sess-1')
 
     act(() => {
       useSessionStore.getState().updateSession('sess-1', { name: 'Refactor auth' })
     })
 
-    expect(lastTitle()).toBe('c0wrk - MyProject - Refactor auth')
+    expect(lastTitle()).toBe('c0wrk - MyProject: Refactor auth')
   })
 
   it('drops the session segment while a project switch clears session state', () => {
@@ -241,7 +241,7 @@ describe('useWindowTitle', () => {
       useSessionStore.getState().setSessions([session])
       useSessionStore.getState().setActiveSessionId('sess-1')
     })
-    expect(lastTitle()).toBe('c0wrk - MyProject - Refactor auth')
+    expect(lastTitle()).toBe('c0wrk - MyProject: Refactor auth')
 
     // Mirrors useProjectSwitchState: sessions are cleared before the
     // destination list arrives, so the title honestly drops to two segments.
@@ -287,6 +287,6 @@ describe('useWindowTitle', () => {
     })
 
     expect(runtimeMocks.setWindowTitle.mock.calls.length).toBe(callsBefore)
-    expect(lastTitle()).toBe('c0wrk - MyProject - Refactor auth')
+    expect(lastTitle()).toBe('c0wrk - MyProject: Refactor auth')
   })
 })

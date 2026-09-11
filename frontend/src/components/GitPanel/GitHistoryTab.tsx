@@ -247,6 +247,7 @@ export function GitHistoryTab() {
           ) : (
             <>
               <div
+                className="shrink-0"
                 style={{
                   height: filteredVirtualizer.getTotalSize(),
                   position: 'relative',
@@ -299,7 +300,7 @@ export function GitHistoryTab() {
           // beside it. Only visible rows are mounted; the gutter still
           // renders all nodes/edges (SVG elements are far lighter than
           // React component trees).
-          <div style={{ height: rowY.totalHeight, position: 'relative' }}>
+          <div className="shrink-0" style={{ height: rowY.totalHeight, position: 'relative' }}>
             <div style={{ position: 'absolute', left: 0, top: 0 }}>
               <GitGraphGutter nodes={nodes} rowY={rowY} />
             </div>
