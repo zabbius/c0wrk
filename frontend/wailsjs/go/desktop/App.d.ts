@@ -81,6 +81,8 @@ export function DeleteSession(arg1:string):Promise<void>;
 
 export function DeleteTag(arg1:string):Promise<void>;
 
+export function DeleteTheme(arg1:string):Promise<void>;
+
 export function DeleteWorkDirectory(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function DisableResearch(arg1:string):Promise<void>;
@@ -191,6 +193,10 @@ export function HardenGitRepo(arg1:string):Promise<void>;
 
 export function HasDefaultModel():Promise<boolean>;
 
+export function ImportThemeFromPath(arg1:string):Promise<backend.ThemeDTO>;
+
+export function ImportThemesFromPaths(arg1:Array<string>):Promise<Array<backend.ThemeImportResult>>;
+
 export function Lifecycle():Promise<backend.FrontendAPILifecycle>;
 
 export function ListAgents():Promise<Array<backend.AgentDescriptorDTO>>;
@@ -213,6 +219,8 @@ export function ListSessions():Promise<Array<session.SessionInfo>>;
 
 export function ListSkills():Promise<Array<backend.SkillDescriptorDTO>>;
 
+export function ListThemes():Promise<Array<backend.ThemeDTO>>;
+
 export function ListVectorIndexGPUs():Promise<Array<backend.GPUDeviceResponse>>;
 
 export function Merge(arg1:string):Promise<void>;
@@ -224,6 +232,8 @@ export function PasteFromClipboard(arg1:string,arg2:boolean):Promise<session.Pas
 export function PauseSession(arg1:string):Promise<void>;
 
 export function PersistWindowBounds():Promise<void>;
+
+export function PickAndImportThemes():Promise<Array<backend.ThemeImportResult>>;
 
 export function PickAttachmentFiles():Promise<Array<string>>;
 
