@@ -1233,6 +1233,7 @@ export namespace backend {
 	
 	
 	
+	
 	export class ToolInfo {
 	    name: string;
 	    description: string;
