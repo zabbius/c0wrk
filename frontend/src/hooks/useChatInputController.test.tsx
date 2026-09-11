@@ -598,4 +598,41 @@ describe('handleResume nudge-resume', () => {
     expect(useChatStore.getState().paused['sess-a']).toBe(true)
     expect(useChatStore.getState().taskActive['sess-a']).toBe(false)
   })
+
+  it('ignores a second Resume activation while the first is still in flight', async () => {
+    // Double-clicking Resume is a common gesture: the second activation
+    // finds the editor cleared (the first cleared it synchronously — here
+    // the plain branch, an empty editor) and would fire a duplicate plain
+    // resume that the backend rejects, transiently restoring paused=true /
+    // taskActive=false against the first activation's optimistic state. The
+    // in-flight guard (resumingRef) must swallow it.
+    render()
+    await act(async () => {
+      useChatStore.setState({ paused: { 'sess-a': true } })
+    })
+    const d = deferred<void>()
+    apiMocks.chat.resumeSession.mockReturnValueOnce(d.promise)
+
+    await act(async () => {
+      const first = controllerRef.current!.handleResume()
+      // Fires while the first RPC is still pending: a synchronous no-op.
+      const second = controllerRef.current!.handleResume()
+      expect(apiMocks.chat.resumeSession).toHaveBeenCalledOnce()
+      d.resolve(undefined)
+      await first
+      await second
+    })
+
+    expect(apiMocks.chat.resumeSession).toHaveBeenCalledOnce()
+    // The optimistic state of the winning activation is never contradicted.
+    expect(useChatStore.getState().paused['sess-a']).toBeUndefined()
+    expect(useChatStore.getState().taskActive['sess-a']).toBe(true)
+
+    // The guard resets once the RPC settles: a later Resume works normally.
+    apiMocks.chat.resumeSession.mockResolvedValueOnce(undefined)
+    await act(async () => {
+      await controllerRef.current!.handleResume()
+    })
+    expect(apiMocks.chat.resumeSession).toHaveBeenCalledTimes(2)
+  })
 })

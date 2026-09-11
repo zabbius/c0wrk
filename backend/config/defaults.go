@@ -42,6 +42,7 @@ var defaultSmallLLMAlwaysPresent = []string{
 	"glob",
 	"ripgrep",
 	"bash_exec",
+	"posh_exec",
 	"semantic_search",
 	"store_fact",
 	"search_facts",

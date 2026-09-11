@@ -2,6 +2,7 @@ package backend
 
 import (
 	"errors"
+	"maps"
 	"path/filepath"
 	"sort"
 	"time"
@@ -104,7 +105,10 @@ func (f *FrontendAPI) runGitIgnoredPaths(repoRoot string) (map[string]bool, erro
 
 // cachedGitStatus returns the git status for repoRoot, reusing a snapshot
 // computed within gitStatusCacheTTL. Errors are not cached so a transient git
-// failure is retried on the next call.
+// failure is retried on the next call. The returned map is always a shallow
+// copy (maps.Clone) owned by the caller: mutating it can never corrupt the
+// cached snapshot other readers share. Cost is one map allocation per call —
+// negligible against the git subprocess the cache saves.
 func (f *FrontendAPI) cachedGitStatus(repoRoot string) (map[string]GitStatusEntry, error) {
 	if repoRoot == "" {
 		return nil, errors.New("empty repo root")
@@ -115,7 +119,7 @@ func (f *FrontendAPI) cachedGitStatus(repoRoot string) (map[string]GitStatusEntr
 	if e, ok := f.gitStatusCache[repoRoot]; ok && now.Before(e.expiry) {
 		status := e.status
 		f.gitStatusCacheMu.Unlock()
-		return status, nil
+		return maps.Clone(status), nil
 	}
 	if f.gitStatusCache != nil {
 		evictOldestGitEntries(f.gitStatusCache, func(e gitStatusCacheEntry) time.Time { return e.expiry }, gitCacheMaxSize)
@@ -134,12 +138,14 @@ func (f *FrontendAPI) cachedGitStatus(repoRoot string) (map[string]GitStatusEntr
 	f.gitStatusCache[repoRoot] = gitStatusCacheEntry{status: status, expiry: now.Add(gitStatusCacheTTL)}
 	f.gitStatusCacheMu.Unlock()
 
-	return status, nil
+	return maps.Clone(status), nil
 }
 
 // cachedGitIgnoredPaths returns the git-ignored path set for repoRoot, reusing
 // a result computed within gitIgnoredCacheTTL. Errors are not cached so a
-// transient git failure is retried on the next call.
+// transient git failure is retried on the next call. The returned map is
+// always a shallow copy (maps.Clone) owned by the caller — the same
+// read-isolation contract as cachedGitStatus.
 func (f *FrontendAPI) cachedGitIgnoredPaths(repoRoot string) (map[string]bool, error) {
 	if repoRoot == "" {
 		return nil, errors.New("empty repo root")
@@ -150,7 +156,7 @@ func (f *FrontendAPI) cachedGitIgnoredPaths(repoRoot string) (map[string]bool, e
 	if e, ok := f.gitIgnoredCache[repoRoot]; ok && now.Before(e.expiry) {
 		ignored := e.ignored
 		f.gitIgnoredCacheMu.Unlock()
-		return ignored, nil
+		return maps.Clone(ignored), nil
 	}
 	if f.gitIgnoredCache != nil {
 		evictOldestGitEntries(f.gitIgnoredCache, func(e gitIgnoredCacheEntry) time.Time { return e.expiry }, gitCacheMaxSize)
@@ -169,7 +175,7 @@ func (f *FrontendAPI) cachedGitIgnoredPaths(repoRoot string) (map[string]bool, e
 	f.gitIgnoredCache[repoRoot] = gitIgnoredCacheEntry{ignored: ignored, expiry: now.Add(gitIgnoredCacheTTL)}
 	f.gitIgnoredCacheMu.Unlock()
 
-	return ignored, nil
+	return maps.Clone(ignored), nil
 }
 
 // invalidateGitCaches evicts both cached git snapshots for a single repo root.

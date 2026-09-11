@@ -2,6 +2,7 @@ package research
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -31,18 +32,33 @@ var hidRe = regexp.MustCompile(`(?i)H-?(\d+)`)
 // ridRe matches a research identifier, e.g. "R-001".
 var ridRe = regexp.MustCompile(`(?i)R-?(\d+)`)
 
-// NormalizeID canonicalizes a hypothesis identifier to its hyphenated,
-// upper-case form ("H-001"). It accepts both "H001" and "H-001" spellings
-// (case-insensitive) and returns "" for input that contains no identifier.
+// NormalizeID canonicalizes a hypothesis identifier to its zero-padded,
+// hyphenated, upper-case form ("H-001"). It accepts both "H001" and "H-001"
+// spellings with or without zero padding ("H1", "H-1" — a hand-written
+// spelling of H-001), case-insensitive, and returns "" for input that
+// contains no identifier. Padding to three digits (growing beyond for
+// numbers ≥ 1000) keeps a hand-written spelling and the writer-generated one
+// of the same number from coexisting as distinct graph nodes: "H-1" and
+// "H-001" are one hypothesis.
 func NormalizeID(raw string) string {
 	m := hidRe.FindStringSubmatch(raw)
 	if m == nil {
 		return ""
 	}
-	return "H-" + m[1]
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return "H-" + m[1]
+	}
+	return fmt.Sprintf("H-%03d", n)
 }
 
-// NormalizeResearchID canonicalizes a research identifier to "R-001".
+// NormalizeResearchID canonicalizes a research identifier to its hyphenated,
+// upper-case form (e.g. "R-001"), preserving the numeric spelling. Unlike
+// NormalizeID it does NOT zero-pad: a research project's id is taken verbatim
+// from its brief and compared numerically by compareResearchIDs, so "R-2" and
+// "R-002" are distinct spellings of distinct directories rather than one
+// canonical id. It accepts both "R001" and "R-001" spellings,
+// case-insensitive, and returns "" for input that contains no identifier.
 func NormalizeResearchID(raw string) string {
 	m := ridRe.FindStringSubmatch(raw)
 	if m == nil {
@@ -88,6 +104,45 @@ func compareResearchIDs(a, b string) int {
 	}
 }
 
+// hypothesisIDNumber extracts the numeric part of a hypothesis ID
+// ("H-010" → 10, "H10" → 10). It returns ok=false when the ID carries no
+// H-NNN number (an unrecognized/unparsed identifier).
+func hypothesisIDNumber(id string) (int, bool) {
+	m := hidRe.FindStringSubmatch(id)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// compareHypothesisIDs orders hypothesis IDs numerically (H-2 before H-10)
+// rather than lexicographically ("H-10" would sort before "H-2"), with a
+// lexicographic tie-break so the order stays deterministic for equal numbers
+// and for IDs without a numeric part — mirroring compareResearchIDs. Numeric
+// order is what "leading entry" consumers (RecommendNextStep's first
+// ActiveFront ID) and the graph's node display order rely on: canonical
+// zero-padded spellings sort identically either way, but H-999 and H-1000
+// (and any unpadded spelling surviving in a hand-edited file) must not flip
+// the selection.
+func compareHypothesisIDs(a, b string) int {
+	na, aok := hypothesisIDNumber(a)
+	nb, bok := hypothesisIDNumber(b)
+	switch {
+	case aok && bok && na != nb:
+		return na - nb
+	case aok && !bok:
+		return -1 // numbered sorts before non-numbered
+	case !aok && bok:
+		return 1
+	default:
+		return strings.Compare(a, b)
+	}
+}
+
 // parseParentList extracts the canonical parent IDs from a free-form string
 // such as "H-001, H-002" or "—". It returns a sorted, de-duplicated slice
 // (possibly empty). Non-identifier tokens (em-dashes, "none", etc.) are
@@ -100,14 +155,17 @@ func parseParentList(raw string) []string {
 	seen := make(map[string]struct{}, len(matches))
 	parents := make([]string, 0, len(matches))
 	for _, m := range matches {
-		id := "H-" + m[1]
+		id := NormalizeID(m[0])
+		if id == "" {
+			continue
+		}
 		if _, ok := seen[id]; ok {
 			continue
 		}
 		seen[id] = struct{}{}
 		parents = append(parents, id)
 	}
-	sort.Strings(parents)
+	sort.Slice(parents, func(i, j int) bool { return compareHypothesisIDs(parents[i], parents[j]) < 0 })
 	return parents
 }
 
@@ -149,22 +207,42 @@ func splitUnescapedPipes(s string) []string {
 	return append(parts, s[start:])
 }
 
+// restoreLiteralBR reverses escapeLiteralBR (writer.go): the HTML-entity
+// spelling "&lt;br&gt;" that shields a literal "<br>" marker from the
+// newline fold is restored to the literal marker text, and the doubly-escaped
+// "&amp;lt;br&gt;" a value that literally contained the entity spelling is
+// restored to "&lt;br&gt;". It must run AFTER the "<br>" → "\n" unfolding.
+// The single-shield replacement runs FIRST and the double-shield one SECOND:
+// "&amp;lt;br&gt;" does not itself contain "&lt;br&gt;", so ordering them the
+// other way would let the first replacement's own output be consumed by the
+// second, over-restoring the double shield to "<br>".
+func restoreLiteralBR(v string) string {
+	if !strings.Contains(v, "&lt;br&gt;") && !strings.Contains(v, "&amp;lt;br&gt;") {
+		return v
+	}
+	v = strings.ReplaceAll(v, "&lt;br&gt;", "<br>")
+	return strings.ReplaceAll(v, "&amp;lt;br&gt;", "&lt;br&gt;")
+}
+
 // unfoldBR converts the writer's newline fold marker "<br>" back into a real
-// newline. Values written into any single-line context (table cells, the
+// newline and restores a shielded literal "<br>" (see restoreLiteralBR).
+// Values written into any single-line context (table cells, the
 // **Finding:** line, Mermaid labels) carry folded newlines; this restores the
 // logical multi-line value on parse.
 func unfoldBR(v string) string {
-	if !strings.Contains(v, "<br>") {
+	if !strings.Contains(v, "<br>") && !strings.Contains(v, "&lt;br&gt;") && !strings.Contains(v, "&amp;lt;br&gt;") {
 		return v
 	}
-	return strings.ReplaceAll(v, "<br>", "\n")
+	v = strings.ReplaceAll(v, "<br>", "\n")
+	return restoreLiteralBR(v)
 }
 
 // unescapeCell reverses the writer's escapeCell (writer.go): "\|" becomes a
-// literal pipe and "<br>" a newline, so a value that was escaped to fit the
-// single-line Markdown-row contract parses back to its original form.
+// literal pipe, "<br>" a newline, and a shielded literal "<br>"
+// ("&lt;br&gt;") the marker text itself — so a value that was escaped to fit
+// the single-line Markdown-row contract parses back to its original form.
 func unescapeCell(v string) string {
-	if !strings.Contains(v, `\|`) && !strings.Contains(v, "<br>") {
+	if !strings.Contains(v, `\|`) && !strings.Contains(v, "<br>") && !strings.Contains(v, "&lt;br&gt;") && !strings.Contains(v, "&amp;lt;br&gt;") {
 		return v
 	}
 	return unfoldBR(strings.ReplaceAll(v, `\|`, "|"))
@@ -472,19 +550,23 @@ var mermaidNodeRe = regexp.MustCompile(`\b(H\d+)\s*\["([^"]*)"\]\s*(?:::+([A-Za-
 var mermaidEdgeRe = regexp.MustCompile(`\b(H\d+)\s*-->\s*(H\d+)\b`)
 
 // unescapeMermaidLabel reverses the writer's escapeMermaidLabel (writer.go):
-// "#quot;" becomes a literal double quote, "#124;" a literal pipe, and "<br>"
-// a newline. The escapes exist so a label containing those characters still
+// "#quot;" becomes a literal double quote, "#124;" a literal pipe, "<br>" a
+// newline, and a shielded literal "<br>" ("&lt;br&gt;") the marker text
+// itself. The escapes exist so a label containing those characters still
 // matches mermaidNodeRe / mermaidNodeLineRe (whose label group is [^"]* and
 // whose line is single-line) while parsing back to the original title.
-// A literal "#quot;"/"#124;"/"<br>" that was already in the value is stable
-// across the escape → unescape cycle.
+// Round-trip contract: real newlines, pipes, quotes, and literal "<br>" text
+// all survive the escape → unescape cycle exactly (the writer shields the
+// marker on write). A literal "#quot;"/"#124;" that pre-dates the write
+// drifts once to the character it encodes and is stable from then on.
 func unescapeMermaidLabel(v string) string {
-	if !strings.Contains(v, "#quot;") && !strings.Contains(v, "#124;") && !strings.Contains(v, "<br>") {
+	if !strings.Contains(v, "#quot;") && !strings.Contains(v, "#124;") && !strings.Contains(v, "<br>") && !strings.Contains(v, "&lt;br&gt;") && !strings.Contains(v, "&amp;lt;br&gt;") {
 		return v
 	}
 	v = strings.ReplaceAll(v, "#quot;", `"`)
 	v = strings.ReplaceAll(v, "#124;", "|")
-	return strings.ReplaceAll(v, "<br>", "\n")
+	v = strings.ReplaceAll(v, "<br>", "\n")
+	return restoreLiteralBR(v)
 }
 
 // mermaidNode is an intermediate parse of one Mermaid node line.
@@ -756,17 +838,18 @@ func BuildGraph(mermaidNodes []mermaidNode, mermaidEdges []HypothesisEdge, catal
 		for p := range parentsFromEdges[n.ID] {
 			add(p)
 		}
-		sort.Strings(merged)
+		sort.Slice(merged, func(i, j int) bool { return compareHypothesisIDs(merged[i], merged[j]) < 0 })
 		n.Parents = merged
 	}
 
-	// Deterministic ordering.
-	sort.Slice(g.Nodes, func(i, j int) bool { return g.Nodes[i].ID < g.Nodes[j].ID })
+	// Deterministic ordering — numeric H-NNN order (compareHypothesisIDs), so
+	// H-2 precedes H-10 and any unpadded spelling sorts by its number.
+	sort.Slice(g.Nodes, func(i, j int) bool { return compareHypothesisIDs(g.Nodes[i].ID, g.Nodes[j].ID) < 0 })
 	sort.Slice(g.Edges, func(i, j int) bool {
-		if g.Edges[i].From != g.Edges[j].From {
-			return g.Edges[i].From < g.Edges[j].From
+		if c := compareHypothesisIDs(g.Edges[i].From, g.Edges[j].From); c != 0 {
+			return c < 0
 		}
-		return g.Edges[i].To < g.Edges[j].To
+		return compareHypothesisIDs(g.Edges[i].To, g.Edges[j].To) < 0
 	})
 	return g
 }
@@ -1091,7 +1174,9 @@ func PickActiveProject(root *ResearchRoot) *ResearchProject {
 
 // readFile reads a file's contents, returning ("", false) when the file is
 // missing rather than an error — missing optional artifacts are a normal
-// partial state, not a failure.
+// partial state, not a failure. Rendering-only (parser) paths use this
+// tolerant form; mutation (writer) paths must use readFileStrict instead so
+// an unreadable-but-present file is never mistaken for a missing one.
 func readFile(path string) (string, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1101,6 +1186,28 @@ func readFile(path string) (string, bool) {
 		return "", false
 	}
 	return string(data), true
+}
+
+// readFileStrict reads a file's contents for a mutation (read-modify-write)
+// path. Like readFile, a missing file is ("", nil) — a missing optional
+// artifact is a normal partial state the writer may create. Every other
+// read error (permissions, a Windows sharing violation, transient I/O) is
+// returned so the caller aborts the mutation: the tolerant readFile would
+// report such a file as absent, and the subsequent atomic rename would
+// silently replace its unreadable prior content — log.md truncated to a
+// single new entry, index.md rewritten as a bare skeleton. RESEARCH
+// artifacts are persisted agent memory (SECURITY.md, ASI06); treating
+// "cannot read" as "does not exist" is a data-loss path, so it fails closed.
+func readFileStrict(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		return string(data), nil
+	case errors.Is(err, os.ErrNotExist):
+		return "", nil
+	default:
+		return "", fmt.Errorf("reading %s: %w", path, err)
+	}
 }
 
 // ParseProject parses a single research project directory (R-NNN-...). It is
@@ -1151,15 +1258,46 @@ func ParseProject(projectPath string) (*ResearchProject, error) {
 	}, nil
 }
 
-// loadCards reads every H-*.md card under dir, parsing each and skipping any
-// that fail to parse (a malformed card must not break the whole graph). The
-// returned slice is sorted by canonical ID. Missing directory → nil.
-func loadCards(dir string) []HypothesisNode {
-	paths, err := filepath.Glob(filepath.Join(dir, "H-*.md"))
-	if err != nil || len(paths) == 0 {
+// listHypothesisCards returns the full paths of every H-*.md card file under
+// dir, sorted by base name for determinism, or nil when dir is missing or
+// unreadable. It enumerates the directory directly (os.ReadDir) rather than
+// using filepath.Glob, so glob metacharacters in the directory PATH itself —
+// e.g. a workspace rooted under a directory literally named "[proj]" — are
+// treated literally instead of as a pattern (which would silently match
+// nothing and drop every card).
+func listHypothesisCards(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
 		return nil
 	}
-	sort.Strings(paths)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		base := e.Name()
+		if strings.HasPrefix(base, "H-") && strings.HasSuffix(base, ".md") {
+			names = append(names, base)
+		}
+	}
+	sort.Strings(names)
+	paths := make([]string, len(names))
+	for i, name := range names {
+		paths[i] = filepath.Join(dir, name)
+	}
+	return paths
+}
+
+// loadCards reads every H-*.md card under dir, parsing each and skipping any
+// that fail to parse (a malformed card must not break the whole graph). The
+// returned slice is in card-file-name order (lexicographic, from
+// listHypothesisCards); callers that need canonical numeric H-NNN order
+// (BuildGraph) re-sort via compareHypothesisIDs. Missing directory → nil.
+func loadCards(dir string) []HypothesisNode {
+	paths := listHypothesisCards(dir)
+	if len(paths) == 0 {
+		return nil
+	}
 	cards := make([]HypothesisNode, 0, len(paths))
 	for _, p := range paths {
 		content, ok := readFile(p)

@@ -130,7 +130,7 @@ export function SessionItem({
   onFork,
   onDelete,
 }: SessionItemProps) {
-  const status = useSessionStatusIndicator(session.id, session.unfinished_task_status ?? '')
+  const status = useSessionStatusIndicator(session.id, session.unfinished_task_status ?? '', session.archived)
   const callbacks: SessionItemCallbacks = { onSelect, onRename, onArchive, onPin, onFork, onDelete }
 
   if (variant === 'flat') {

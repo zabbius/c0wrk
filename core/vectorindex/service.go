@@ -373,7 +373,13 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 			s.embeddingCacheMaxBytes,
 			s.logger,
 		)
-		ps.embeddingCache.prune()
+		// Seed the cache's byte accounting off the service write lock: the
+		// first walk of a warm cache is a full directory traversal, and doing
+		// it synchronously here would stall every search behind s.mu for the
+		// duration. The background seed evicts/reconciles exactly like a
+		// synchronous prune; until it lands, prunes from the embed path take
+		// the deferred fast path (seedAccountingAsync).
+		ps.embeddingCache.seedAccountingAsync()
 	} else {
 		ps.db = chromem.NewDB()
 	}
@@ -777,6 +783,15 @@ func (s *Service) DeleteProjectData(fullPath string) error {
 			cur.migrationCancel = nil
 		}
 		s.closeStateLocked(cur)
+		// Reset rather than leaving the closed state installed: closeStateLocked
+		// drops the handles but keeps projectID/projectPath, and
+		// parkCurrentLocked parks any state with a non-empty path — the next
+		// SetProject would park this dead state into the LRU, wasting a park
+		// slot and, for any future deterministic id+path reuse, restoring a
+		// db-less state whose SwitchBranch fails ("no database initialized").
+		// The empty placeholder mirrors parkCurrentLocked's reset state and is
+		// never parked or restorable.
+		s.current = &projectState{}
 	}
 	if len(s.parked) > 0 {
 		kept := s.parked[:0]

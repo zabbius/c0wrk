@@ -94,6 +94,11 @@ type FrontendAPI struct {
 	// production), mirroring switchLockTimeoutOverride.
 	autoFetchIntervalOverride time.Duration
 
+	// autoFetchDisabledRecheckOverride, when > 0, replaces the parked-state
+	// re-check cadence (autoFetchDisabledRecheck) in autoFetchLoop. Test-only
+	// seam (0 in production), mirroring autoFetchIntervalOverride.
+	autoFetchDisabledRecheckOverride time.Duration
+
 	// autoFetchTickFn, when non-nil, replaces the autoFetchOnce call made
 	// by the periodic ticker loop. Test-only seam (nil in production) so
 	// loop tests observe ticks without touching git or the network.
@@ -106,8 +111,8 @@ type FrontendAPI struct {
 	activeProjectPath string
 	activeProjectMu   sync.RWMutex
 
-	// switchMu serializes the whole SwitchProject body (teardown → watcher →
-	// vector → activate → event). Wails runs each binding call in its own
+	// switchMu serializes the whole SwitchProject body (teardown → vector →
+	// watcher → activate → event). Wails runs each binding call in its own
 	// goroutine, so two rapid CHAT↔CODE toggles used to interleave inside the
 	// backend: a slower earlier switch could overwrite activeProjectID AFTER a
 	// later switch had completed, leaving the backend on the older project
@@ -129,7 +134,7 @@ type FrontendAPI struct {
 
 	// switchProjectSetupVectorFn, when non-nil, overrides
 	// switchProjectSetupVector from SwitchProject. Test-only seam (nil in
-	// production) letting a test drive the fallible post-watcher step to
+	// production) letting a test drive the fallible pre-watcher step to
 	// verify the switch stays atomic when it fails.
 	switchProjectSetupVectorFn func(*project.ProjectInfo) error
 

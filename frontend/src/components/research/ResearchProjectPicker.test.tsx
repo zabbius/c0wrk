@@ -249,6 +249,27 @@ describe('ResearchProjectPicker — selection', () => {
     expect(useResearchStore.getState().nextStep).toEqual(makeNextStep())
   })
 
+  it('bails without an RPC when the rendered list belongs to another workspace project', async () => {
+    const container = await render(<ResearchProjectPicker />)
+    const menu = await openMenu(container)
+    const r001 = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]'))[0]!
+
+    // Project switch after render: the research store still lists p1's
+    // projects while the project store moved to p2. Every workspace's
+    // research starts at R-001, so SetActiveResearch must never be sent.
+    useProjectStore.setState({ activeProjectId: 'p2' })
+
+    await act(async () => {
+      r001.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      r001.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(setActiveResearch).not.toHaveBeenCalled()
+    // The mismatch surfaces on the research store error banner.
+    expect(useResearchStore.getState().error).toContain('different project')
+  })
+
   it('drops the payload when the workspace project switched mid-flight', async () => {
     let resolveRpc!: (v: ResearchStatus) => void
     vi.mocked(setActiveResearch).mockImplementation(
@@ -320,6 +341,28 @@ describe('ResearchProjectPicker — pins', () => {
     // signal, and the store mirrors the new pins.
     expect(getResearchStatus).toHaveBeenCalledWith('p1')
     expect(useResearchStore.getState().pinnedResearch).toEqual(['R-001-first/brief.md'])
+  })
+
+  it('bails without an RPC when the snapshot belongs to another workspace project', async () => {
+    const container = await render(<ResearchProjectPicker />)
+    const menu = await openMenu(container)
+    const r001 = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]'))[0]!
+    const pin = rowActions(r001)[0]!
+
+    // Project switch after render: the research store still lists p1's
+    // projects while the project store moved to p2. Every workspace's
+    // research starts at R-001, so the pin must never be sent.
+    useProjectStore.setState({ activeProjectId: 'p2' })
+
+    await act(async () => {
+      pin.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(setResearchPinned).not.toHaveBeenCalled()
+    expect(getResearchStatus).not.toHaveBeenCalled()
+    // The mismatch surfaces on the research store error banner.
+    expect(useResearchStore.getState().error).toContain('different project')
   })
 })
 
@@ -400,6 +443,27 @@ describe('ResearchProjectPicker — delete', () => {
     } finally {
       errorSpy.mockRestore()
     }
+  })
+
+  it('refuses the delete when the workspace project changed while the dialog was open', async () => {
+    const container = await render(<ResearchProjectPicker />)
+    const dialog = await openDeleteDialog(container)
+
+    // The workspace project moves on while the (modal) dialog is open: the
+    // captured R-001 belongs to the OLD project's list, and deleteResearch
+    // would permanently remove the NEW project's same-id research tree.
+    useProjectStore.setState({ activeProjectId: 'p2' })
+
+    await act(async () => {
+      dialogButton(dialog, 'Delete').click()
+    })
+    await flush()
+
+    expect(deleteResearch).not.toHaveBeenCalled()
+    // The dialog stays open with an inline error explaining the refusal.
+    const stillOpen = document.body.querySelector('[role="dialog"]')
+    expect(stillOpen).not.toBeNull()
+    expect(stillOpen!.textContent).toContain('workspace project changed')
   })
 })
 

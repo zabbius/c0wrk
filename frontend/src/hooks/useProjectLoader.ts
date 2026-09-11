@@ -9,6 +9,7 @@ import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useUIStore } from '@/stores/uiStore'
 import { isProjectInfo, isProjectRenamed } from '@/types/guards'
 import type { ProjectInfo } from '@/types/models'
+import { drop as dropProjectSnapshot } from '@/lib/projectSnapshotCache'
 
 /**
  * Pick the most recently active REAL (non-No-Project) project by activity
@@ -126,10 +127,15 @@ export function useProjectLoader(): void {
         if (cancelled) return
         if (typeof data !== 'string') return
         store().removeProject(data)
-        // Drop the deleted project's persisted tab selections (git-panel active
-        // tab + workspace panel tab) so both per-project maps stay bounded.
+        // Drop the deleted project's transient commit-box state, persisted tab
+        // selections (git-panel active tab + workspace panel tab), and in-memory
+        // UI snapshot, so nothing for a project that no longer exists can be
+        // rehydrated and the per-project maps stay bounded (mirrors
+        // ProjectSelector's delete path).
+        useGitPanelStore.getState().dropProjectCommitState(data)
         useGitPanelStore.getState().dropProjectTabs(data)
         useUIStore.getState().dropProjectTabs(data)
+        dropProjectSnapshot(data)
       }),
     )
 

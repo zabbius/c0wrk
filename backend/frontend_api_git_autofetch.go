@@ -283,6 +283,22 @@ func (f *FrontendAPI) autoFetchInterval() time.Duration {
 	return d
 }
 
+// autoFetchDisabledRecheck is the cadence at which a parked ticker loop
+// (git.auto_fetch_interval "0") re-reads the interval, so restoring a
+// positive value re-arms the periodic fetch without an app restart. Cheap by
+// design — one config read and one ticker reset per minute while disabled.
+const autoFetchDisabledRecheck = time.Minute
+
+// autoFetchDisabledRecheckInterval resolves the parked-state re-check
+// cadence. The test seam autoFetchDisabledRecheckOverride wins (loop tests
+// shorten it); production uses autoFetchDisabledRecheck.
+func (f *FrontendAPI) autoFetchDisabledRecheckInterval() time.Duration {
+	if d := f.autoFetchDisabledRecheckOverride; d > 0 {
+		return d
+	}
+	return autoFetchDisabledRecheck
+}
+
 // StartAutoFetch starts the periodic background auto-fetch loop. It is an
 // infrastructure method (FrontendAPILifecycle pattern — never exposed as a
 // Wails RPC): desktop startup calls it once after the backend is ready, and
@@ -337,17 +353,21 @@ func (f *FrontendAPI) stopAutoFetchLoop() {
 // On every tick the interval is re-read via autoFetchInterval, so runtime
 // config edits apply without an app restart: a changed positive period
 // resets the ticker (that tick does not fetch), and a period <= 0 parks the
-// loop until shutdown. While the interval is <= 0 at start-up the ticker is
-// never created at all.
+// loop at the slow autoFetchDisabledRecheck cadence — while parked the loop
+// keeps re-reading the interval, so restoring a positive value re-arms the
+// ticker without an app restart (the fetch ticks themselves never fire while
+// disabled).
 func (f *FrontendAPI) autoFetchLoop(ctx context.Context, done chan<- struct{}) {
 	defer close(done)
 
 	interval := f.autoFetchInterval()
-	if interval <= 0 {
-		// git.auto_fetch_interval "0": the ticker never ticks. The
+	disabled := interval <= 0
+	if disabled {
+		// git.auto_fetch_interval "0": the ticker never fetches. The
 		// event-driven triggers keep working — they bypass this loop.
-		<-ctx.Done()
-		return
+		// Park on the slow re-check cadence rather than on ctx alone so
+		// a later positive interval re-arms without an app restart.
+		interval = f.autoFetchDisabledRecheckInterval()
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -359,14 +379,21 @@ func (f *FrontendAPI) autoFetchLoop(ctx context.Context, done chan<- struct{}) {
 			cur := f.autoFetchInterval()
 			switch {
 			case cur <= 0:
-				// Disabled at runtime: stop ticking and park until shutdown.
-				ticker.Stop()
-				<-ctx.Done()
-				return
-			case cur != interval:
-				// Period changed: re-arm the ticker at the new cadence. This
-				// tick intentionally does not fetch — the next fetch is one
+				// Disabled at runtime: park on the slow re-check cadence
+				// (this tick does not fetch) so a later positive interval
+				// re-arms the ticker instead of stranding the loop on
+				// ctx.Done() until an app restart.
+				if !disabled {
+					disabled = true
+					interval = f.autoFetchDisabledRecheckInterval()
+					ticker.Reset(interval)
+				}
+			case disabled || cur != interval:
+				// Period changed (or re-enabled from the parked state):
+				// re-arm the ticker at the new cadence. This tick
+				// intentionally does not fetch — the next fetch is one
 				// full new interval away.
+				disabled = false
 				interval = cur
 				ticker.Reset(interval)
 			default:

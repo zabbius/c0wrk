@@ -741,10 +741,20 @@ func (f *FrontendAPI) UpdateSmallLLMConfig(cfg SmallLLMConfigResponse) error {
 	prev := f.config.SmallLLM
 	f.config.SmallLLM = responseToSmallLLM(cfg)
 
-	if err := f.persistConfig(); err != nil {
+	// Persist BEFORE emitting, so a failed disk write is indistinguishable from
+	// a rejected request: on failure the in-memory profile is rolled back and
+	// NO config:updated is emitted (mirroring UpdateLLMConfig). persistConfig
+	// emits unconditionally, which would announce a change that was just
+	// reverted — so save directly here instead.
+	if f.configPath == "" {
+		f.config.SmallLLM = prev
+		return errors.New("config path not set")
+	}
+	if err := config.Save(f.config, f.configPath); err != nil {
 		f.config.SmallLLM = prev
 		return fmt.Errorf("failed to persist small-LLM config: %w", err)
 	}
+	f.emitConfigUpdated()
 
 	// Clear any config load errors since settings are now valid.
 	f.configLoadErrors = nil

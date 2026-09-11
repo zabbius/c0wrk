@@ -307,6 +307,18 @@ export function FileTreePanel() {
     if (isIndexing || reindexUnavailable) setReindexRequested(false)
   }, [isIndexing, reindexUnavailable])
 
+  // Missed-status release: if the backend resolves the reindex RPC without
+  // the store ever observing a busy state (a skipped/coalesced pass), the
+  // latch above would never release and the button would stay disabled until
+  // a project switch. Any `vector_index:status` event arriving after the
+  // request means the backend has answered — a busy state flips `isIndexing`
+  // (which owns the disabled state from then on), and any other state is
+  // terminal for the request — so the latch is released either way.
+  useEffect(() => {
+    if (!reindexRequested) return
+    return subscribe('vector_index:status', () => setReindexRequested(false))
+  }, [reindexRequested])
+
   const handleReindex = useCallback(() => {
     // Fire-and-forget: the pass runs in the background and reports progress via
     // vector_index:status. Guard against re-entry before the store has observed

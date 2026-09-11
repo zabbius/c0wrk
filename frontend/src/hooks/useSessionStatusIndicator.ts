@@ -12,6 +12,7 @@
 import { useMemo } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useActiveSessionsStore } from '@/stores/activeSessionsStore'
 import type { ChatMessageUI } from '@/types/messages'
 import { hasUnresolvedHITL } from '@/lib/hitlTypes'
 
@@ -31,29 +32,44 @@ export type SessionIndicatorStatus = 'pending' | 'failed' | 'active' | 'paused' 
  * paused flag, ordered messages, and persisted task status. Exported for unit
  * testing without React rendering.
  *
- * Pending takes precedence because a task blocked on a HITL prompt is not
- * "actively processing" — the user's response is the next step, so the
- * awaiting-reaction state is the more informative signal. Paused takes
- * precedence over active because a cooperatively suspended task has
- * taskActive=false; the gray dot distinguishes it from a genuinely idle
- * session.
+ * The priority is identical to sessionDisplayStatus (lib/activeSessions.ts):
+ * pending > failed > active > paused. Pending takes precedence because a task
+ * blocked on a HITL prompt is not "actively processing" — the user's response
+ * is the next step, so the awaiting-reaction state is the more informative
+ * signal. Active outranks paused (spec: a live running flag, or a DB
+ * in_progress snapshot, paints green even when the paused flag — or a DB
+ * paused snapshot — is also set), so both session-list surfaces agree.
+ *
+ * An ARCHIVED session always renders idle, exactly like sessionDisplayStatus's
+ * `archived → idle` short-circuit: the badge only surfaces live work, and a
+ * stale in-memory live flag (an unresolved HITL card left behind by an archive
+ * cancel, or a lagging unfinished_task_status) must not paint a dot on a row
+ * the user has archived.
+ *
+ * `hasPendingOverride` carries the authoritative GetPendingActions sweep
+ * result for the session (activeSessionsStore.pendingOverride). It is OR-ed
+ * into the message-derived pending check so the sidebar row agrees with the
+ * live-sessions radar on the restart path, where chatStore is empty and the
+ * blocked prompt is known only from the sweep.
  */
 export function deriveSessionIndicatorStatus(
   isRunning: boolean,
   isPaused: boolean,
   messages: ChatMessageUI[],
   dbStatus = '',
+  archived = false,
+  hasPendingOverride = false,
 ): SessionIndicatorStatus {
-  if (hasUnresolvedHITL(messages)) return 'pending'
+  if (archived) return 'idle'
+  if (hasPendingOverride || hasUnresolvedHITL(messages)) return 'pending'
   // The DB snapshot is authoritative for states chatStore cannot see: a task
   // that failed (or was interrupted) while the app was closed leaves the live
   // flags untouched, yet must still surface. Priority mirrors
-  // sessionDisplayStatus: pending > failed > active > paused, with unknown
-  // non-empty statuses rendering as active (unfinished, never idle).
+  // sessionDisplayStatus exactly: pending > failed > active > paused, with
+  // unknown non-empty statuses rendering as active (unfinished, never idle).
   if (dbStatus === 'failed') return 'failed'
-  if (isPaused) return 'paused'
   if (isRunning || dbStatus === 'in_progress') return 'active'
-  if (dbStatus === 'paused') return 'paused'
+  if (isPaused || dbStatus === 'paused') return 'paused'
   if (dbStatus !== '') return 'active'
   return 'idle'
 }
@@ -69,11 +85,12 @@ export function deriveSessionIndicatorStatus(
  * - `'paused'`  (gray)   — a cooperatively paused task (or the DB says paused).
  * - `'idle'`             — neither.
  */
-export function useSessionStatusIndicator(sessionId: string | null, dbStatus = ''): SessionIndicatorStatus {
+export function useSessionStatusIndicator(sessionId: string | null, dbStatus = '', archived = false): SessionIndicatorStatus {
   const isRunning = useChatStore(s => (sessionId ? s.taskActive[sessionId] ?? false : false))
   const isPaused = useChatStore(s => (sessionId ? s.paused[sessionId] ?? false : false))
   const messageOrder = useChatStore(s => (sessionId ? s.messageOrder[sessionId] : undefined))
   const messageIndex = useChatStore(s => (sessionId ? s.messages[sessionId] : undefined))
+  const hasPendingOverride = useActiveSessionsStore(s => (sessionId ? s.pendingOverride[sessionId] ?? false : false))
 
   return useMemo(() => {
     const messages: ChatMessageUI[] = []
@@ -83,8 +100,8 @@ export function useSessionStatusIndicator(sessionId: string | null, dbStatus = '
         if (m) messages.push(m)
       }
     }
-    return deriveSessionIndicatorStatus(isRunning, isPaused, messages, dbStatus)
-  }, [messageOrder, messageIndex, isRunning, isPaused, dbStatus])
+    return deriveSessionIndicatorStatus(isRunning, isPaused, messages, dbStatus, archived, hasPendingOverride)
+  }, [messageOrder, messageIndex, isRunning, isPaused, dbStatus, archived, hasPendingOverride])
 }
 
 /**

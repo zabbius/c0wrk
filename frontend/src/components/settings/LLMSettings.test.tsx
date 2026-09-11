@@ -128,4 +128,34 @@ describe('LLMSettings default-model picker (shared ModelPickerMenu)', () => {
       expect(last?.[0]?.default_model).toBe('lmstudio/glm-5.3')
     })
   })
+
+  it('portals the FIRST-opened dropdown inside the settings container, not document.body', async () => {
+    // Regression (review finding): the container div mounts only on the
+    // render after `isLoading` flips to false, so a plain `ref.current` read
+    // during that render is still null and the menu would portal to
+    // document.body — inert inside the Radix settings dialog (pointer-events:
+    // none on <body>). The portal target must be populated by the time the
+    // user's first interaction opens the menu.
+    await act(async () => {
+      root.render(
+        <TooltipProvider>
+          <LLMSettings />
+        </TooltipProvider>,
+      )
+    })
+    await flush()
+
+    // First interaction with the freshly-mounted panel: open the picker.
+    act(() => {
+      defaultModelTrigger().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    const listbox = document.querySelector('[role="listbox"]')
+    expect(listbox).not.toBeNull()
+    // The menu lives inside the panel container (the portal target), not as
+    // a direct child of <body>.
+    expect(container.contains(listbox)).toBe(true)
+    expect(listbox!.parentElement).not.toBe(document.body)
+  })
 })

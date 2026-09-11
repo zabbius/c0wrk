@@ -116,9 +116,35 @@ describe('GitPanel — internal tab routing', () => {
 
     act(() => {
       useProjectStore.setState({ activeProjectId: 'p2' })
+      // A production project switch re-checks git-repo status for the new
+      // project (useProjectGitRepo) — mirror the completed check so the
+      // panel stays mounted under the paired isGitRepo contract.
+      useGitPanelStore.getState().setGitRepo(true, 'p2')
     })
 
     expect(has('history-tab')).toBe(true)
     expect(has('changes-list')).toBe(false)
+  })
+})
+
+describe('GitPanel — git-repo pairing', () => {
+  it('renders the panel when isGitRepo was checked for the active project', () => {
+    renderPanel()
+
+    expect(container!.textContent).not.toContain('Not a git repository')
+    expect(has('file-tree')).toBe(true)
+  })
+
+  it('shows "Not a git repository" for a stale isGitRepo from a previously active project', () => {
+    // isGitRepo=true was checked for p2 while p1 is active: the paired
+    // selector must not leak the stale result (store contract —
+    // isGitRepo && gitRepoProjectId === activeProjectId).
+    act(() => {
+      useGitPanelStore.getState().setGitRepo(true, 'p2')
+    })
+    renderPanel()
+
+    expect(container!.textContent).toContain('Not a git repository')
+    expect(has('file-tree')).toBe(false)
   })
 })

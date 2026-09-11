@@ -49,7 +49,13 @@ func SetActiveResearch(researchRoot, rid string) error {
 	}
 
 	indexPath := filepath.Join(researchRoot, "index.md")
-	current, _ := readFile(indexPath)
+	// Fail closed on an unreadable index: proceeding with "" would rewrite
+	// index.md as a minimal single-row skeleton and drop every other
+	// project's row.
+	current, err := readFileStrict(indexPath)
+	if err != nil {
+		return fmt.Errorf("failed to read research index: %w", err)
+	}
 
 	next, moved := moveIndexRowToTableEnd(current, rid)
 	if !moved {
@@ -98,13 +104,18 @@ func DeleteResearchProject(researchRoot, rid string) error {
 	}
 
 	// 1. Drop every index entry line for rid (atomic; skipped when index.md
-	// carries none).
+	// carries none). readFileStrict (not the tolerant readFile) so a
+	// present-but-unreadable index aborts the deletion instead of silently
+	// skipping the rewrite and then removing the directory — which would leave
+	// a dangling index row pointing at a removed project.
 	indexPath := filepath.Join(researchRoot, "index.md")
-	if current, ok := readFile(indexPath); ok {
-		if next := removeIndexEntryLines(current, rid); next != current {
-			if err := writeFilesAtomic(researchRoot, map[string][]byte{indexPath: []byte(next)}); err != nil {
-				return fmt.Errorf("failed to update research index: %w", err)
-			}
+	current, readErr := readFileStrict(indexPath)
+	if readErr != nil {
+		return fmt.Errorf("failed to read research index: %w", readErr)
+	}
+	if next := removeIndexEntryLines(current, rid); next != current {
+		if err := writeFilesAtomic(researchRoot, map[string][]byte{indexPath: []byte(next)}); err != nil {
+			return fmt.Errorf("failed to update research index: %w", err)
 		}
 	}
 

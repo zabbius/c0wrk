@@ -561,7 +561,11 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	// goroutines — it must observe a live ctx; if a follow-up SwitchProject /
 	// Shutdown cancelled it, the orphaned init bails out instead of clobbering
 	// the new project's state. This is what lets SwitchProject skip waiting on
-	// initWG entirely.
+	// initWG entirely. Publications additionally re-check ctx UNDER m.mu
+	// (publishInitState, installGitMonitor): SwitchProject cancels initCancel
+	// while holding m.mu, so the check-then-publish pair is atomic with the
+	// cancellation point and no window remains in which a cancelled init can
+	// install stale state.
 	if err := ctx.Err(); err != nil {
 		m.logger.Info("vector index init cancelled before start", "project", projectID)
 		return
@@ -602,6 +606,15 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	// genuinely broken repo.
 	branch, err := CurrentBranch(ctx, workspacePath)
 	if err != nil {
+		// A cancellation that landed while the git subprocess ran surfaces as
+		// a step failure; it belongs to an orphaned init and must not flip the
+		// newer project's readiness (the same rule as the SetProject path
+		// above).
+		if cerr := ctx.Err(); cerr != nil {
+			m.logger.Info("vector index init cancelled during branch detect; ignoring failure",
+				"project", projectID, "error", err)
+			return
+		}
 		m.logger.Warn("vector index init failed; search disabled",
 			"project", projectID, "step", "detect branch", "error", err)
 		m.notifyInitFailure(cbs, err)
@@ -640,6 +653,15 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 
 	// Switch to branch collection (opens the per-branch bleve index).
 	if switchErr := m.service.SwitchBranch(ctx, branch); switchErr != nil {
+		// A cancellation that landed while the bleve index was opening
+		// surfaces as a step failure; it belongs to an orphaned init and must
+		// not flip the newer project's readiness (the same rule as the
+		// SetProject path above).
+		if cerr := ctx.Err(); cerr != nil {
+			m.logger.Info("vector index init cancelled during branch switch; ignoring failure",
+				"project", projectID, "error", switchErr)
+			return
+		}
 		m.logger.Warn("vector index init failed; search disabled",
 			"project", projectID, "step", "switch branch", "error", switchErr)
 		m.notifyInitFailure(cbs, switchErr)
@@ -652,18 +674,21 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	}
 
 	// SwitchBranch succeeded: publish the indexer + workspace now that the
-	// collection is live and incremental passes can do useful work.
-	m.mu.Lock()
-	m.indexer = indexer
-	m.workspacePath = workspacePath
-	m.mu.Unlock()
-
-	// Start background indexing.
-	indexCtx, indexCancel := context.WithCancel(context.Background())
-	m.mu.Lock()
-	m.indexCancel = indexCancel
-	m.indexCtx = indexCtx
-	m.mu.Unlock()
+	// collection is live and incremental passes can do useful work. The
+	// publication is atomic with the cancellation point: SwitchProject cancels
+	// initCancel while holding m.mu, so re-checking ctx under the same lock
+	// closes the check-to-publish TOCTOU window. Without it, a cancel landing
+	// between the check above and the Lock() would let this orphaned init
+	// install its indexer, workspace, and a fresh uncancelled indexCancel over
+	// the newer project's already-torn-down state (and the background
+	// goroutine below would then index workspace A into project B's
+	// collection).
+	// indexCancel stays owned by the Manager (m.indexCancel): the next
+	// SwitchProject / Shutdown cancels the background pass through it.
+	indexCtx, _, published := m.publishInitState(ctx, projectID, workspacePath, indexer)
+	if !published {
+		return
+	}
 
 	// Start background indexing. Tracked by indexingWG so Shutdown can wait
 	// for it (bounded) before calling service.Close() — the goroutine holds
@@ -711,6 +736,9 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	// Start git branch monitor. Guard this (the last mutating step) with a ctx
 	// check too: an orphaned init must not install its git monitor over the new
 	// project's — initCancel cancellation is what makes the check fail here.
+	// NewGitMonitor allocates an fsnotify watcher and runs a git subprocess
+	// after this check, so the publication re-checks ctx under m.mu (see
+	// installGitMonitor) to stay atomic with the cancellation point.
 	if err := ctx.Err(); err != nil {
 		m.logger.Info("vector index init cancelled before git monitor", "project", projectID)
 		return
@@ -731,14 +759,63 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 			"project", projectID, "error", monErr)
 		return
 	}
-	m.mu.Lock()
-	m.gitMonitor = gitMon
-	m.mu.Unlock()
+	if !m.installGitMonitor(ctx, projectID, gitMon) {
+		return
+	}
 	if startErr := gitMon.Start(); startErr != nil {
 		m.logger.Warn("vector index init: failed to start git monitor",
 			"project", projectID, "error", startErr)
 		return
 	}
+}
+
+// publishInitState installs the per-project indexer state — the indexer, the
+// workspace path, and the background-indexing context — as the Manager's
+// active state, creating that context itself so the caller cannot leak it on
+// the abort path. The publication is atomic with init cancellation:
+// SwitchProject cancels initCancel while holding m.mu, so re-checking ctx
+// under the same lock closes the check-to-publish TOCTOU window — a cancel
+// landing between initProject's unlocked pre-check and this publication
+// aborts without installing stale state over the newer project's teardown.
+// It returns the background-indexing context, its cancel function, and
+// whether the state was published; when false, indexCancel has already been
+// called and nothing was installed.
+func (m *Manager) publishInitState(ctx context.Context, projectID, workspacePath string, indexer *Indexer) (context.Context, context.CancelFunc, bool) {
+	indexCtx, indexCancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		indexCancel()
+		m.logger.Info("vector index init cancelled before publish", "project", projectID)
+		return nil, nil, false
+	}
+	m.indexer = indexer
+	m.workspacePath = workspacePath
+	m.indexCancel = indexCancel
+	m.indexCtx = indexCtx
+	return indexCtx, indexCancel, true
+}
+
+// installGitMonitor publishes gitMon as the Manager's git branch monitor
+// unless the init context was cancelled between initProject's last unlocked
+// check and this publication — the same check-to-publish atomicity
+// publishInitState applies. SwitchProject cancels initCancel and stops the
+// previous monitor while holding m.mu, so the re-check under the same lock is
+// race-free. A monitor that is not installed (a stale one, created after a
+// rapid project switch cancelled this init) is stopped before returning:
+// NewGitMonitor already allocated its fsnotify watcher, and leaving it
+// running would leak the watcher plus its event loop for the app's lifetime.
+// It reports whether the monitor was installed.
+func (m *Manager) installGitMonitor(ctx context.Context, projectID string, gitMon *GitMonitor) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		_ = gitMon.Stop()
+		m.logger.Info("vector index init cancelled before git monitor publish", "project", projectID)
+		return false
+	}
+	m.gitMonitor = gitMon
+	return true
 }
 
 // NotifyFileChange triggers debounced incremental indexing for the active

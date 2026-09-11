@@ -509,6 +509,43 @@ func TestAutoFetchLoop_ZeroInterval_NeverTicks(t *testing.T) {
 	}
 }
 
+// TestAutoFetchLoop_ZeroIntervalReArmsWhenRestored pins review [C3-3]: a
+// parked loop (git.auto_fetch_interval "0") keeps re-reading the interval at
+// the re-check cadence, so restoring a positive value re-arms the periodic
+// fetch without an app restart — the loop must not strand itself on
+// ctx.Done() until the app exits.
+func TestAutoFetchLoop_ZeroIntervalReArmsWhenRestored(t *testing.T) {
+	f, _ := newAutoFetchAPI(t.TempDir(), "proj-1",
+		&config.Config{Git: config.GitConfig{AutoFetchInterval: "0"}})
+	rec := &tickRecorder{}
+	f.autoFetchTickFn = rec.record
+	f.autoFetchDisabledRecheckOverride = 20 * time.Millisecond
+
+	f.Lifecycle().StartAutoFetch()
+	t.Cleanup(func() { f.Lifecycle().Cleanup() })
+
+	// Parked: the re-check cadence must never dispatch a fetch.
+	time.Sleep(150 * time.Millisecond)
+	if n := rec.count(); n != 0 {
+		t.Fatalf("ticker fired %d times while interval was \"0\", want 0", n)
+	}
+
+	// Restore a positive interval under configMu. The pointer swap (rather
+	// than an in-place field write) keeps this test clean under -race:
+	// autoFetchInterval snapshots f.config under RLock and reads the field
+	// after releasing it, so a swapped-in immutable copy is always safe to
+	// read, while the loop's next re-check observes the new value exactly as
+	// a runtime config edit would.
+	f.configMu.Lock()
+	cfg := *f.config
+	cfg.Git.AutoFetchInterval = "40ms"
+	f.config = &cfg
+	f.configMu.Unlock()
+
+	pollUntil(t, 5*time.Second, func() bool { return rec.count() >= 2 },
+		"ticker did not re-arm after the interval changed from \"0\" to \"40ms\"")
+}
+
 // TestAutoFetchLoop_NoProjectMode_NoPanic verifies the ticker in CHAT (No
 // Project) mode: the loop ticks normally, and the real funnel — invoked
 // directly, exactly as the loop's production dispatch would — is a silent

@@ -2,6 +2,7 @@ import { List, FolderTree, Loader2, Plus, Minus, Ban, Eye } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { useGitToolbarActions } from '@/hooks/useGitToolbarActions'
 import { GitStashButtons } from './GitStashButtons'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
@@ -31,6 +32,8 @@ export function ChangesToolbar() {
   const mergeRebaseState = useGitPanelStore((s) => s.mergeRebaseState)
   const entries = useGitPanelStore((s) => s.entries)
   const isGitRepo = useGitPanelStore((s) => s.isGitRepo)
+  const gitRepoProjectId = useGitPanelStore((s) => s.gitRepoProjectId)
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const {
     isStagingAll,
     isUnstagingAll,
@@ -46,7 +49,7 @@ export function ChangesToolbar() {
   const isAbortVisible =
     mergeRebaseState.is_merging || mergeRebaseState.is_rebasing
 
-  const canReview = isGitRepo && entries.length > 0
+  const canReview = isGitRepo && gitRepoProjectId === activeProjectId && entries.length > 0
 
   const handleOpenReview = () => {
     const sessionId = useSessionStore.getState().activeSessionId

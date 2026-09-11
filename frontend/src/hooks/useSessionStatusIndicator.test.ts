@@ -78,8 +78,26 @@ describe('hasUnresolvedHITL', () => {
 })
 
 describe('deriveSessionIndicatorStatus', () => {
+  it('returns pending when the authoritative pending override is set, even with no messages', () => {
+    // The sidebar row must agree with the live-sessions radar on the restart
+    // path, where chatStore is empty and only the GetPendingActions sweep knows
+    // the session is blocked.
+    expect(deriveSessionIndicatorStatus(false, false, [], '', false, true)).toBe('pending')
+    // Archived still wins over the override (mirrors sessionDisplayStatus).
+    expect(deriveSessionIndicatorStatus(false, false, [], '', true, true)).toBe('idle')
+  })
+
   it('returns idle when not running, not paused, and no messages', () => {
     expect(deriveSessionIndicatorStatus(false, false, [])).toBe('idle')
+  })
+
+  it('returns idle for an archived session even with a live flag or DB status', () => {
+    // Mirrors sessionDisplayStatus's archived → idle short-circuit: a stale
+    // in-memory flag must not paint a dot on an archived row.
+    expect(deriveSessionIndicatorStatus(true, false, [], '', true)).toBe('idle')
+    expect(deriveSessionIndicatorStatus(false, false, [makeMsg({ type: 'tool_confirm' })], '', true)).toBe('idle')
+    expect(deriveSessionIndicatorStatus(false, false, [], 'failed', true)).toBe('idle')
+    expect(deriveSessionIndicatorStatus(false, true, [], 'paused', true)).toBe('idle')
   })
 
   it('returns active when a task is running and no HITL prompt is pending', () => {
@@ -133,10 +151,20 @@ describe('deriveSessionIndicatorStatus', () => {
     expect(deriveSessionIndicatorStatus(false, true, [])).toBe('paused')
   })
 
-  it('returns paused even when the task was running (paused flag wins over running)', () => {
-    // Defensive: even if both flags were momentarily true, the suspended
-    // state is the more informative signal.
-    expect(deriveSessionIndicatorStatus(true, true, [])).toBe('paused')
+  it('returns active when the running flag is set even if the paused flag is too', () => {
+    // Mirrors sessionDisplayStatus's active > paused priority: a live running
+    // flag paints green even when the session is (or its snapshot says) paused.
+    expect(deriveSessionIndicatorStatus(true, true, [])).toBe('active')
+  })
+
+  it('returns active for a DB in_progress status even when the live flag is paused', () => {
+    // Same disagreement case that sessionDisplayStatus resolves to active —
+    // both session-list surfaces must agree (active > paused).
+    expect(deriveSessionIndicatorStatus(false, true, [], 'in_progress')).toBe('active')
+  })
+
+  it('returns active for a DB paused status when the task is running', () => {
+    expect(deriveSessionIndicatorStatus(true, false, [], 'paused')).toBe('active')
   })
 
   it('returns pending over paused when an unresolved HITL prompt exists', () => {

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useDropdown } from '@/hooks/useDropdown'
 import { computeDropdownPosition, type DropdownPosition } from '@/lib/dropdownPosition'
@@ -154,6 +154,10 @@ export function ModelPickerMenu({
 
   const triggerRef = useRef<HTMLButtonElement>(null)
   const [position, setPosition] = useState<DropdownPosition | null>(null)
+  // Direction of an arrow-key open from the trigger: the portal content does
+  // not exist at keydown time, so the entry focus (first option on ArrowDown,
+  // last on ArrowUp) is applied in a layout effect once the menu has rendered.
+  const [pendingFocusDir, setPendingFocusDir] = useState<1 | -1 | null>(null)
 
   const allModels = useMemo(() => toModelPickerEntries(models), [models])
 
@@ -221,6 +225,45 @@ export function ModelPickerMenu({
     }
   }, [isOpen, menuRef])
 
+  /**
+   * Move DOM focus among the rendered option buttons, wrapping at the ends.
+   * When nothing inside the menu is focused yet (focus still on the trigger),
+   * ArrowDown enters at the first option and ArrowUp at the last. Together
+   * with `role="option"` + `aria-selected` on the entries this completes the
+   * listbox keyboard/AT contract (the portaled container declares
+   * `role="listbox"`).
+   */
+  const focusOption = useCallback((direction: 1 | -1) => {
+    const menu = menuRef.current
+    if (!menu) return
+    const options = Array.from(
+      menu.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    )
+    if (options.length === 0) return
+    const current = options.indexOf(document.activeElement as HTMLButtonElement)
+    const next = current === -1
+      ? direction === 1
+        ? 0
+        : options.length - 1
+      : (current + direction + options.length) % options.length
+    options[next]?.focus()
+  }, [menuRef])
+
+  // Apply the arrow-key entry focus once the portaled menu has rendered AND
+  // been positioned. The menu is mounted with visibility:hidden until the
+  // positioning effect's setPosition lands (which happens one commit later),
+  // and a focus() call on an element inside a visibility:hidden subtree is a
+  // no-op in real WebViews — so focusing in the same commit the menu mounts
+  // would silently leave focus on the trigger. Gating on a non-null `position`
+  // (and depending on it) defers the focus to the commit that makes the menu
+  // visible, after which pendingFocusDir is cleared.
+  useLayoutEffect(() => {
+    if (isOpen && pendingFocusDir !== null && position !== null) {
+      focusOption(pendingFocusDir)
+      setPendingFocusDir(null)
+    }
+  }, [isOpen, pendingFocusDir, position, focusOption])
+
   const close = () => {
     setIsOpen(false)
     triggerRef.current?.focus()
@@ -240,7 +283,26 @@ export function ModelPickerMenu({
           className,
         )}
         onClick={() => setIsOpen((v) => !v)}
-        onKeyDown={(e) => { if (e.key === 'Escape' && isOpen) { e.stopPropagation(); close() } }}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && isOpen) {
+            e.stopPropagation()
+            close()
+            return
+          }
+          // Listbox keyboard contract: ArrowDown/ArrowUp open the menu and
+          // move focus into the options (first/last respectively); when the
+          // menu is already open (focus still on the trigger) they enter it.
+          if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !isLoading && !disabled) {
+            e.preventDefault()
+            const direction = e.key === 'ArrowDown' ? 1 : -1
+            if (!isOpen) {
+              setIsOpen(true)
+              setPendingFocusDir(direction)
+            } else {
+              focusOption(direction)
+            }
+          }
+        }}
         title={isLoading ? 'Loading models…' : disabled ? 'Locked while the session is running' : effectiveEntry ? `${effectiveEntry.providerLabel}: ${effectiveEntry.model}` : displayLabel}
       >
         <span className="truncate">{isLoading ? 'Loading models\u2026' : displayLabel}</span>
@@ -263,7 +325,17 @@ export function ModelPickerMenu({
             visibility: position ? 'visible' : 'hidden',
             zIndex: Z_INDEX,
           }}
-          onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); close() } }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.stopPropagation()
+              close()
+              return
+            }
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault()
+              focusOption(e.key === 'ArrowDown' ? 1 : -1)
+            }
+          }}
         >
           {isLoading ? (
             <div className="px-3 py-4 text-xs text-muted-foreground text-center">
@@ -272,7 +344,10 @@ export function ModelPickerMenu({
           ) : (
             <>
               {menuHeading && (
-                <div className="px-3 pt-2 pb-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                <div
+                  aria-hidden="true"
+                  className="px-3 pt-2 pb-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider"
+                >
                   {menuHeading}
                 </div>
               )}
@@ -281,6 +356,8 @@ export function ModelPickerMenu({
               {!hideDefaultOption && (
                 <button
                   type="button"
+                  role="option"
+                  aria-selected={!selected}
                   className={cn(
                     'flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted',
                     !selected && 'bg-primary/10 font-medium',
@@ -288,9 +365,12 @@ export function ModelPickerMenu({
                   onClick={() => {
                     // "Default" is an immediately valid local choice (null =
                     // use the persisted global default). The caller decides
-                    // whether this needs a backend round-trip.
+                    // whether this needs a backend round-trip. Route through
+                    // close() so focus returns to the trigger before the
+                    // portaled menu unmounts (otherwise focus falls to
+                    // <body>, restarting the tab order for keyboard users).
                     onSelect(null)
-                    setIsOpen(false)
+                    close()
                   }}
                 >
                   <span className="flex-1 text-left">
@@ -302,10 +382,15 @@ export function ModelPickerMenu({
                 </button>
               )}
 
-              {/* Provider groups */}
+              {/* Provider groups — `role="group"` keeps the ARIA ownership
+                  valid (listbox → group → option); the visual header is
+                  aria-hidden because the group label carries the name. */}
               {Array.from(grouped.entries()).map(([provider, modelsInGroup]) => (
-                <div key={provider}>
-                  <div className="px-3 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30">
+                <div key={provider} role="group" aria-label={providerLabel(provider)}>
+                  <div
+                    aria-hidden="true"
+                    className="px-3 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30"
+                  >
                     {providerLabel(provider)}
                   </div>
                   {modelsInGroup.map((entry) => {
@@ -321,11 +406,13 @@ export function ModelPickerMenu({
                       <button
                         key={entry.id}
                         type="button"
+                        role="option"
+                        aria-selected={isSelected}
                         className={cn(
                           'flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted',
                           isSelected && 'bg-primary/10 font-medium',
                         )}
-                        onClick={() => { onSelect(entry.id); setIsOpen(false) }}
+                        onClick={() => { onSelect(entry.id); close() }}
                       >
                         <span className="flex-1 text-left truncate">{entry.model}</span>
                         {isSelected && (

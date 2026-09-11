@@ -172,6 +172,12 @@ export interface UsePanZoomResult {
 interface DragState {
   startX: number
   startY: number
+  // Last pointer position processed by onPointerMove. An external view write
+  // mid-drag rebases the drag origin onto the new view and startX/startY onto
+  // lastX/lastY, so the next move contributes only the incremental delta
+  // instead of re-adding the whole gesture distance on top of the new origin.
+  lastX: number
+  lastY: number
   ox: number
   oy: number
 }
@@ -221,6 +227,11 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
   // so at most one React state write happens per animation frame.
   const pendingViewRef = useRef<View | null>(null)
   const rafIdRef = useRef<number | null>(null)
+  // The latest view the drag pipeline itself computed (commitView). The
+  // [view] sync effect compares the committed view against it to tell the
+  // drag's own rAF flushes apart from external writes (zoom / fit / consumer
+  // setView) — only the latter must rebase an armed drag's origin.
+  const selfViewRef = useRef<View>(INITIAL_VIEW)
 
   // Keep the caller-provided natural-size accessor in a ref so `fit` (and the
   // handlers/effects built on it) stay referentially stable even when
@@ -248,6 +259,21 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
         cancelAnimationFrame(rafIdRef.current)
         rafIdRef.current = null
       }
+    }
+    // Compose, don't clobber: an external write (wheel zoom mid-drag, fit,
+    // consumer setView) becomes the drag's new origin, so the next
+    // pointermove composes on it instead of discarding the zoom's translate
+    // correction. Self-commits are excluded via selfViewRef: rebasing on the
+    // drag's OWN rAF flushes would re-add the already-committed delta on
+    // every frame and make the pan accelerate away from the cursor
+    // (x_n = origin + Σdx_n grows superlinearly). startX/startY also rebase
+    // onto the last processed pointer position, so the next move contributes
+    // only the incremental delta on top of the external view.
+    if (dragRef.current && view !== selfViewRef.current) {
+      dragRef.current.ox = view.x
+      dragRef.current.oy = view.y
+      dragRef.current.startX = dragRef.current.lastX
+      dragRef.current.startY = dragRef.current.lastY
     }
   }, [view])
 
@@ -332,6 +358,7 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
    */
   const commitView = useCallback((next: View) => {
     viewRef.current = next
+    selfViewRef.current = next
     pendingViewRef.current = next
     if (rafIdRef.current === null) {
       rafIdRef.current = requestAnimationFrame(() => {
@@ -435,6 +462,8 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
       dragRef.current = {
         startX: e.clientX,
         startY: e.clientY,
+        lastX: e.clientX,
+        lastY: e.clientY,
         ox: viewRef.current.x,
         oy: viewRef.current.y,
       }
@@ -462,6 +491,8 @@ export function usePanZoom(options: UsePanZoomOptions = {}): UsePanZoomResult {
       const zoom = getUiZoomFactor()
       const dx = (e.clientX - drag.startX) / zoom
       const dy = (e.clientY - drag.startY) / zoom
+      drag.lastX = e.clientX
+      drag.lastY = e.clientY
       // Drag-distance counter: once the pointer has travelled further than the
       // click threshold, the gesture is a pan — consumers checking didDragRef
       // in onClick suppress the trailing click. The threshold stays in visual

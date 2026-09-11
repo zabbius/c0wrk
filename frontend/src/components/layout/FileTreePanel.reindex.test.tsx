@@ -13,10 +13,28 @@ vi.mock('@/api/workspace', () => ({
   getSessionWorkspace: vi.fn(async () => '/ws'),
 }))
 vi.mock('@/api/runtime', () => ({
-  // FileTreePanel subscribes to workspace:tree_changed; an inert subscription
-  // is enough for these tests.
-  subscribe: vi.fn(() => () => undefined),
+  // FileTreePanel subscribes to workspace:tree_changed and (while a reindex
+  // request is pending) vector_index:status. Record the callbacks so tests
+  // can emit events; an inert workspace:tree_changed subscription is enough.
+  subscribe: vi.fn((event: string, cb: () => void) => {
+    let list = runtimeSubs.get(event)
+    if (!list) {
+      list = []
+      runtimeSubs.set(event, list)
+    }
+    list.push(cb)
+    return () => {
+      const current = runtimeSubs.get(event)
+      if (current) current.splice(current.indexOf(cb), 1)
+    }
+  }),
 }))
+const runtimeSubs = vi.hoisted(() => new Map<string, Array<() => void>>())
+
+/** Emit a `vector_index:status` event to every current subscriber. */
+function emitVectorIndexStatus(): void {
+  for (const cb of [...(runtimeSubs.get('vector_index:status') ?? [])]) cb()
+}
 vi.mock('@/api/vector', () => ({
   reindexVectorIndex: vi.fn(async () => undefined),
 }))
@@ -87,6 +105,7 @@ describe('FileTreePanel — force full project reindex action', () => {
     })
     root = null
     container.remove()
+    runtimeSubs.clear()
     vi.clearAllMocks()
   })
 
@@ -192,6 +211,32 @@ describe('FileTreePanel — force full project reindex action', () => {
     expect(reindexMock).toHaveBeenCalledTimes(1)
 
     // The rejection releases the latch — the action is available again.
+    const readyButton = findButton(container, 'Force full project reindex')
+    expect(readyButton).not.toBeNull()
+    expect(readyButton!.disabled).toBe(false)
+  })
+
+  it('releases the optimistic latch when a status event lands without a busy phase', async () => {
+    // A backend pass that skips the documented busy status (or events
+    // coalesced away) would leave the latch engaged forever with the store
+    // still reporting the previous non-busy state — any vector_index:status
+    // event observed after the request must release it.
+    await renderPanel()
+    await act(async () => {})
+
+    const button = findButton(container, 'Force full project reindex')
+    await act(async () => {
+      button!.click()
+    })
+    expect(reindexMock).toHaveBeenCalledTimes(1)
+    expect(findButton(container, 'Reindexing...')!.disabled).toBe(true)
+
+    // The store never flips to a busy state; only a (terminal) status event
+    // arrives — the latch releases and the action becomes available again.
+    await act(async () => {
+      emitVectorIndexStatus()
+    })
+
     const readyButton = findButton(container, 'Force full project reindex')
     expect(readyButton).not.toBeNull()
     expect(readyButton!.disabled).toBe(false)

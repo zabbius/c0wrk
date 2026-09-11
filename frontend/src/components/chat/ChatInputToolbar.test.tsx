@@ -162,3 +162,20 @@ describe('ChatInputToolbar selector lock', () => {
     expect(goalTrigger().disabled).toBe(true)
   })
 })
+
+describe('ChatInputToolbar resume lock during attachment uploads', () => {
+  const resumeButton = (): HTMLButtonElement =>
+    container.querySelector<HTMLButtonElement>('button[aria-label="Resume task"]')!
+
+  it('disables the Resume button while attachments are uploading (mirroring Send)', () => {
+    renderToolbar({ paused: true, showCancel: true, attachmentsUploading: true })
+    expect(resumeButton().disabled).toBe(true)
+    expect(resumeButton().title).toContain('Processing attachments')
+  })
+
+  it('keeps Resume enabled when no uploads are in flight', () => {
+    renderToolbar({ paused: true, showCancel: true })
+    expect(resumeButton().disabled).toBe(false)
+    expect(resumeButton().title).toBe('Resume task')
+  })
+})

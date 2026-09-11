@@ -61,7 +61,7 @@ trigger ──┐
               failure/skip → Debug log                    [silence]
 ```
 
-Ticker lifecycle: `desktop` startup → `StartAutoFetch()` (idempotent; a second call is a no-op) → goroutine `autoFetchLoop` with `time.NewTicker(interval)`. On every tick the interval is re-read under `configMu`, so runtime config edits apply without an app restart: a changed positive period re-arms the ticker (that tick does not fetch), and a period `<= 0` parks the loop until shutdown. Shutdown: `FrontendAPILifecycle.Cleanup` calls `stopAutoFetchLoop` first — a non-blocking cancel; the in-flight fetch is already bounded by `remoteGitCmdTimeout` and cancelled through `f.ctx()`. The loop's context derives from `f.ctx()`, so it also dies with the application context even if `Cleanup` were skipped; the `done` channel closes on exit so tests can prove the goroutine terminated.
+Ticker lifecycle: `desktop` startup → `StartAutoFetch()` (idempotent; a second call is a no-op) → goroutine `autoFetchLoop` with `time.NewTicker(interval)`. On every tick the interval is re-read under `configMu`, so runtime config edits apply without an app restart: a changed positive period re-arms the ticker (that tick does not fetch), and a period `<= 0` parks the loop at the slow re-check cadence (`autoFetchDisabledRecheck`, 1 min) — while parked the loop keeps re-reading the interval, so restoring a positive value re-arms the ticker without an app restart (a fetch never fires while disabled). Shutdown: `FrontendAPILifecycle.Cleanup` calls `stopAutoFetchLoop` first — a non-blocking cancel; the in-flight fetch is already bounded by `remoteGitCmdTimeout` and cancelled through `f.ctx()`. The loop's context derives from `f.ctx()`, so it also dies with the application context even if `Cleanup` were skipped; the `done` channel closes on exit so tests can prove the goroutine terminated.
 
 Focus path: `window focus` → `useGitFocusRefresh` → `requestRemoteRefresh()` (`@/api/git`) → RPC `RequestGitRemoteRefresh` → `go f.autoFetchOnce("focus")` and immediate return (never blocks the UI thread). All gating is server-side; the frontend never decides when a fetch is appropriate and surfaces no errors when the backend quietly skips.
 
@@ -93,7 +93,7 @@ Both knobs are documented with a commented example block in `config.example.yaml
 
 - New trigger: define a `autoFetchTrigger<Name>` constant and call `go f.autoFetchOnce(<name>)` from the new source. Every gate (config, project, repo, min-interval, remote check, TryLock serialization) plus the quiet-failure contract applies automatically.
 - Trigger names are constants (not inline strings) so log lines stay greppable — keep that when adding one.
-- Test seams: `autoFetchIntervalOverride` (forces the ticker period; mirrors `switchLockTimeoutOverride`) and `autoFetchTickFn` (replaces the funnel call inside the loop so ticker tests need no git/network). `autoFetchLoopDone` proves goroutine termination after `Cleanup`.
+- Test seams: `autoFetchIntervalOverride` (forces the ticker period; mirrors `switchLockTimeoutOverride`), `autoFetchDisabledRecheckOverride` (shortens the parked-state re-check cadence in loop tests), and `autoFetchTickFn` (replaces the funnel call inside the loop so ticker tests need no git/network). `autoFetchLoopDone` proves goroutine termination after `Cleanup`.
 
 ## Related Specs
 

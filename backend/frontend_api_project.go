@@ -352,17 +352,21 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	}
 
 	// Teardown persists the PREVIOUS project's state and cancels its in-flight
-	// indexing; it stays first. Everything that can still fail (watcher setup,
-	// vector init) runs BEFORE the activation commit below, so a failure
-	// leaves activeProjectID/activeProjectPath on the previous project — the
-	// backend never half-switches, and the frontend (which treats a non-nil
-	// RPC error as "switch did not happen") cannot diverge from the backend.
+	// indexing; it stays first. Everything that can still fail (vector setup)
+	// runs BEFORE both the watcher swap and the activation commit below, so a
+	// failure leaves activeProjectID/activeProjectPath AND the live watcher on
+	// the previous project — the backend never half-switches, and the frontend
+	// (which treats a non-nil RPC error as "switch did not happen") cannot
+	// diverge from the backend.
 	f.switchProjectTeardown(id)
-	f.switchProjectSetupWatcher(p)
-
+	// The fallible vector setup runs before the watcher swap on purpose: the
+	// two steps are independent, and a vector failure here leaves the previous
+	// watcher untouched (still scoped to the still-active project) instead of
+	// closing it and starting one scoped to a project that never activated.
 	if err := f.switchSetupVector(p); err != nil {
 		return err
 	}
+	f.switchProjectSetupWatcher(p)
 
 	// All fallible steps succeeded: commit the activation. From here on the
 	// switch cannot fail, so the active marker and the project:switched event
@@ -432,7 +436,7 @@ func (f *FrontendAPI) acquireSwitchLock() error {
 
 // switchSetupVector runs the vector-index setup for a project switch, honoring
 // the test-only switchProjectSetupVectorFn seam (nil in production). It lets a
-// test drive the fallible post-watcher step to verify the switch stays atomic
+// test drive the fallible pre-watcher step to verify the switch stays atomic
 // on failure.
 func (f *FrontendAPI) switchSetupVector(p *project.ProjectInfo) error {
 	if f.switchProjectSetupVectorFn != nil {
@@ -1078,8 +1082,14 @@ func (f *FrontendAPI) resolveNoProjectSessionWorkspace() string {
 		return ""
 	}
 	// ListSessionsByProject returns sessions sorted by last_active_at desc,
-	// so sessions[0] is the most recently active.
-	ws, ok := f.app.Manager().GetSessionWorkspacePath(sessions[0].ID)
+	// so sessions[0] is the most recently active. Resolve its workspace via the
+	// READ-ONLY WorkspacePathFor lookup, never GetSessionWorkspacePath: the
+	// latter lazily restores the session (full orchestrator build + unbounded
+	// store reads) inside SwitchProject while switchMu is held, which is the
+	// hang WorkspacePathFor was introduced to avoid.
+	ctx, cancel := context.WithTimeout(context.Background(), terminalPathLookupTimeout)
+	defer cancel()
+	ws, ok := f.app.Manager().WorkspacePathFor(ctx, sessions[0].ID)
 	if !ok || ws == "" {
 		return ""
 	}

@@ -217,3 +217,66 @@ func TestGitCaches_NoProjectUntouched(t *testing.T) {
 			f.gitRepoCache, f.gitStatusCache, f.gitIgnoredCache)
 	}
 }
+
+// TestCachedGitMaps_AreCallerOwned pins review [C3-5]: the maps handed out by
+// the git caches are shallow copies (maps.Clone) at the cache boundary — a
+// caller mutating its returned map must never corrupt the cached snapshot
+// served to other readers within the TTL.
+func TestCachedGitMaps_AreCallerOwned(t *testing.T) {
+	ws := t.TempDir()
+	var statusCalls, ignoredCalls atomic.Int32
+	f := newGitCacheTestAPI(ws)
+	f.gitStatusFn = func(string) (map[string]GitStatusEntry, error) {
+		statusCalls.Add(1)
+		return map[string]GitStatusEntry{"a.txt": {Status: "M"}}, nil
+	}
+	f.gitIgnoredFn = func(string) (map[string]bool, error) {
+		ignoredCalls.Add(1)
+		return map[string]bool{"build/": true}, nil
+	}
+
+	// Miss path: the freshly computed snapshot is stored, the caller gets a copy.
+	first, err := f.cachedGitStatus(ws)
+	if err != nil {
+		t.Fatalf("cachedGitStatus #1: %v", err)
+	}
+	first["caller-added.txt"] = GitStatusEntry{Status: "M"}
+	delete(first, "a.txt")
+
+	// Hit path: served from the cache — must reflect neither mutation.
+	second, err := f.cachedGitStatus(ws)
+	if err != nil {
+		t.Fatalf("cachedGitStatus #2: %v", err)
+	}
+	if _, polluted := second["caller-added.txt"]; polluted {
+		t.Error("status cache polluted by caller mutation of a previously returned map")
+	}
+	if _, missing := second["a.txt"]; !missing {
+		t.Error("cached status entry lost through caller mutation of a previously returned map")
+	}
+	if got := statusCalls.Load(); got != 1 {
+		t.Fatalf("second status call must be a cache hit: spawned %d, want 1", got)
+	}
+
+	// Same contract for the ignored-path cache.
+	ignoredFirst, err := f.cachedGitIgnoredPaths(ws)
+	if err != nil {
+		t.Fatalf("cachedGitIgnoredPaths #1: %v", err)
+	}
+	ignoredFirst["caller-added/"] = true
+	delete(ignoredFirst, "build/")
+
+	ignoredSecond, err := f.cachedGitIgnoredPaths(ws)
+	if err != nil {
+		t.Fatalf("cachedGitIgnoredPaths #2: %v", err)
+	}
+	if _, polluted := ignoredSecond["caller-added/"]; polluted {
+		t.Error("ignored-path cache polluted by caller mutation of a previously returned map")
+	}
+	if !ignoredSecond["build/"] {
+		t.Error("cached ignored-path entry lost through caller mutation of a previously returned map")
+	}
+	if got := ignoredCalls.Load(); got != 1 {
+		t.Fatalf("second ignored call must be a cache hit: spawned %d, want 1", got)
+	}
+}

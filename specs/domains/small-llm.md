@@ -172,7 +172,7 @@ From `config.yaml` (via BuilderConfig → OrchestratorConfig). The authoritative
 | --------- | ------- | ----------- |
 | `small_llm.enabled` | false | Master toggle. Manual only — no auto-detection. |
 | `small_llm.essential_tools.enabled` | false | Gates the essential-tools variant. |
-| `small_llm.essential_tools.always_present` | `defaultSmallLLMAlwaysPresent` (read_file, write_file, edit_file, list_directory, glob, ripgrep, bash_exec, semantic_search, store_fact, search_facts, ask_user, finish) | Tools always kept. May be empty (protected + MCP tools are always kept implicitly). The assigned set is this list ∪ protected ∪ every MCP tool. |
+| `small_llm.essential_tools.always_present` | `defaultSmallLLMAlwaysPresent` (read_file, write_file, edit_file, list_directory, glob, ripgrep, bash_exec, posh_exec, semantic_search, store_fact, search_facts, ask_user, finish) | Tools always kept. May be empty (protected + MCP tools are always kept implicitly). The assigned set is this list ∪ protected ∪ every MCP tool. `bash_exec`/`posh_exec` are platform alternatives (one is unregistered per host and dropped). |
 | `small_llm.essential_tools.compact_descriptions` | false | Replace every known builtin's full description (480-1100-char rubric) with a one-line compact variant while the variant is active; unknown tools (e.g. MCP) keep their original descriptions. |
 | `small_llm.system_prompt.lite` | false | Swap the verbose core directive for the compact lite directive. |
 | `small_llm.system_prompt.few_shot` | false | Append worked-example ReAct cycles (requires Lite). |

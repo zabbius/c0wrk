@@ -23,6 +23,17 @@ export type WorkspaceTab = 'explorer' | 'git' | 'semantics' | 'research'
 /** Active workspace tab per project id. Persisted so each project remembers its own tab. */
 export type WorkspaceTabByProject = Record<string, WorkspaceTab>
 
+/**
+ * Valid WorkspaceTab values — used by the persist `merge` (and the `migrate`
+ * version step) to validate persisted state entry-by-entry (mirrors
+ * GIT_PANEL_TAB_VALUES in gitPanelStore): an unknown/corrupt tab value
+ * (hand-edited localStorage or a future shape written by a newer build)
+ * matches no TabsTrigger/TabsContent and would render a blank workspace
+ * panel, so it is dropped rather than trusted and the project falls back to
+ * the default tab.
+ */
+const WORKSPACE_TAB_VALUES = new Set<WorkspaceTab>(['explorer', 'git', 'semantics', 'research'])
+
 interface UIState {
   sidebarCollapsed: boolean
   /**
@@ -80,6 +91,57 @@ export function selectWorkspaceTab(
 
 // --- Store ---
 
+/**
+ * Rehydrate persisted state into the current state. Zustand's persist
+ * middleware calls `merge` on EVERY rehydrate (version match or not), so the
+ * per-project workspace-tab validation lives HERE — the `migrate` hook runs
+ * only when the stored version differs, and a same-version corrupt value
+ * (hand-edited localStorage, or a future build writing a new tab name without
+ * bumping `version`) would otherwise rehydrate verbatim and render a blank
+ * workspace panel. Mirrors mergeGitPanel's `activeTabByProject` contract.
+ * Every scalar field falls back to the current (default) value when its
+ * persisted value is missing or has the wrong type.
+ */
+export function mergeUIStore(
+  persisted: unknown,
+  current: UIState & UIActions,
+): UIState & UIActions {
+  const p = (persisted ?? {}) as {
+    sidebarCollapsed?: unknown
+    sidebarWidth?: unknown
+    chatSessionListRatio?: unknown
+    showSessionStats?: unknown
+    workspaceTabByProject?: unknown
+  }
+  const workspaceTabByProject: WorkspaceTabByProject = {}
+  if (
+    p.workspaceTabByProject !== null &&
+    typeof p.workspaceTabByProject === 'object'
+  ) {
+    for (const [projectId, tab] of Object.entries(
+      p.workspaceTabByProject as Record<string, unknown>,
+    )) {
+      if (WORKSPACE_TAB_VALUES.has(tab as WorkspaceTab)) {
+        workspaceTabByProject[projectId] = tab as WorkspaceTab
+      }
+    }
+  }
+  return {
+    ...current,
+    sidebarCollapsed:
+      typeof p.sidebarCollapsed === 'boolean' ? p.sidebarCollapsed : current.sidebarCollapsed,
+    sidebarWidth:
+      typeof p.sidebarWidth === 'number' ? p.sidebarWidth : current.sidebarWidth,
+    chatSessionListRatio:
+      typeof p.chatSessionListRatio === 'number'
+        ? p.chatSessionListRatio
+        : current.chatSessionListRatio,
+    showSessionStats:
+      typeof p.showSessionStats === 'boolean' ? p.showSessionStats : current.showSessionStats,
+    workspaceTabByProject,
+  }
+}
+
 export const useUIStore = create<UIState & UIActions>()(
   persist(
     (set) => ({
@@ -135,14 +197,31 @@ export const useUIStore = create<UIState & UIActions>()(
         // installs) missing fields take their creator default; persist's
         // shallow merge already covers fresh installs, but explicit defaults
         // here make the migration resilient to partial data.
+        // workspaceTabByProject is validated entry-by-entry against
+        // WORKSPACE_TAB_VALUES (same fail-closed contract as mergeGitPanel's
+        // activeTabByProject): unknown tab values are dropped so the store
+        // never rehydrates a tab no panel can render.
+        const workspaceTabByProject: WorkspaceTabByProject = {}
+        if (
+          prev.workspaceTabByProject !== null &&
+          typeof prev.workspaceTabByProject === 'object'
+        ) {
+          for (const [projectId, tab] of Object.entries(prev.workspaceTabByProject)) {
+            if (WORKSPACE_TAB_VALUES.has(tab as WorkspaceTab)) {
+              workspaceTabByProject[projectId] = tab as WorkspaceTab
+            }
+          }
+        }
         return {
           sidebarCollapsed: prev.sidebarCollapsed ?? false,
           chatSessionListRatio: prev.chatSessionListRatio ?? 0.5,
           sidebarWidth: prev.sidebarWidth ?? getDefaultSidebarWidth(),
           showSessionStats: prev.showSessionStats ?? false,
-          workspaceTabByProject: prev.workspaceTabByProject ?? {},
+          workspaceTabByProject,
         }
       },
+      // merge (not just migrate) validates on every rehydrate — see mergeUIStore.
+      merge: mergeUIStore,
       partialize: (state) => ({
         sidebarCollapsed: state.sidebarCollapsed,
         sidebarWidth: state.sidebarWidth,

@@ -25,13 +25,19 @@ export function GitPanel() {
 
   // Stable individual selectors — each only triggers re-render when its
   // specific slice changes (prevents infinite re-render loops per AGENTS.md).
-  const isGitRepo = useGitPanelStore((s) => s.isGitRepo)
+  // The git-repo flag is PAIRED with gitRepoProjectId per the store contract:
+  // a stale `isGitRepo=true` checked against a previously active project must
+  // never leak into the "Not a git repository" decision during rapid project
+  // switches. The selector returns a primitive (React #185 safe).
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const isGitRepo = useGitPanelStore(
+    (s) => s.isGitRepo && s.gitRepoProjectId === activeProjectId,
+  )
   const isLoading = useGitPanelStore((s) => s.isLoading)
   const error = useGitPanelStore((s) => s.error)
   // The active tab is per project: derived from the active project id so a
   // project switch instantly shows that project's remembered tab (default
   // 'files' for a first visit) with no transient wrong-section frame.
-  const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const activeTab = useGitPanelStore((s) => selectGitPanelTab(s, activeProjectId))
   const setActiveTab = useGitPanelStore((s) => s.setActiveTab)
 

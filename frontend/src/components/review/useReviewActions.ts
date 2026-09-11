@@ -152,10 +152,21 @@ export function useReviewActions(sessionId: string) {
         throw err
       }
 
-      // The send succeeded — the review text is on its way. Now it is safe to
-      // tear down the persisted review state and close the UI.
-      await reviewApi.clearReviewComments(sessionId)
-      await reviewApi.setReviewStatus(sessionId, 'submitted')
+      // The send succeeded — the review text is on its way and the task is
+      // running on it. From here the teardown is BEST-EFFORT: a transient
+      // failure in the follow-up RPCs (e.g. SQLite busy) must not abort the
+      // flow — re-throwing would leave the review page open with the comment
+      // buffer intact and re-arm the Submit button, and a second Submit
+      // would deliver the same feedback to the running task twice. The
+      // buffer also no longer gates anything: the client-side state below
+      // is cleared regardless, so a re-invoked handleSubmit finds no
+      // reviewState and bails before sending.
+      try {
+        await reviewApi.clearReviewComments(sessionId)
+        await reviewApi.setReviewStatus(sessionId, 'submitted')
+      } catch (err) {
+        logger.warn('Review buffer teardown failed after successful send:', err)
+      }
       clearSessionReview(sessionId)
 
       // Close review page. reviewMode: true tells the orchestrator to treat
@@ -164,6 +175,11 @@ export function useReviewActions(sessionId: string) {
       // clean user comments without an instruction prefix.
       useFileViewerStore.getState().closeFile('c0wrk:review')
       closeReviewPage()
+      // Leave the auto-reopen loop ARMED: per specs/domains/review.md the next
+      // task_complete reopens the review page with a fresh diff so the user can
+      // re-review the agent's fixes (loop repeats until Approve). The loop is
+      // disarmed only on Approve (handleApprove) or an explicit decline
+      // (resetLoopFlags).
     } catch (err) {
       logger.error('Submit flow failed:', err)
     } finally {

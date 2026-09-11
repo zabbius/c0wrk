@@ -192,6 +192,7 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `Pull`                 | remote, flags []string  | (string, error)               | Pull from remote (flags: --ff-only, --rebase, --rebase --autostash) |
 | `Push`                 | remote, flags []string  | (string, error)               | Push to remote (flags: --force, --force-with-lease, --no-verify) |
 | `Fetch`                | remote, flags []string  | (string, error)               | Fetch from remote (flags: --tags, --prune) |
+| `GetIsGitRepo`         | —                       | (bool, error)                 | Whether the active project's workspace resolves to a git repository (30s-cached local check; feeds the `isGitRepo`/`gitRepoProjectId` store pairing) |
 | `GetGitHistory`        | limit, skip             | (*GitHistoryPage, error)      | One page of the unified commit log + DAG graph topology (each `GitHistoryCommit` carries both log fields and parents/refs; replaces the former separate `GetCommitLog`/`GetGitGraph` pair). Paginated via `git log -n <limit> --skip <skip>` (limit default 300, capped at 1000); returns `GitHistoryPage{Commits, NextSkip, HasMore}` and the frontend accumulates pages |
 | `GetCommitFiles`       | sha                     | ([]CommitFile, error)         | Files changed in a commit |
 | `GetCommitFilesBatch`  | shas []string           | (map[string][]CommitFile, error) | Files changed across many commits (batched) |
@@ -208,6 +209,23 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `AbortRebase`          | —                       | error                         | Abort an in-progress rebase |
 | `ResetToCommit`        | sha, mode               | error                         | Reset HEAD to a commit (mode: soft, mixed, hard) |
 | `GetRebaseMergeState`  | —                       | (MergeRebaseState, error)     | Get in-progress merge/rebase state |
+
+### Git Auto-Fetch (`backend/frontend_api_git_autofetch.go`)
+
+| Method                 | Params                  | Returns                       | Purpose                                                |
+| ---------------------- | ----------------------- | ----------------------------- | ------------------------------------------------------ |
+| `RequestGitRemoteRefresh` | —                    | —                             | Enqueue a best-effort background `git fetch` for the active project's repo (fire-and-forget; all gating is server-side — see `git-auto-fetch.md`) |
+
+### Git Config Risk (`backend/frontend_api_gitconfig_risk.go`)
+
+| Method                 | Params                  | Returns                       | Purpose                                                |
+| ---------------------- | ----------------------- | ----------------------------- | ------------------------------------------------------ |
+| `GetTrustedGitRepos`   | —                       | []string                      | Repository paths the user has permanently trusted (gitconfig-risk intake) |
+| `TrustGitRepo`         | path                    | error                         | Add a repository path to the permanent trust list      |
+| `RemoveTrustedGitRepo` | path                    | error                         | Remove a repository path from the trust list           |
+| `GetHardenGitRepos`    | —                       | []string                      | Repository paths force-hardened via the config scanner's neutralization |
+| `HardenGitRepo`        | path                    | error                         | Force-harden a repository path                         |
+| `RemoveHardenGitRepo`  | path                    | error                         | Remove a path from the harden list                     |
 
 ### Lifecycle (`backend/frontend_api.go`)
 

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Check, X, MessageSquare, ExternalLink, AlertTriangle, FileText } from 'lucide-react'
 import { emit } from '@/api/runtime'
@@ -13,7 +13,13 @@ interface PlanApprovalPanelProps {
   item: Extract<DisplayItem, { kind: 'plan_review' }>
 }
 
-export function PlanApprovalPanel({ item }: PlanApprovalPanelProps) {
+// Memoized like its sibling blocks exposed to the assistant-chunk render
+// cadence (ThoughtBlock / ToolCard): ChatArea re-renders on every streaming
+// chunk, and the plan markdown below is expensive to re-parse (remark +
+// rehype-sanitize + ReactMarkdown on a multi-KB plan). `item` identity is
+// stable (displayItems are memoized on messages), so React.memo fully
+// suppresses those re-renders.
+export const PlanApprovalPanel = React.memo(function PlanApprovalPanel({ item }: PlanApprovalPanelProps) {
   const sessionId = useSessionStore((s) => s.activeSessionId)
   const requestId = item.message.metadata?.request_id as string | undefined
   const planPath = item.message.metadata?.plan_path as string | undefined
@@ -166,4 +172,4 @@ export function PlanApprovalPanel({ item }: PlanApprovalPanelProps) {
       </div>
     </div>
   )
-}
+})

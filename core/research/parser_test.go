@@ -26,7 +26,9 @@ func TestNormalizeID(t *testing.T) {
 		{"H-001", "H-001"},             // card/catalog spelling
 		{"h-001", "H-001"},             // case-insensitive
 		{"[H-002](H-002.md)", "H-002"}, // markdown-link cell
-		{"H-12", "H-12"},
+		{"H-12", "H-012"},              // unpadded hand-written spelling pads up
+		{"H1", "H-001"},                // bare Mermaid-token spelling pads up
+		{"H-1000", "H-1000"},           // ≥1000 keeps its full width
 		{"", ""},
 		{"no id here", ""},
 	}

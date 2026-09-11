@@ -444,8 +444,28 @@ func (m *Manager) persistCompactionForecast(orch *core.Orchestrator) {
 		m.log().Warn("manual compaction: failed to marshal forecast", "error", err)
 		return
 	}
-	if err := store.SaveAppState(context.Background(), compactionForecastStateKey(orch.CurrentModel()), string(raw)); err != nil {
+	// Bound the store call like the restore head-reads (restoreDBReadTimeout):
+	// the shared SQLite connection serves every active session's writes, so
+	// an unbounded save here could stall the compaction-finish path under a
+	// concurrent write storm.
+	ctx, cancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+	defer cancel()
+	key := compactionForecastStateKey(orch.CurrentModel())
+	if err := store.SaveAppState(ctx, key, string(raw)); err != nil {
 		m.log().Warn("manual compaction: failed to persist forecast", "error", err)
+		return
+	}
+	// Also refresh the model-independent entry (unless the model-scoped key is
+	// already it). A session restored after a restart may run under a different
+	// model than the one that calibrated the forecast — a transient per-request
+	// override is not persisted as the session's model — so this keeps the last
+	// calibration reachable instead of silently reverting to the config seed,
+	// which is what makes the documented "survives restarts" guarantee hold.
+	// loadCompactionForecast prefers the model-scoped entry and falls back here.
+	if fallback := compactionForecastStateKey(""); key != fallback {
+		if err := store.SaveAppState(ctx, fallback, string(raw)); err != nil {
+			m.log().Warn("manual compaction: failed to persist unscoped forecast", "error", err)
+		}
 	}
 }
 
@@ -462,12 +482,32 @@ func (m *Manager) loadCompactionForecast(orch *core.Orchestrator) {
 	if store == nil {
 		return
 	}
-	raw, err := store.LoadAppState(context.Background(), compactionForecastStateKey(orch.CurrentModel()))
-	if err != nil || raw == "" {
-		if err != nil {
-			m.log().Warn("manual compaction: failed to load forecast", "error", err)
-		}
+	// Bound the store call like the restore head-reads (restoreDBReadTimeout):
+	// this load runs inside the lazy-restore path (getOrRestoreSession), so
+	// an unbounded read queuing behind a write storm would park the restore —
+	// and, via restoreInFlight, every concurrent waiter — past the point the
+	// head-read bound was meant to guarantee.
+	ctx, cancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+	defer cancel()
+	raw, err := store.LoadAppState(ctx, compactionForecastStateKey(orch.CurrentModel()))
+	if err != nil {
+		m.log().Warn("manual compaction: failed to load forecast", "error", err)
 		return
+	}
+	if raw == "" {
+		// Fall back to the model-independent entry when the model-scoped key is
+		// absent: the session may be restored under a different model than the
+		// one that calibrated the forecast (a transient override is not
+		// persisted), and dropping the calibration there would contradict the
+		// documented "survives restarts" guarantee.
+		raw, err = store.LoadAppState(ctx, compactionForecastStateKey(""))
+		if err != nil {
+			m.log().Warn("manual compaction: failed to load fallback forecast", "error", err)
+			return
+		}
+		if raw == "" {
+			return
+		}
 	}
 	var state compactionForecastState
 	if err := json.Unmarshal([]byte(raw), &state); err != nil {
