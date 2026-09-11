@@ -225,7 +225,7 @@ export function SettingsModal() {
             {/*
               Theme and UI Scale sit side by side on a single horizontal step
               (two equal columns). The columns stretch to the tallest control
-              (the Theme switch group, which is taller than the single-row
+              (the Theme combobox group, which is taller than the single-row
               UI-scale field by its `p-1` wrapper), so UIScaleSelector can
               vertically center its field against the Theme group.
             */}

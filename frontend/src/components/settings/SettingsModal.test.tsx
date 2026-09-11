@@ -263,7 +263,7 @@ describe('SettingsModal Appearance tab', () => {
     expect(row.className).toContain('grid-cols-2')
   })
 
-  it('vertically centers the UI Scale field against the Theme switch group', async () => {
+  it('vertically centers the UI Scale field against the Theme combobox group', async () => {
     useSettingsStore.setState({ open: true, activeTab: 'appearance' })
     act(() => {
       root.render(<SettingsModal />)
@@ -279,7 +279,7 @@ describe('SettingsModal Appearance tab', () => {
     const themeBlock = themeHeader!.closest('div.flex.flex-col') as HTMLElement
     const scaleBlock = scaleHeader!.closest('div.flex.flex-col') as HTMLElement
 
-    // The two columns stretch to equal height (the taller Theme switch group
+    // The two columns stretch to equal height (the taller Theme combobox group
     // defines it), so the shorter UI-scale field has slack to be centered in.
     const row = themeBlock.parentElement as HTMLElement
     expect(row.className).toContain('items-stretch')
@@ -291,7 +291,7 @@ describe('SettingsModal Appearance tab', () => {
     expect(scaleWrap.className).toContain('items-center')
     expect(scaleWrap.querySelector('input[aria-label="UI scale"]')).not.toBeNull()
 
-    // The Theme switch group is the reference block — it defines the column
+    // The Theme combobox group is the reference block — it defines the column
     // height and is not itself grown/centered, so the two midpoints coincide
     // only because the columns stretch to a common height.
     const themeControl = themeBlock.lastElementChild as HTMLElement

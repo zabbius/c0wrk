@@ -31,9 +31,9 @@ export function UIScaleSelector() {
       {/*
         `flex-1 items-center` makes the field fill the available column height
         and sit on its vertical midpoint. In the Appearance tab the column is
-        stretched to the taller Theme switch group, so the field's center lines
-        up with the Theme control's center. Standalone (un-stretched), the
-        wrapper collapses to the field's own height — a no-op.
+        stretched to the taller Theme combobox group, so the field's center
+        lines up with the Theme control's center. Standalone (un-stretched),
+        the wrapper collapses to the field's own height — a no-op.
       */}
       <div className="flex flex-1 items-center">
         <EditableCombobox
