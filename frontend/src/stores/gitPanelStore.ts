@@ -36,11 +36,21 @@ export type SortBy = 'path' | 'status' | 'extension'
 /** Grouping criterion for the Changes list (D8). Persisted across sessions. */
 export type GroupBy = 'none' | 'status' | 'directory'
 
+/**
+ * Active GitPanel tab. 'graph' was merged into 'history' (unified view);
+ * 'files' hosts the workspace file explorer (FilterBar + tree) as the first
+ * section, shown only for git-repository projects. Persisted per project.
+ */
+export type GitPanelTab = 'files' | 'changes' | 'history'
+
 /** Valid SortBy values — used by persist `merge` to validate localStorage. */
 const SORT_BY_VALUES = new Set<SortBy>(['path', 'status', 'extension'])
 
 /** Valid GroupBy values — used by persist `merge` to validate localStorage. */
 const GROUP_BY_VALUES = new Set<GroupBy>(['none', 'status', 'directory'])
+
+/** Valid GitPanelTab values — used by persist `merge` to validate localStorage. */
+const GIT_PANEL_TAB_VALUES = new Set<GitPanelTab>(['files', 'changes', 'history'])
 
 /**
  * Per-project state for the commit box: the draft message, the AI-generation
@@ -125,10 +135,14 @@ interface GitPanelState {
   error: string | null
   /** True while a pull/push/fetch is running — blocks parallel remote ops (Phase 5). */
   remoteOperationInProgress: boolean
-  /** Active GitPanel tab. 'graph' was merged into 'history' (unified view);
-   *  'files' hosts the workspace file explorer (FilterBar + tree) as the
-   *  first section, shown only for git-repository projects. */
-  activeTab: 'files' | 'changes' | 'history'
+  /**
+   * Active GitPanel tab per project, keyed by project id. Persisted so each
+   * project's tab survives switch-away and CHAT↔CODE mode switches. Absent
+   * keys default to 'files' (see selectGitPanelTab). 'graph' was merged into
+   * 'history' (unified view); 'files' hosts the workspace file explorer
+   * (FilterBar + tree) as the first section, shown only for git repositories.
+   */
+  activeTabByProject: Record<string, GitPanelTab>
   /** Transient: whether a merge or rebase is currently in progress (Phase 6). Not persisted. */
   mergeRebaseState: MergeRebaseState
   /** Sort criterion for the Changes list, persisted across sessions (D8). */
@@ -181,7 +195,13 @@ interface GitPanelActions {
   /** Replace the entire expanded-dirs set (used by expand-all / collapse-all). */
   setExpandedDirs: (dirs: Set<string>) => void
   setRemoteOperationInProgress: (inProgress: boolean) => void
-  setActiveTab: (tab: 'files' | 'changes' | 'history') => void
+  /**
+   * Set a project's active GitPanel tab. Spread-updates only that project's
+   * entry; a no-op (reference-stable) when the value is unchanged.
+   */
+  setActiveTab: (projectId: string, tab: GitPanelTab) => void
+  /** Drop a project's active GitPanel tab entirely (project deleted). */
+  dropProjectTabs: (projectId: string) => void
   setMergeRebaseState: (state: MergeRebaseState) => void
   setSortBy: (mode: SortBy) => void
   setGroupBy: (mode: GroupBy) => void
@@ -211,7 +231,7 @@ const initialState: GitPanelState = {
   isBranchPickerOpen: false,
   error: null,
   remoteOperationInProgress: false,
-  activeTab: 'files',
+  activeTabByProject: {},
   mergeRebaseState: EMPTY_MERGE_REBASE_STATE,
   sortBy: 'path',
   groupBy: 'none',
@@ -232,12 +252,14 @@ export function partializeGitPanel(
   expandedDirs: string[]
   sortBy: SortBy
   groupBy: GroupBy
+  activeTabByProject: Record<string, GitPanelTab>
 } {
   return {
     viewMode: state.viewMode,
     expandedDirs: Array.from(state.expandedDirs),
     sortBy: state.sortBy,
     groupBy: state.groupBy,
+    activeTabByProject: state.activeTabByProject,
   }
 }
 
@@ -245,6 +267,10 @@ export function partializeGitPanel(
  * Rehydrate persisted state into the current state. Older localStorage entries
  * (written before D8) lack `sortBy`/`groupBy`; corrupt or unknown values are
  * rejected — both fall back to the current (default) values.
+ *
+ * `activeTabByProject` is validated entry-by-entry: an absent map (legacy
+ * state written before it existed) rehydrates to `{}`, and any entry whose
+ * tab value is not a known GitPanelTab is dropped rather than trusted.
  */
 export function mergeGitPanel(
   persisted: unknown,
@@ -255,6 +281,7 @@ export function mergeGitPanel(
     expandedDirs?: string[]
     sortBy?: SortBy
     groupBy?: GroupBy
+    activeTabByProject?: Record<string, unknown>
   }
   const sortBy: SortBy =
     p.sortBy !== undefined && SORT_BY_VALUES.has(p.sortBy)
@@ -264,13 +291,38 @@ export function mergeGitPanel(
     p.groupBy !== undefined && GROUP_BY_VALUES.has(p.groupBy)
       ? p.groupBy
       : current.groupBy
+  const activeTabByProject: Record<string, GitPanelTab> = {}
+  if (
+    p.activeTabByProject !== null &&
+    typeof p.activeTabByProject === 'object'
+  ) {
+    for (const [projectId, tab] of Object.entries(p.activeTabByProject)) {
+      if (GIT_PANEL_TAB_VALUES.has(tab as GitPanelTab)) {
+        activeTabByProject[projectId] = tab as GitPanelTab
+      }
+    }
+  }
   return {
     ...current,
     viewMode: p.viewMode ?? current.viewMode,
     expandedDirs: new Set(p.expandedDirs ?? []),
     sortBy,
     groupBy,
+    activeTabByProject,
   }
+}
+
+/**
+ * Pure selector for a project's active GitPanel tab. Returns 'files' when the
+ * project has no recorded tab (the default) or when no project is active —
+ * safe to call with a null/undefined project id during CHAT mode.
+ */
+export function selectGitPanelTab(
+  state: Pick<GitPanelState, 'activeTabByProject'>,
+  projectId: string | null | undefined,
+): GitPanelTab {
+  if (projectId === null || projectId === undefined) return 'files'
+  return state.activeTabByProject[projectId] ?? 'files'
 }
 
 // --- Store ---
@@ -400,7 +452,24 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
       setRemoteOperationInProgress: (inProgress) =>
         set({ remoteOperationInProgress: inProgress }),
 
-      setActiveTab: (tab) => set({ activeTab: tab }),
+      setActiveTab: (projectId, tab) =>
+        set((s) => {
+          if (s.activeTabByProject[projectId] === tab) return s
+          return {
+            activeTabByProject: {
+              ...s.activeTabByProject,
+              [projectId]: tab,
+            },
+          }
+        }),
+
+      dropProjectTabs: (projectId) =>
+        set((s) => {
+          if (s.activeTabByProject[projectId] === undefined) return s
+          const next = { ...s.activeTabByProject }
+          delete next[projectId]
+          return { activeTabByProject: next }
+        }),
 
       setMergeRebaseState: (state) => set({ mergeRebaseState: state }),
 
@@ -423,8 +492,9 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
         set({
           ...initialState,
           expandedDirs: new Set<string>(),
-          // Fresh empty map — never share the initial-state object across resets.
+          // Fresh empty maps — never share the initial-state objects across resets.
           commitByProject: {},
+          activeTabByProject: {},
         })
       },
     }),

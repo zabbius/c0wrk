@@ -2,6 +2,7 @@ import { useEffect, useCallback, useRef } from 'react'
 import { MessageSquarePlus, Telescope } from 'lucide-react'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { cn } from '@/lib/utils'
 
@@ -62,7 +63,11 @@ export function FileViewerContextMenu({ reference, selectedText, position, onClo
       return
     }
     useVectorIndexStore.getState().setQuery(text)
-    useUIStore.getState().setWorkspaceTab('semantics')
+    // Per-project: record the semantics tab against the active project.
+    const projectId = useProjectStore.getState().activeProjectId
+    if (projectId !== null) {
+      useUIStore.getState().setWorkspaceTab(projectId, 'semantics')
+    }
     onClose()
   }, [selectedText, onClose])
 

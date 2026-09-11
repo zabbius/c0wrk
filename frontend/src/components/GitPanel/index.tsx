@@ -2,7 +2,8 @@ import { useCallback } from 'react'
 import { GitBranch, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
-import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useGitPanelStore, selectGitPanelTab } from '@/stores/gitPanelStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitStatusEvents } from '@/hooks/useGitStatusEvents'
 import { getFileDiff } from '@/api/workspace'
@@ -27,7 +28,11 @@ export function GitPanel() {
   const isGitRepo = useGitPanelStore((s) => s.isGitRepo)
   const isLoading = useGitPanelStore((s) => s.isLoading)
   const error = useGitPanelStore((s) => s.error)
-  const activeTab = useGitPanelStore((s) => s.activeTab)
+  // The active tab is per project: derived from the active project id so a
+  // project switch instantly shows that project's remembered tab (default
+  // 'files' for a first visit) with no transient wrong-section frame.
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const activeTab = useGitPanelStore((s) => selectGitPanelTab(s, activeProjectId))
   const setActiveTab = useGitPanelStore((s) => s.setActiveTab)
 
   // ── Callbacks ──────────────────────────────────────────────────────────
@@ -99,7 +104,9 @@ export function GitPanel() {
           <button
             key={tab}
             type="button"
-            onClick={() => setActiveTab(tab)}
+            onClick={() => {
+              if (activeProjectId !== null) setActiveTab(activeProjectId, tab)
+            }}
             className={cn(
               'px-3 py-1 text-xs capitalize transition-colors',
               activeTab === tab

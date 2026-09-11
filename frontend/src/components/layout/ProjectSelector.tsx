@@ -3,6 +3,7 @@ import { useProjectStore } from "@/stores/projectStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useTerminalRegistryStore } from "@/stores/terminalRegistryStore";
 import { useGitPanelStore } from "@/stores/gitPanelStore";
+import { useUIStore } from "@/stores/uiStore";
 import { useChatInputStore } from "@/stores/chatInputStore";
 import { useAttachmentsStore } from "@/stores/attachmentsStore";
 import { renameProject, deleteProject } from "@/api/projects";
@@ -85,6 +86,10 @@ export function ProjectSelector() {
         // message, generation flag, error/success banner) so the per-project
         // map stays bounded.
         useGitPanelStore.getState().dropProjectCommitState(id);
+        // Drop the deleted project's persisted tab selections (git-panel active
+        // tab + workspace panel tab) so both per-project maps stay bounded.
+        useGitPanelStore.getState().dropProjectTabs(id);
+        useUIStore.getState().dropProjectTabs(id);
         // Drop the deleted project's in-memory UI snapshot so a later switch
         // can never rehydrate a tree/session list for a project that no
         // longer exists.

@@ -5,6 +5,8 @@ import { subscribe } from '@/api/runtime'
 import { getLastActiveProjectID, listProjects } from '@/api/projects'
 import { useProjectSwitchState } from '@/hooks/useProjectSwitchState'
 import { useProjectStore } from '@/stores/projectStore'
+import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useUIStore } from '@/stores/uiStore'
 import { isProjectInfo, isProjectRenamed } from '@/types/guards'
 import type { ProjectInfo } from '@/types/models'
 
@@ -124,6 +126,10 @@ export function useProjectLoader(): void {
         if (cancelled) return
         if (typeof data !== 'string') return
         store().removeProject(data)
+        // Drop the deleted project's persisted tab selections (git-panel active
+        // tab + workspace panel tab) so both per-project maps stay bounded.
+        useGitPanelStore.getState().dropProjectTabs(data)
+        useUIStore.getState().dropProjectTabs(data)
       }),
     )
 

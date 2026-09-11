@@ -19,6 +19,9 @@ const uiMock = vi.hoisted(() => ({
 const inputMock = vi.hoisted(() => ({
   insertTextIntoInput: vi.fn(),
 }))
+const projectMock = vi.hoisted(() => ({
+  activeProjectId: 'p1' as string | null,
+}))
 
 vi.mock('@/stores/vectorIndexStore', () => ({
   useVectorIndexStore: Object.assign(
@@ -28,6 +31,9 @@ vi.mock('@/stores/vectorIndexStore', () => ({
 }))
 vi.mock('@/stores/uiStore', () => ({
   useUIStore: { getState: () => uiMock },
+}))
+vi.mock('@/stores/projectStore', () => ({
+  useProjectStore: { getState: () => projectMock },
 }))
 vi.mock('@/stores/inputModeStore', () => ({
   useInputModeStore: (selector: (s: { insertTextIntoInput: typeof inputMock.insertTextIntoInput }) => unknown) =>
@@ -112,7 +118,7 @@ describe('FileViewerContextMenu', () => {
     // The selection is trimmed before seeding the query.
     expect(vectorMock.setQuery).toHaveBeenCalledTimes(1)
     expect(vectorMock.setQuery).toHaveBeenCalledWith('func foo() {}')
-    expect(uiMock.setWorkspaceTab).toHaveBeenCalledWith('semantics')
+    expect(uiMock.setWorkspaceTab).toHaveBeenCalledWith('p1', 'semantics')
     expect(onClose).toHaveBeenCalled()
   })
 

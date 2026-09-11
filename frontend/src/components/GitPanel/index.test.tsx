@@ -22,7 +22,8 @@ vi.mock('@/components/layout/FileTreePanel', () => ({
 }))
 
 import { GitPanel } from './index'
-import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useGitPanelStore, selectGitPanelTab } from '@/stores/gitPanelStore'
+import { useProjectStore } from '@/stores/projectStore'
 
 let root: Root | null = null
 let container: HTMLDivElement | null = null
@@ -42,6 +43,7 @@ function has(testId: string): boolean {
 }
 
 beforeEach(() => {
+  useProjectStore.setState({ activeProjectId: 'p1' })
   useGitPanelStore.getState().reset()
   act(() => {
     useGitPanelStore.getState().setGitRepo(true, 'p1')
@@ -84,7 +86,7 @@ describe('GitPanel — internal tab routing', () => {
       changesBtn.click()
     })
 
-    expect(useGitPanelStore.getState().activeTab).toBe('changes')
+    expect(selectGitPanelTab(useGitPanelStore.getState(), 'p1')).toBe('changes')
     expect(has('file-tree')).toBe(false)
     expect(has('changes-list')).toBe(true)
     expect(has('commit-section')).toBe(true)
@@ -99,8 +101,24 @@ describe('GitPanel — internal tab routing', () => {
       historyBtn.click()
     })
 
-    expect(useGitPanelStore.getState().activeTab).toBe('history')
+    expect(selectGitPanelTab(useGitPanelStore.getState(), 'p1')).toBe('history')
     expect(has('file-tree')).toBe(false)
     expect(has('history-tab')).toBe(true)
+  })
+
+  it('restores each project its own section on switch-back (per-project tab)', () => {
+    useGitPanelStore.getState().setActiveTab('p1', 'changes')
+    useGitPanelStore.getState().setActiveTab('p2', 'history')
+
+    renderPanel()
+    expect(has('changes-list')).toBe(true)
+    expect(has('file-tree')).toBe(false)
+
+    act(() => {
+      useProjectStore.setState({ activeProjectId: 'p2' })
+    })
+
+    expect(has('history-tab')).toBe(true)
+    expect(has('changes-list')).toBe(false)
   })
 })

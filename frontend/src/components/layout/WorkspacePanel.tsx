@@ -7,7 +7,7 @@ import { GitPanel } from "@/components/GitPanel";
 import { ResearchPanel } from "@/components/research";
 import { useProjectStore, selectIsNoProject } from "@/stores/projectStore";
 import { useGitPanelStore } from "@/stores/gitPanelStore";
-import { useUIStore } from "@/stores/uiStore";
+import { useUIStore, selectWorkspaceTab, type WorkspaceTab } from "@/stores/uiStore";
 import { useProjectGitRepo } from "@/hooks/useProjectGitRepo";
 import { focusFileExplorer } from "@/lib/workspaceLayout";
 import { FolderTree, GitBranch, Search, FlaskConical } from "lucide-react";
@@ -15,7 +15,10 @@ import { FolderTree, GitBranch, Search, FlaskConical } from "lucide-react";
 export function WorkspacePanel() {
   const isNoProject = useProjectStore(selectIsNoProject);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
-  const workspaceTab = useUIStore((s) => s.workspaceTab);
+  // Each project remembers its own workspace tab. Deriving (rather than
+  // storing a scalar) means a project switch instantly yields the incoming
+  // project's tab without any transient wrong-layout frame.
+  const workspaceTab = useUIStore((s) => selectWorkspaceTab(s, activeProjectId));
   const setWorkspaceTab = useUIStore((s) => s.setWorkspaceTab);
 
   // Eager per-project git-repo detection. Mounted before the CHAT
@@ -32,17 +35,31 @@ export function WorkspacePanel() {
     (s) => s.isGitRepo && s.gitRepoProjectId === activeProjectId,
   );
 
-  // Keep the transient workspaceTab valid for the current layout: the
+  // Whether a completed repo check actually belongs to the CURRENTLY active
+  // project. While false, `isGitRepo` above means "not yet known" rather
+  // than a real "not a repository" answer.
+  const repoKnown = useGitPanelStore(
+    (s) => s.gitRepoProjectId === activeProjectId,
+  );
+
+  // Keep the per-project workspaceTab valid for the current layout: the
   // Explorer tab exists only for non-git projects (a git project hosts the
   // explorer inside the Git panel's "files" section), and the Git tab only
-  // for git projects. Runs on layout flips and project switches.
+  // for git projects. Runs on layout flips and project switches — but ONLY
+  // once the active project's repo check has landed. Acting on the
+  // fail-closed `isGitRepo === false` while the check is still pending would
+  // clobber a freshly switched project's remembered tab (e.g. a git project
+  // whose memory is 'git' would be reset to 'explorer' before its own check
+  // confirms the repo). The inline effectiveTab remap below covers the
+  // pending window instead.
   useEffect(() => {
+    if (!repoKnown || activeProjectId === null) return;
     if (isGitRepo && workspaceTab === "explorer") {
       focusFileExplorer();
     } else if (!isGitRepo && workspaceTab === "git") {
-      setWorkspaceTab("explorer");
+      setWorkspaceTab(activeProjectId, "explorer");
     }
-  }, [isGitRepo, workspaceTab, setWorkspaceTab]);
+  }, [repoKnown, isGitRepo, workspaceTab, activeProjectId, setWorkspaceTab]);
 
   // In CHAT (No Project) mode, hide the tab strip entirely — only show the file
   // explorer with file-name search. Git and Semantics are unavailable anyway.
@@ -70,7 +87,15 @@ export function WorkspacePanel() {
 
   return (
     <TooltipProvider>
-      <Tabs value={effectiveTab} onValueChange={(v) => setWorkspaceTab(v as typeof workspaceTab)} className="flex h-full flex-col gap-0">
+      <Tabs
+        value={effectiveTab}
+        onValueChange={(v) => {
+          if (activeProjectId !== null) {
+            setWorkspaceTab(activeProjectId, v as WorkspaceTab);
+          }
+        }}
+        className="flex h-full flex-col gap-0"
+      >
         <TabsList className="mx-1 h-8 shrink-0" variant="line">
           {isGitRepo ? (
             <Tooltip>

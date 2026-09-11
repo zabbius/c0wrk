@@ -18,33 +18,33 @@ vi.mock('@/lib/logger', () => ({
 import { revealInWorkspace } from './revealInWorkspace'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useProjectStore } from '@/stores/projectStore'
-import { useGitPanelStore } from '@/stores/gitPanelStore'
-import { useUIStore } from '@/stores/uiStore'
+import { useGitPanelStore, selectGitPanelTab } from '@/stores/gitPanelStore'
+import { useUIStore, selectWorkspaceTab } from '@/stores/uiStore'
 
 beforeEach(() => {
   useFileTreeStore.getState().clearTree()
   useFileTreeStore.getState().setRootPath('/ws')
   useProjectStore.setState({ activeProjectId: 'p1' })
   useGitPanelStore.getState().reset()
-  useUIStore.setState({ workspaceTab: 'semantics', sidebarCollapsed: false })
+  useUIStore.setState({ workspaceTabByProject: { p1: 'semantics' }, sidebarCollapsed: false })
 })
 
 describe('revealInWorkspace — explorer routing', () => {
   it('routes to the standalone Explorer tab for a non-git project', async () => {
     await revealInWorkspace('/ws/src/foo.ts')
 
-    expect(useUIStore.getState().workspaceTab).toBe('explorer')
-    expect(useGitPanelStore.getState().activeTab).toBe('files') // untouched default
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('explorer')
+    expect(selectGitPanelTab(useGitPanelStore.getState(), 'p1')).toBe('files') // untouched default
   })
 
   it('routes to the Git panel files section for a git project', async () => {
     useGitPanelStore.getState().setGitRepo(true, 'p1')
-    useGitPanelStore.getState().setActiveTab('history')
+    useGitPanelStore.getState().setActiveTab('p1', 'history')
 
     await revealInWorkspace('/ws/src/foo.ts')
 
-    expect(useUIStore.getState().workspaceTab).toBe('git')
-    expect(useGitPanelStore.getState().activeTab).toBe('files')
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('git')
+    expect(selectGitPanelTab(useGitPanelStore.getState(), 'p1')).toBe('files')
   })
 
   it('a stale repo check for another project routes to Explorer (fail closed)', async () => {
@@ -52,13 +52,13 @@ describe('revealInWorkspace — explorer routing', () => {
 
     await revealInWorkspace('/ws/src/foo.ts')
 
-    expect(useUIStore.getState().workspaceTab).toBe('explorer')
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('explorer')
   })
 
   it('no-ops without a workspace root', async () => {
     useFileTreeStore.getState().setRootPath('')
     await revealInWorkspace('/ws/src/foo.ts')
     // No crash and no tab switch attempted.
-    expect(useUIStore.getState().workspaceTab).toBe('semantics')
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('semantics')
   })
 })

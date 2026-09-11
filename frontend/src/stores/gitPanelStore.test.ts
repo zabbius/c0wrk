@@ -8,7 +8,7 @@
 // panelPersistence.test.ts, which opts into jsdom for the same reason).
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, EMPTY_COMMIT_DRAFT, COMMIT_BANNER_DISMISS_MS, partializeGitPanel, mergeGitPanel, type GitPanelEntry } from '@/stores/gitPanelStore'
+import { useGitPanelStore, EMPTY_MERGE_REBASE_STATE, EMPTY_COMMIT_DRAFT, COMMIT_BANNER_DISMISS_MS, partializeGitPanel, mergeGitPanel, selectGitPanelTab, type GitPanelEntry } from '@/stores/gitPanelStore'
 
 /** Reset the store to initial state before each test */
 function resetStore() {
@@ -50,7 +50,7 @@ describe('gitPanelStore', () => {
     expect(s.gitRepoProjectId).toBeNull()
     expect(s.isBranchPickerOpen).toBe(false)
     expect(s.remoteOperationInProgress).toBe(false)
-    expect(s.activeTab).toBe('files')
+    expect(s.activeTabByProject).toEqual({})
     expect(s.error).toBeNull()
   })
 
@@ -362,17 +362,35 @@ describe('gitPanelStore', () => {
     expect(useGitPanelStore.getState().remoteOperationInProgress).toBe(false)
   })
 
-  // ── setActiveTab ──
+  // ── setActiveTab (per-project) ──
 
-  it('setActiveTab switches between files, changes and history', () => {
+  it('setActiveTab switches a single project between files, changes and history', () => {
     const { setActiveTab } = useGitPanelStore.getState()
-    expect(useGitPanelStore.getState().activeTab).toBe('files')
-    setActiveTab('history')
-    expect(useGitPanelStore.getState().activeTab).toBe('history')
-    setActiveTab('changes')
-    expect(useGitPanelStore.getState().activeTab).toBe('changes')
-    setActiveTab('files')
-    expect(useGitPanelStore.getState().activeTab).toBe('files')
+    expect(useGitPanelStore.getState().activeTabByProject['p1']).toBeUndefined()
+    setActiveTab('p1', 'history')
+    expect(useGitPanelStore.getState().activeTabByProject['p1']).toBe('history')
+    setActiveTab('p1', 'changes')
+    expect(useGitPanelStore.getState().activeTabByProject['p1']).toBe('changes')
+    setActiveTab('p1', 'files')
+    expect(useGitPanelStore.getState().activeTabByProject['p1']).toBe('files')
+  })
+
+  it("setActiveTab('p1','history') touches only p1 and leaves p2 untouched", () => {
+    const { setActiveTab } = useGitPanelStore.getState()
+    setActiveTab('p2', 'changes')
+    setActiveTab('p1', 'history')
+    const map = useGitPanelStore.getState().activeTabByProject
+    expect(map['p1']).toBe('history')
+    expect(map['p2']).toBe('changes')
+  })
+
+  it('setActiveTab is a reference no-op when the tab is unchanged', () => {
+    const { setActiveTab } = useGitPanelStore.getState()
+    setActiveTab('p1', 'history')
+    const before = useGitPanelStore.getState()
+    setActiveTab('p1', 'history')
+    // Reference-stable: subscribers must not churn on a same-value set.
+    expect(useGitPanelStore.getState()).toBe(before)
   })
 
   // ── GitPanelEntry carries index/worktree status ──
@@ -406,6 +424,7 @@ describe('gitPanelStore', () => {
     store.setError('some error')
     store.toggleExpandedDir('src')
     store.openBranchPicker()
+    store.setActiveTab('p1', 'history')
 
     store.reset()
 
@@ -421,7 +440,7 @@ describe('gitPanelStore', () => {
     expect(s.gitRepoProjectId).toBeNull()
     expect(s.isBranchPickerOpen).toBe(false)
     expect(s.remoteOperationInProgress).toBe(false)
-    expect(s.activeTab).toBe('files')
+    expect(s.activeTabByProject).toEqual({})
     expect(s.error).toBeNull()
   })
 
@@ -512,7 +531,7 @@ describe('gitPanelStore — Phase 6 (merge/rebase state & history tab)', () => {
 
     const s = useGitPanelStore.getState()
     expect(s.mergeRebaseState).toEqual(EMPTY_MERGE_REBASE_STATE)
-    expect(s.activeTab).toBe('files')
+    expect(s.activeTabByProject).toEqual({})
   })
 })
 
@@ -762,5 +781,145 @@ describe('gitPanelStore — per-project commit state', () => {
     setCommitSuccess('proj-1', 'abc123')
     const partial = partializeGitPanel(useGitPanelStore.getState())
     expect(partial).not.toHaveProperty('commitByProject')
+  })
+})
+
+// --- Per-project active tab (activeTabByProject) & persistence ---
+
+describe('gitPanelStore — per-project active tab', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  it('selectGitPanelTab returns "files" for an unknown project', () => {
+    const s = useGitPanelStore.getState()
+    expect(selectGitPanelTab(s, 'never-seen')).toBe('files')
+  })
+
+  it('selectGitPanelTab returns "files" when no project is active', () => {
+    const s = useGitPanelStore.getState()
+    expect(selectGitPanelTab(s, null)).toBe('files')
+    expect(selectGitPanelTab(s, undefined)).toBe('files')
+  })
+
+  it('selectGitPanelTab returns the recorded tab for a known project', () => {
+    const { setActiveTab } = useGitPanelStore.getState()
+    setActiveTab('p1', 'history')
+    expect(selectGitPanelTab(useGitPanelStore.getState(), 'p1')).toBe('history')
+  })
+
+  it('dropProjectTabs removes just the given project', () => {
+    const { setActiveTab, dropProjectTabs } = useGitPanelStore.getState()
+    setActiveTab('p1', 'history')
+    setActiveTab('p2', 'changes')
+    dropProjectTabs('p1')
+    const map = useGitPanelStore.getState().activeTabByProject
+    expect(map['p1']).toBeUndefined()
+    expect(map['p2']).toBe('changes')
+  })
+
+  it('dropProjectTabs is a no-op for an unknown project', () => {
+    const { setActiveTab, dropProjectTabs } = useGitPanelStore.getState()
+    setActiveTab('p1', 'history')
+    const before = useGitPanelStore.getState()
+    expect(() => dropProjectTabs('never-seen')).not.toThrow()
+    expect(useGitPanelStore.getState()).toBe(before)
+  })
+
+  it('activeTabByProject survives a persist round-trip (partialize → merge)', () => {
+    const { setActiveTab } = useGitPanelStore.getState()
+    setActiveTab('p1', 'history')
+    setActiveTab('p2', 'changes')
+
+    const partial = partializeGitPanel(useGitPanelStore.getState())
+    expect(partial.activeTabByProject).toEqual({ p1: 'history', p2: 'changes' })
+
+    // Simulate the JSON round-trip localStorage performs.
+    const rehydrated = JSON.parse(JSON.stringify(partial)) as unknown
+    const merged = mergeGitPanel(rehydrated, useGitPanelStore.getState())
+    expect(merged.activeTabByProject).toEqual({ p1: 'history', p2: 'changes' })
+  })
+
+  it('merge defaults activeTabByProject to {} for legacy state without the map', () => {
+    const current = useGitPanelStore.getState()
+    // Simulate an older localStorage entry written before per-project tabs.
+    const merged = mergeGitPanel({ viewMode: 'tree', expandedDirs: ['src'] }, current)
+    expect(merged.activeTabByProject).toEqual({})
+  })
+
+  it('merge rejects unknown persisted tab values but keeps valid ones', () => {
+    const current = useGitPanelStore.getState()
+    const merged = mergeGitPanel(
+      {
+        activeTabByProject: { p1: 'history', p2: 'bogus', p3: 42, p4: 'changes' },
+      },
+      current,
+    )
+    expect(merged.activeTabByProject).toEqual({ p1: 'history', p4: 'changes' })
+  })
+
+  it('merge tolerates a non-object persisted activeTabByProject', () => {
+    const current = useGitPanelStore.getState()
+    const merged = mergeGitPanel({ activeTabByProject: null }, current)
+    expect(merged.activeTabByProject).toEqual({})
+  })
+
+  it('reset clears activeTabByProject', () => {
+    const { setActiveTab, reset } = useGitPanelStore.getState()
+    setActiveTab('p1', 'history')
+    reset()
+    expect(useGitPanelStore.getState().activeTabByProject).toEqual({})
+  })
+
+  it('rehydrates activeTabByProject from a real localStorage payload', async () => {
+    // Exercise the actual persist middleware (name 'git-panel-settings'),
+    // not just the partialize/merge helpers: seed localStorage, rehydrate.
+    localStorage.setItem(
+      'git-panel-settings',
+      JSON.stringify({
+        state: {
+          viewMode: 'tree',
+          expandedDirs: [],
+          activeTabByProject: { p1: 'history', p2: 'changes' },
+        },
+        version: 0,
+      }),
+    )
+
+    await useGitPanelStore.persist.rehydrate()
+
+    expect(useGitPanelStore.getState().activeTabByProject).toEqual({
+      p1: 'history',
+      p2: 'changes',
+    })
+  })
+
+  it('rehydrates a legacy localStorage entry (no tab map) to an empty map', async () => {
+    localStorage.setItem(
+      'git-panel-settings',
+      JSON.stringify({ state: { viewMode: 'tree', expandedDirs: [] }, version: 0 }),
+    )
+
+    await useGitPanelStore.persist.rehydrate()
+
+    expect(useGitPanelStore.getState().activeTabByProject).toEqual({})
+  })
+
+  it('rehydrate rejects a bogus persisted tab value but keeps valid siblings', async () => {
+    localStorage.setItem(
+      'git-panel-settings',
+      JSON.stringify({
+        state: {
+          viewMode: 'tree',
+          expandedDirs: [],
+          activeTabByProject: { p1: 'history', p2: 'bogus' },
+        },
+        version: 0,
+      }),
+    )
+
+    await useGitPanelStore.persist.rehydrate()
+
+    expect(useGitPanelStore.getState().activeTabByProject).toEqual({ p1: 'history' })
   })
 })

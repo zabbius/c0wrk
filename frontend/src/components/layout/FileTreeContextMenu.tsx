@@ -114,7 +114,11 @@ export function FileTreeContextMenu({
       )
       // Switch to the Git panel so the store-level error banner is visible —
       // the user is on the Explorer tab and wouldn't see it otherwise.
-      useUIStore.getState().setWorkspaceTab('git')
+      // Per-project: record the switch against the active project.
+      const projectId = useProjectStore.getState().activeProjectId
+      if (projectId !== null) {
+        useUIStore.getState().setWorkspaceTab(projectId, 'git')
+      }
     } finally {
       setIsIgnoring(false)
       onClose()
@@ -123,8 +127,13 @@ export function FileTreeContextMenu({
 
   // --- View History ---
   const handleViewHistory = useCallback(() => {
-    useUIStore.getState().setWorkspaceTab('git')
-    useGitPanelStore.getState().setActiveTab('history')
+    // Per-project: record the workspace-tab + Git-section switch against the
+    // active project so switching away and back restores this view.
+    const projectId = useProjectStore.getState().activeProjectId
+    if (projectId !== null) {
+      useUIStore.getState().setWorkspaceTab(projectId, 'git')
+      useGitPanelStore.getState().setActiveTab(projectId, 'history')
+    }
     // For a directory, append the OS path separator so the glob filter
     // matches only files *inside* it — not a sibling that shares the same
     // prefix (e.g. "src/components" would otherwise also match

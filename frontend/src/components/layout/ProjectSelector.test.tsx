@@ -13,6 +13,8 @@ import { createRoot, type Root } from 'react-dom/client'
 
 import { ProjectSelector } from './ProjectSelector'
 import { useProjectStore } from '@/stores/projectStore'
+import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useUIStore } from '@/stores/uiStore'
 import type { ProjectInfo } from '@/types/models'
 
 const { switchProjectWithStateMock, deleteProjectMock, renameProjectMock, dropProjectSnapshotMock } = vi.hoisted(() => ({
@@ -146,6 +148,9 @@ beforeEach(() => {
     activeProjectId: 'p1',
     lastRealProjectId: 'p1',
   })
+  // Clear the per-project tab maps so each test starts from a known state.
+  useGitPanelStore.setState({ activeTabByProject: {} })
+  useUIStore.setState({ workspaceTabByProject: {} })
 })
 
 afterEach(() => {
@@ -196,5 +201,30 @@ describe('ProjectSelector — snapshot invalidation', () => {
     // The deleted project's in-memory snapshot must be dropped so a later
     // switch can never rehydrate a tree/session list for a gone project.
     expect(dropProjectSnapshotMock).toHaveBeenCalledWith('p1')
+  })
+})
+
+describe('ProjectSelector — per-project tab cleanup', () => {
+  it('deleting a project drops its entries from both maps, leaving other projects intact', async () => {
+    // Seed both per-project maps for two projects.
+    useGitPanelStore.getState().setActiveTab('p1', 'changes')
+    useGitPanelStore.getState().setActiveTab('p2', 'history')
+    useUIStore.getState().setWorkspaceTab('p1', 'git')
+    useUIStore.getState().setWorkspaceTab('p2', 'semantics')
+
+    const container = await render(<ProjectSelector />)
+    const menu = await openMenu(container)
+    const alphaRow = menuItems(menu).find((i) => i.textContent?.includes('Alpha'))!
+    const deleteButton = alphaRow.querySelector<HTMLButtonElement>('button[aria-label="Delete"]')!
+
+    await selectItem(deleteButton)
+
+    expect(deleteProjectMock).toHaveBeenCalledWith('p1')
+    // The deleted project's tab entries are gone from both persisted maps...
+    expect(useGitPanelStore.getState().activeTabByProject['p1']).toBeUndefined()
+    expect(useUIStore.getState().workspaceTabByProject['p1']).toBeUndefined()
+    // ...while every other project's entries are untouched.
+    expect(useGitPanelStore.getState().activeTabByProject['p2']).toBe('history')
+    expect(useUIStore.getState().workspaceTabByProject['p2']).toBe('semantics')
   })
 })

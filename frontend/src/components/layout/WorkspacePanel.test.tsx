@@ -20,8 +20,8 @@ vi.mock('@/hooks/useProjectGitRepo', () => ({ useProjectGitRepo: vi.fn() }))
 
 import { WorkspacePanel } from './WorkspacePanel'
 import { useProjectStore } from '@/stores/projectStore'
-import { useGitPanelStore } from '@/stores/gitPanelStore'
-import { useUIStore } from '@/stores/uiStore'
+import { useGitPanelStore, selectGitPanelTab } from '@/stores/gitPanelStore'
+import { useUIStore, selectWorkspaceTab } from '@/stores/uiStore'
 import type { ProjectInfo } from '@/types/models'
 
 function makeProject(overrides: Partial<ProjectInfo> & { id: string }): ProjectInfo {
@@ -39,6 +39,7 @@ function makeProject(overrides: Partial<ProjectInfo> & { id: string }): ProjectI
 }
 
 const P1 = makeProject({ id: 'p1' })
+const P2 = makeProject({ id: 'p2' })
 const NO_PROJECT = makeProject({ id: 'np', is_no_project: true })
 
 let root: Root | null = null
@@ -72,7 +73,7 @@ function has(testId: string): boolean {
 beforeEach(() => {
   useProjectStore.setState({ projects: [P1, NO_PROJECT], activeProjectId: 'p1' })
   useGitPanelStore.getState().reset()
-  useUIStore.setState({ workspaceTab: 'explorer' })
+  useUIStore.setState({ workspaceTabByProject: {} })
 })
 
 afterEach(() => {
@@ -134,27 +135,72 @@ describe('WorkspacePanel — layout by git-repo state', () => {
   })
 })
 
-describe('WorkspacePanel — workspaceTab normalization', () => {
-  it('git project remaps a lingering explorer tab to git + files', async () => {
+describe('WorkspacePanel — per-project workspaceTab (normalization + restore)', () => {
+  it('a first visit to a git project lands on the git section with files', async () => {
     act(() => {
       useGitPanelStore.getState().setGitRepo(true, 'p1')
     })
-    useUIStore.setState({ workspaceTab: 'explorer' })
+    // No remembered tab for p1 beyond the default 'explorer' — it must be
+    // normalized to the git section (whose first internal section is 'files').
+    useUIStore.setState({ workspaceTabByProject: { p1: 'explorer' } })
 
     renderPanel()
     await flush()
 
-    expect(useUIStore.getState().workspaceTab).toBe('git')
-    expect(useGitPanelStore.getState().activeTab).toBe('files')
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('git')
+    expect(selectGitPanelTab(useGitPanelStore.getState(), 'p1')).toBe('files')
   })
 
-  it('non-git project remaps a lingering git tab to explorer', async () => {
-    useUIStore.setState({ workspaceTab: 'git' })
+  it('non-git project remaps a lingering git tab to explorer once the check lands', async () => {
+    useUIStore.setState({ workspaceTabByProject: { p1: 'git' } })
+    // A completed non-repo check for p1 is required before normalization.
+    act(() => {
+      useGitPanelStore.getState().setGitRepo(false, 'p1')
+    })
 
     renderPanel()
     await flush()
 
-    expect(useUIStore.getState().workspaceTab).toBe('explorer')
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('explorer')
+  })
+
+  it('does NOT reset a remembered git tab while the repo check is still pending', async () => {
+    // p2 remembers 'git'; the store still reports the check for p1 (stale).
+    useUIStore.setState({ workspaceTabByProject: { p2: 'git' } })
+    act(() => {
+      useGitPanelStore.getState().setGitRepo(true, 'p1')
+    })
+    useProjectStore.setState({ projects: [P1, P2, NO_PROJECT], activeProjectId: 'p2' })
+
+    renderPanel()
+    await flush()
+
+    // repoKnown is false for p2, so the normalization effect must not have
+    // clobbered p2's remembered 'git' with 'explorer' during the pending check.
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p2')).toBe('git')
+  })
+
+  it('restores each git project its own outer tab (incl. semantics) on switch-back', async () => {
+    useUIStore.setState({ workspaceTabByProject: { p1: 'semantics', p2: 'git' } })
+    useProjectStore.setState({ projects: [P1, P2, NO_PROJECT], activeProjectId: 'p1' })
+    act(() => {
+      useGitPanelStore.getState().setGitRepo(true, 'p1')
+    })
+
+    renderPanel()
+    await flush()
+    // p1's remembered 'semantics' is preserved (a valid git-project tab).
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('semantics')
+
+    // Switch to p2 — its own remembered 'git' shows, and p1 is untouched.
+    act(() => {
+      useProjectStore.setState({ activeProjectId: 'p2' })
+      useGitPanelStore.getState().setGitRepo(true, 'p2')
+    })
+    await flush()
+
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p2')).toBe('git')
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('semantics')
   })
 
   it('switching the active project from git to non-git falls back to explorer', async () => {
@@ -164,16 +210,16 @@ describe('WorkspacePanel — workspaceTab normalization', () => {
 
     renderPanel()
     await flush()
-    expect(useUIStore.getState().workspaceTab).toBe('git')
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('git')
 
     // Project switch: the new project's eager check reports non-repo.
     act(() => {
-      useProjectStore.setState({ activeProjectId: 'p2' })
+      useProjectStore.setState({ projects: [P1, P2, NO_PROJECT], activeProjectId: 'p2' })
       useGitPanelStore.getState().setGitRepo(false, 'p2')
     })
     await flush()
 
-    expect(useUIStore.getState().workspaceTab).toBe('explorer')
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p2')).toBe('explorer')
     expect(has('file-tree')).toBe(true)
     expect(has('git-panel')).toBe(false)
   })

@@ -248,8 +248,8 @@ describe('FileTreeContextMenu — View History', () => {
       await Promise.resolve()
     })
 
-    expect(uiMock.setWorkspaceTab).toHaveBeenCalledWith('git')
-    expect(gitPanelMock.setActiveTab).toHaveBeenCalledWith('history')
+    expect(uiMock.setWorkspaceTab).toHaveBeenCalledWith('p1', 'git')
+    expect(gitPanelMock.setActiveTab).toHaveBeenCalledWith('p1', 'history')
   })
 
   it('hides git-only actions when the workspace is not a git repository', () => {

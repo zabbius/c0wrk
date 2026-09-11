@@ -29,10 +29,14 @@ export function activeProjectIsGitRepo(): boolean {
  * or to the standalone Explorer tab otherwise.
  */
 export function focusFileExplorer(): void {
+  const { activeProjectId } = useProjectStore.getState()
+  // No active project: there is no per-project tab to record (CHAT mode
+  // renders the explorer unconditionally), so there is nothing to focus.
+  if (activeProjectId === null) return
   if (activeProjectIsGitRepo()) {
-    useUIStore.getState().setWorkspaceTab('git')
-    useGitPanelStore.getState().setActiveTab('files')
+    useUIStore.getState().setWorkspaceTab(activeProjectId, 'git')
+    useGitPanelStore.getState().setActiveTab(activeProjectId, 'files')
   } else {
-    useUIStore.getState().setWorkspaceTab('explorer')
+    useUIStore.getState().setWorkspaceTab(activeProjectId, 'explorer')
   }
 }
