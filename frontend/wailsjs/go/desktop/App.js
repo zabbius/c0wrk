@@ -374,6 +374,10 @@ export function ImportThemeFromPath(arg1) {
   return window['go']['desktop']['App']['ImportThemeFromPath'](arg1);
 }
 
+export function ImportThemesFromPaths(arg1) {
+  return window['go']['desktop']['App']['ImportThemesFromPaths'](arg1);
+}
+
 export function Lifecycle() {
   return window['go']['desktop']['App']['Lifecycle']();
 }
@@ -442,8 +446,8 @@ export function PersistWindowBounds() {
   return window['go']['desktop']['App']['PersistWindowBounds']();
 }
 
-export function PickAndImportTheme() {
-  return window['go']['desktop']['App']['PickAndImportTheme']();
+export function PickAndImportThemes() {
+  return window['go']['desktop']['App']['PickAndImportThemes']();
 }
 
 export function PickAttachmentFiles() {

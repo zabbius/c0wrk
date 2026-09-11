@@ -10,11 +10,11 @@ c0wrk ships two built-in themes (Default Dark / One Dark, Default Light / One Li
 - `frontend/src/stores/themeStore.ts` - Zustand store (persisted): active `themeId`, CSS cache for the active custom theme, builtin-theme table, `applyThemeToDocument`, `selectActiveThemeType` selector
 - `frontend/index.html` - pre-paint anti-FOUC inline script (reads the persisted state from `localStorage['c0wrk-theme']`; under the v2 store shape it is a no-op — the authoritative pre-paint apply lives in `main.tsx`)
 - `frontend/src/main.tsx` - pre-paint apply: reads the persisted store synchronously (zustand-persist rehydrates from localStorage synchronously) and applies `data-theme` + injects the cached custom-theme CSS before React renders anything
-- `frontend/src/api/themes.ts` - typed RPC wrappers (`listThemes`, `pickAndImportTheme`, `deleteTheme`) over the generated Wails bindings
+- `frontend/src/api/themes.ts` - typed RPC wrappers (`listThemes`, `pickAndImportThemes`, `deleteTheme`) over the generated Wails bindings
 - `frontend/src/components/settings/ThemeSelector.tsx` - settings UI: theme combobox, import button, hover-delete for custom themes
 - `backend/themes.go` - pure theme logic: `ThemeDTO`, `ParseThemeCSS`, `ValidateThemeCSS`, `themeSlug`
-- `backend/frontend_api_themes.go` - Wails-exposed methods: `ListThemes`, `ImportThemeFromPath`, `DeleteTheme`
-- `desktop/app.go` - `PickAndImportTheme`: native file dialog + import in one action (requires Wails context)
+- `backend/frontend_api_themes.go` - Wails-exposed methods: `ListThemes`, `ImportThemeFromPath`, `ImportThemesFromPaths`, `DeleteTheme`
+- `desktop/app.go` - `PickAndImportThemes`: native multi-select file dialog + batch import in one action (requires Wails context)
 - `backend/config/paths.go` - `ThemesDir(agentDir)` → `<agentDir>/themes` (theme storage root)
 - `frontend/src/hooks/useXTermTheme.ts` - resolves XTerm ANSI colors from CSS variables at call time (re-resolves on theme change)
 - `frontend/src/lib/cmChatTheme.ts`, `frontend/src/components/fileViewer/CodeMirrorFileViewer.tsx` - CodeMirror themes resolved from CSS variables; re-created via Compartment on theme change
@@ -31,8 +31,14 @@ type ThemeDTO struct {
     Type string `json:"type"` // "dark" | "light"
     CSS  string `json:"css"`  // theme body; present on every entry so the
                               // frontend can activate any theme without a
-                              // second round-trip
+// backend/frontend_api_themes.go
+type ThemeImportResult struct {
+    File  string    `json:"file"`           // source path as picked
+    Theme *ThemeDTO `json:"theme,omitempty"` // set on success
+    Error string    `json:"error,omitempty"` // failure reason; set on failure
 }
+// Exactly one of Theme/Error is set; batch imports validate each file
+// independently — one invalid file never blocks the rest of the batch.
 ```
 
 ```ts
@@ -66,14 +72,17 @@ export const BUILTIN_THEMES = [
 ## Flow
 
 ```
-Import:  [settings: import button] → desktop.PickAndImportTheme()
-              → wailsRuntime.OpenFileDialog (filter *.css)
-              → backend.ImportThemeFromPath(path)
-                   → read file → ValidateThemeCSS → copy into ThemesDir as <slug>.css
-                   → ParseThemeCSS → ThemeDTO{id, name, type}
-         ← ThemeDTO (incl. the `css` body) → themeStore.setTheme(id, css) → active
-           immediately — the CSS body rides with both the import result and
-           list entries, so activation never needs a second RPC
+Import:  [settings: import button] → desktop.PickAndImportThemes()
+              → wailsRuntime.OpenMultipleFilesDialog (filter *.css, multi-select)
+              → backend.ImportThemesFromPaths(paths)
+                   → per file: read → ValidateThemeCSS → copy into ThemesDir as <slug>.css
+                     → ParseThemeCSS → ThemeDTO{id, name, type}
+                   → one ThemeImportResult per input path, input order preserved
+         ← ThemeImportResult[] → themeStore.setTheme(last successful id, css)
+           → the last successful import activates immediately — the CSS body
+             rides with every result and list entry, so activation never needs
+             a second RPC; failed files (invalid CSS, unreadable, reserved id)
+             are reported via a runtime_error toast while the valid ones still install
 
 Apply:   themeStore.setTheme(id, css)
               → builtin: data-theme = 'dark' | 'light'; remove <style id="c0wrk-custom-theme">
@@ -153,7 +162,7 @@ Imported themes live as `~/.c0wrk/themes/<slug>.css` (`config.DefaultAgentDir = 
 
 ### Re-import semantics (update)
 
-Importing a file whose slug already exists **overwrites** the stored file — re-import is the update path. The theme ID stays stable, so the active selection (`themeId`) and UI ordering survive updates. The new CSS takes effect for the user only after the theme is (re)selected — or immediately, because the settings import flow activates the imported theme right away.
+Importing a file whose slug already exists **overwrites** the stored file — re-import is the update path. The theme ID stays stable, so the active selection (`themeId`) and UI ordering survive updates. The new CSS takes effect for the user only after the theme is (re)selected — or immediately, because the settings import flow activates the last successful import right away.
 
 ### Deleting the active theme
 
@@ -237,9 +246,9 @@ Notes for authors:
 
 ## UX
 
-The design target (settings → Appearance): a combobox lists **Default Dark** and **Default Light** (builtin; Moon/Sun type icons) separated from custom themes. Every item shows its type icon; the active item carries a check. Custom items expose a trash icon in a hover overlay (the `ItemAction` pattern used by the session/project lists) — one click deletes, no confirmation; deleting the active theme falls back to Default Dark automatically. Next to the combobox, an import button opens the native `.css` file picker; a successful import adds the theme to the list and activates it immediately; canceling the picker changes nothing.
+The design target (settings → Appearance): a combobox lists **Default Dark** and **Default Light** (builtin; Moon/Sun type icons) separated from custom themes. Every item shows its type icon; the active item carries a check. Custom items expose a trash icon in a hover overlay (the `ItemAction` pattern used by the session/project lists) — one click deletes, no confirmation; deleting the active theme falls back to Default Dark automatically. Next to the combobox, an import button opens the native multi-select `.css` file picker; every valid picked file imports, the last successful one activates immediately, and skipped files surface a toast; canceling the picker changes nothing.
 
-Current state: the full design above has landed — backend storage + validation (`backend/themes.go`), the three RPCs (`backend/frontend_api_themes.go`), the native picker bridge (`desktop/app.go` `PickAndImportTheme`), the API wrappers (`frontend/src/api/themes.ts`), the themeStore v2 (`frontend/src/stores/themeStore.ts`), and the settings surface itself (`frontend/src/components/settings/ThemeSelector.tsx` — combobox + import button + hover-delete via `ThemeMenuItem`).
+Current state: the full design above has landed — backend storage + validation (`backend/themes.go`), the RPCs (`backend/frontend_api_themes.go`), the native picker bridge (`desktop/app.go` `PickAndImportThemes`), the API wrappers (`frontend/src/api/themes.ts`), the themeStore v2 (`frontend/src/stores/themeStore.ts`), and the settings surface itself (`frontend/src/components/settings/ThemeSelector.tsx` — combobox + import button + hover-delete via `ThemeMenuItem`).
 
 ## Invariants
 
@@ -248,6 +257,7 @@ Current state: the full design above has landed — backend storage + validation
 - No theme ever triggers a network or filesystem fetch: `@import` and non-`data:` `url(...)` are rejected at import.
 - A theme file is at most 512 KiB.
 - Custom theme IDs are lowercase `[a-z0-9-]+` and never collide with `default-dark` / `default-light`.
+- Batch imports validate each file independently: one invalid file in a batch never blocks the others, and every input path yields exactly one `ThemeImportResult` carrying either the installed theme or the failure reason.
 - At most one `<style id="c0wrk-custom-theme">` element exists in `<head>`; builtins remove it.
 - The active theme is applied before first paint (`main.tsx` synchronous apply from the rehydrated store) — no flash of the wrong theme.
 - The store never points at a missing theme file: when the active theme disappears, the store resets to `default-dark` and clears the CSS cache.

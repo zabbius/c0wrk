@@ -7,7 +7,7 @@
 import { useCallback, useState } from 'react'
 import { ChevronDown, Plus } from 'lucide-react'
 
-import { deleteTheme, pickAndImportTheme } from '@/api/themes'
+import { deleteTheme, pickAndImportThemes } from '@/api/themes'
 import { emit } from '@/api/runtime'
 import { ThemeMenuItem, ThemeTypeIcon, type ThemeRow } from './ThemeMenuItem'
 import {
@@ -57,11 +57,32 @@ export function ThemeSelector() {
 
   const handleImport = useCallback(async () => {
     try {
-      const theme = await pickAndImportTheme()
-      if (!theme) return // user cancelled the picker — nothing changes
-      await loadThemes()
-      // The import result carries the theme body — activate immediately.
-      setTheme(theme.id, theme.css ?? '')
+      const outcomes = await pickAndImportThemes()
+      if (!outcomes) return // user cancelled the picker — nothing changes
+      const imported = outcomes.filter((o) => o.theme)
+      if (imported.length > 0) {
+        await loadThemes()
+        // Activate the last successful import — with several files picked at
+        // once it is the most recent pick, and single-file imports (the common
+        // case) keep the exact "activate what you imported" behavior.
+        const last = imported[imported.length - 1]?.theme
+        if (last) setTheme(last.id, last.css ?? '')
+      }
+      const failed = outcomes.length - imported.length
+      if (failed > 0) {
+        // Some files were skipped (invalid CSS, unreadable, reserved id) —
+        // the rest of the batch still installed; tell the user what happened.
+        if (imported.length > 0) {
+          toastError(
+            `Imported ${imported.length} theme${imported.length === 1 ? '' : 's'}, ` +
+              `${failed} file${failed === 1 ? ' was' : 's were'} skipped (invalid theme)`,
+          )
+        } else {
+          toastError(
+            `No themes imported: ${failed} file${failed === 1 ? ' was' : 's were'} skipped (invalid theme)`,
+          )
+        }
+      }
     } catch (err) {
       logger.error('Failed to import theme:', err)
       toastError('Failed to import theme')

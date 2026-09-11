@@ -35,6 +35,28 @@ export function isThemeInfo(v: unknown): v is ThemeInfo {
   )
 }
 
+/** Per-file outcome of a batch theme import.
+ *  Exactly one of `theme` (success) and `error` (failure) is set — the
+ *  backend never fills both, and one invalid file never blocks the rest
+ *  of the batch. */
+export interface ThemeImportOutcome {
+  file: string
+  theme?: ThemeInfo
+  error?: string
+}
+
+/** Type guard: a well-formed ThemeImportOutcome carries a string `file` and
+ *  exactly one of a valid `theme` or a string `error`. */
+export function isThemeImportOutcome(v: unknown): v is ThemeImportOutcome {
+  if (typeof v !== 'object' || v === null) return false
+  const o = v as Record<string, unknown>
+  if (typeof o.file !== 'string') return false
+  const hasTheme = o.theme !== undefined
+  const hasError = o.error !== undefined
+  if (hasTheme === hasError) return false // exactly one must be present
+  return (!hasTheme || isThemeInfo(o.theme)) && (!hasError || typeof o.error === 'string')
+}
+
 /** Fetch the list of installed themes. Throws TypeError on a malformed response. */
 export async function listThemes(): Promise<ThemeInfo[]> {
   try {
@@ -54,23 +76,27 @@ export async function listThemes(): Promise<ThemeInfo[]> {
 }
 
 /**
- * Open the native theme picker, import the chosen theme, and return it.
- * Returns null when the user cancels the picker. Throws TypeError when the
- * backend resolves with a record that is not a well-formed ThemeInfo.
+ * Open the native multi-select theme picker, import every chosen theme, and
+ * return the per-file outcomes in pick order. Returns null when the user
+ * cancels the picker. Throws TypeError when the backend resolves with data
+ * that is not a well-formed ThemeImportOutcome list.
  */
-export async function pickAndImportTheme(): Promise<ThemeInfo | null> {
+export async function pickAndImportThemes(): Promise<ThemeImportOutcome[] | null> {
   try {
     const app = getApp()
-    const result = await app.PickAndImportTheme()
+    const result = await app.PickAndImportThemes()
     if (result === null || result === undefined) {
       return null
     }
-    if (!isThemeInfo(result)) {
-      throw new TypeError('pickAndImportTheme: backend returned invalid ThemeInfo data')
+    if (!Array.isArray(result)) {
+      throw new TypeError('pickAndImportThemes: backend returned non-array data')
+    }
+    if (!isArrayOf(result, isThemeImportOutcome)) {
+      throw new TypeError('pickAndImportThemes: backend returned malformed ThemeImportOutcome entries')
     }
     return result
   } catch (err) {
-    logger.error('Failed to pick and import theme:', err)
+    logger.error('Failed to pick and import themes:', err)
     throw err
   }
 }

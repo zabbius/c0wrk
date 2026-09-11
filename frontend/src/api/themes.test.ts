@@ -1,5 +1,6 @@
-// Unit tests for api/themes.ts — the ThemeInfo type guard and the three RPC
-// wrapper functions (happy path, picker cancel, malformed backend data).
+// Unit tests for api/themes.ts — the ThemeInfo/ThemeImportOutcome type guards
+// and the three RPC wrapper functions (happy path, picker cancel, malformed
+// backend data).
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -14,7 +15,13 @@ vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn() },
 }))
 
-import { listThemes, pickAndImportTheme, deleteTheme, isThemeInfo } from '@/api/themes'
+import {
+  listThemes,
+  pickAndImportThemes,
+  deleteTheme,
+  isThemeInfo,
+  isThemeImportOutcome,
+} from '@/api/themes'
 
 // --- Type guard tests ---
 
@@ -49,6 +56,40 @@ describe('isThemeInfo', () => {
 
   it('rejects an object with null field values', () => {
     expect(isThemeInfo({ id: null, name: 'One Dark', type: 'color' })).toBe(false)
+  })
+})
+
+describe('isThemeImportOutcome', () => {
+  it('accepts a success outcome (theme set, no error)', () => {
+    expect(isThemeImportOutcome({ file: 'a.css', theme: { id: 'a', name: 'A', type: 'dark' } })).toBe(true)
+  })
+
+  it('accepts a failure outcome (error set, no theme)', () => {
+    expect(isThemeImportOutcome({ file: 'a.css', error: 'invalid theme CSS' })).toBe(true)
+  })
+
+  it('rejects when both theme and error are set', () => {
+    expect(
+      isThemeImportOutcome({ file: 'a.css', theme: { id: 'a', name: 'A', type: 'dark' }, error: 'x' }),
+    ).toBe(false)
+  })
+
+  it('rejects when neither theme nor error is set', () => {
+    expect(isThemeImportOutcome({ file: 'a.css' })).toBe(false)
+  })
+
+  it('rejects a malformed theme payload', () => {
+    expect(isThemeImportOutcome({ file: 'a.css', theme: { id: 7 } })).toBe(false)
+  })
+
+  it('rejects a non-string error payload', () => {
+    expect(isThemeImportOutcome({ file: 'a.css', error: 42 })).toBe(false)
+  })
+
+  it('rejects records without a string file', () => {
+    expect(isThemeImportOutcome({ theme: { id: 'a', name: 'A', type: 'dark' } })).toBe(false)
+    expect(isThemeImportOutcome(null)).toBe(false)
+    expect(isThemeImportOutcome('a.css')).toBe(false)
   })
 })
 
@@ -99,45 +140,60 @@ describe('listThemes', () => {
   })
 })
 
-describe('pickAndImportTheme', () => {
+describe('pickAndImportThemes', () => {
   beforeEach(() => {
     Object.keys(mockApp).forEach((k) => delete mockApp[k])
   })
 
-  it('returns the imported theme on success', async () => {
-    const imported = { id: 'gruvbox', name: 'Gruvbox', type: 'color' }
-    mockApp.PickAndImportTheme = vi.fn().mockResolvedValue(imported)
-    const result = await pickAndImportTheme()
-    expect(mockApp.PickAndImportTheme).toHaveBeenCalled()
-    expect(result).toEqual(imported)
+  it('returns per-file outcomes in pick order on success', async () => {
+    const outcomes = [
+      { file: '/tmp/nord.css', theme: { id: 'nord', name: 'Nord', type: 'dark', css: ':root{}' } },
+      { file: '/tmp/broken.css', error: 'invalid theme CSS: @import is not allowed' },
+    ]
+    mockApp.PickAndImportThemes = vi.fn().mockResolvedValue(outcomes)
+    const result = await pickAndImportThemes()
+    expect(mockApp.PickAndImportThemes).toHaveBeenCalled()
+    expect(result).toEqual(outcomes)
+  })
+
+  it('returns an empty list when nothing was picked without cancel', async () => {
+    // Defensive: the desktop bridge maps a cancelled picker to null, but the
+    // wrapper must not choke on an empty outcome array either.
+    mockApp.PickAndImportThemes = vi.fn().mockResolvedValue([])
+    const result = await pickAndImportThemes()
+    expect(result).toEqual([])
   })
 
   it('returns null when the user cancels the picker', async () => {
-    mockApp.PickAndImportTheme = vi.fn().mockResolvedValue(null)
-    const result = await pickAndImportTheme()
+    mockApp.PickAndImportThemes = vi.fn().mockResolvedValue(null)
+    const result = await pickAndImportThemes()
     expect(result).toBeNull()
   })
 
   it('returns null when the backend resolves undefined (cancel variant)', async () => {
-    mockApp.PickAndImportTheme = vi.fn().mockResolvedValue(undefined)
-    const result = await pickAndImportTheme()
+    mockApp.PickAndImportThemes = vi.fn().mockResolvedValue(undefined)
+    const result = await pickAndImportThemes()
     expect(result).toBeNull()
   })
 
-  it('throws TypeError when the resolved record has non-string fields', async () => {
-    mockApp.PickAndImportTheme = vi.fn().mockResolvedValue({ id: 'x', name: 'X', type: 7 })
-    await expect(pickAndImportTheme()).rejects.toThrow(TypeError)
-    await expect(pickAndImportTheme()).rejects.toThrow('invalid ThemeInfo')
+  it('throws TypeError when the backend resolves a non-array', async () => {
+    mockApp.PickAndImportThemes = vi.fn().mockResolvedValue({ file: 'a.css' })
+    await expect(pickAndImportThemes()).rejects.toThrow(TypeError)
+    await expect(pickAndImportThemes()).rejects.toThrow('non-array')
   })
 
-  it('throws TypeError when the backend resolves a plain string', async () => {
-    mockApp.PickAndImportTheme = vi.fn().mockResolvedValue('gruvbox')
-    await expect(pickAndImportTheme()).rejects.toThrow(TypeError)
+  it('throws TypeError when an outcome entry is malformed', async () => {
+    mockApp.PickAndImportThemes = vi.fn().mockResolvedValue([
+      { file: 'a.css', theme: { id: 'a', name: 'A', type: 'dark' } },
+      { file: 'b.css', theme: { id: 'b', name: 42, type: 'dark' } },
+    ])
+    await expect(pickAndImportThemes()).rejects.toThrow(TypeError)
+    await expect(pickAndImportThemes()).rejects.toThrow('malformed ThemeImportOutcome')
   })
 
   it('propagates backend errors', async () => {
-    mockApp.PickAndImportTheme = vi.fn().mockRejectedValue(new Error('import failed'))
-    await expect(pickAndImportTheme()).rejects.toThrow('import failed')
+    mockApp.PickAndImportThemes = vi.fn().mockRejectedValue(new Error('import failed'))
+    await expect(pickAndImportThemes()).rejects.toThrow('import failed')
   })
 })
 

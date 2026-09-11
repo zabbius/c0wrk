@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 
 import { ThemeSelector } from './ThemeSelector'
 import { useThemeStore } from '@/stores/themeStore'
-import type { ThemeInfo } from '@/api/themes'
+import type { ThemeImportOutcome, ThemeInfo } from '@/api/themes'
 
 // Radix popper positioning (autoUpdate) observes the trigger/content with
 // ResizeObserver, which jsdom does not provide.
@@ -22,7 +22,7 @@ vi.stubGlobal(
 
 const themeApi = vi.hoisted(() => ({
   list: [] as ThemeInfo[],
-  imported: null as ThemeInfo | null,
+  outcomes: null as ThemeImportOutcome[] | null,
   deleted: [] as string[],
 }))
 
@@ -31,7 +31,7 @@ vi.mock('@/api/themes', async (importOriginal) => {
   return {
     ...actual,
     listThemes: vi.fn(async () => themeApi.list),
-    pickAndImportTheme: vi.fn(async () => themeApi.imported),
+    pickAndImportThemes: vi.fn(async () => themeApi.outcomes),
     deleteTheme: vi.fn(async (id: string) => {
       themeApi.deleted.push(id)
       themeApi.list = themeApi.list.filter((t) => t.id !== id)
@@ -71,7 +71,7 @@ vi.mock('@/api/runtime', () => ({
   emit: emitSpy,
 }))
 
-import { pickAndImportTheme, deleteTheme } from '@/api/themes'
+import { pickAndImportThemes, deleteTheme } from '@/api/themes'
 
 // --- Harness -----------------------------------------------------------
 
@@ -83,10 +83,10 @@ const PAPER: ThemeInfo = { id: 'paper', name: 'Paper', type: 'light', css: 'body
 
 beforeEach(() => {
   themeApi.list = []
-  themeApi.imported = null
+  themeApi.outcomes = null
   themeApi.deleted = []
   emitSpy.mockClear()
-  vi.mocked(pickAndImportTheme).mockClear()
+  vi.mocked(pickAndImportThemes).mockClear()
   vi.mocked(deleteTheme).mockClear()
   act(() => {
     useThemeStore.setState({ themeId: 'default-dark', themeCss: '', customThemes: [] })
@@ -254,9 +254,9 @@ describe('ThemeSelector delete', () => {
 })
 
 describe('ThemeSelector import', () => {
-  it('a successful import activates the imported theme and refreshes the list', async () => {
+  it('a successful single import activates the imported theme and refreshes the list', async () => {
     themeApi.list = [NORD]
-    themeApi.imported = NORD
+    themeApi.outcomes = [{ file: '/tmp/nord.css', theme: NORD }]
     renderSelector()
     await act(async () => {
       importButton().click()
@@ -267,6 +267,66 @@ describe('ThemeSelector import', () => {
     expect(state.themeCss).toBe('body{}')
     expect(state.customThemes.map((t) => t.id)).toEqual(['nord'])
     expect(document.documentElement.getAttribute('data-theme')).toBe('nord')
+    // No failure toast — every file in the batch installed.
+    expect(emitSpy).not.toHaveBeenCalledWith('runtime_error', expect.anything())
+  })
+
+  it('a multi import activates the last successful theme', async () => {
+    themeApi.list = [NORD, PAPER]
+    themeApi.outcomes = [
+      { file: '/tmp/nord.css', theme: NORD },
+      { file: '/tmp/paper.css', theme: PAPER },
+    ]
+    renderSelector()
+    await act(async () => {
+      importButton().click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const state = useThemeStore.getState()
+    expect(state.themeId).toBe('paper') // last successful pick wins
+    expect(state.themeCss).toBe('body{}')
+    expect(state.customThemes.map((t) => t.id)).toEqual(['nord', 'paper'])
+  })
+
+  it('a partially failed batch still installs the valid files and toasts the skipped ones', async () => {
+    themeApi.list = [NORD]
+    themeApi.outcomes = [
+      { file: '/tmp/nord.css', theme: NORD },
+      { file: '/tmp/broken.css', error: 'invalid theme CSS: @import is not allowed' },
+    ]
+    renderSelector()
+    await act(async () => {
+      importButton().click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const state = useThemeStore.getState()
+    // The valid file installed and activated.
+    expect(state.themeId).toBe('nord')
+    expect(state.customThemes.map((t) => t.id)).toEqual(['nord'])
+    // The skipped file is reported via the runtime_error toast.
+    expect(emitSpy).toHaveBeenCalledWith(
+      'runtime_error',
+      expect.objectContaining({ message: expect.stringContaining('1 file was skipped') }),
+    )
+  })
+
+  it('a fully failed batch installs nothing and toasts the skipped files', async () => {
+    themeApi.outcomes = [
+      { file: '/tmp/a.css', error: 'invalid theme CSS' },
+      { file: '/tmp/b.css', error: 'invalid theme CSS' },
+    ]
+    renderSelector()
+    await act(async () => {
+      importButton().click()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    const state = useThemeStore.getState()
+    expect(state.themeId).toBe('default-dark') // nothing activated
+    expect(state.customThemes).toEqual([])
+    expect(emitSpy).toHaveBeenCalledWith(
+      'runtime_error',
+      expect.objectContaining({ message: expect.stringContaining('2 files were skipped') }),
+    )
   })
 
   it('picker cancel changes nothing', async () => {
@@ -280,7 +340,7 @@ describe('ThemeSelector import', () => {
   })
 
   it('surfaces a runtime_error toast when the import fails', async () => {
-    vi.mocked(pickAndImportTheme).mockRejectedValueOnce(new Error('boom'))
+    vi.mocked(pickAndImportThemes).mockRejectedValueOnce(new Error('boom'))
     renderSelector()
     await act(async () => {
       importButton().click()

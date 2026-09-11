@@ -91,6 +91,32 @@ func (f *FrontendAPI) ImportThemeFromPath(path string) (ThemeDTO, error) {
 	return ThemeDTO{ID: id, Name: name, Type: typ, CSS: string(content)}, nil
 }
 
+// ThemeImportResult reports the per-file outcome of a batch import. Theme is
+// set on success; Error carries the failure reason otherwise (never both).
+type ThemeImportResult struct {
+	File  string    `json:"file"`
+	Theme *ThemeDTO `json:"theme,omitempty"`
+	Error string    `json:"error,omitempty"`
+}
+
+// ImportThemesFromPaths imports several CSS files in one call, preserving the
+// input order in the results. Each file is validated and installed
+// independently: one invalid file never blocks the others — its result carries
+// the failure while the rest of the batch still installs. An empty input
+// yields an empty (non-nil) slice.
+func (f *FrontendAPI) ImportThemesFromPaths(paths []string) []ThemeImportResult {
+	results := make([]ThemeImportResult, 0, len(paths))
+	for _, path := range paths {
+		theme, err := f.ImportThemeFromPath(path)
+		if err != nil {
+			results = append(results, ThemeImportResult{File: path, Error: err.Error()})
+			continue
+		}
+		results = append(results, ThemeImportResult{File: path, Theme: &theme})
+	}
+	return results
+}
+
 // DeleteTheme removes an installed user theme by its id (the slug stem of
 // its CSS file). It fails when the theme does not exist.
 func (f *FrontendAPI) DeleteTheme(id string) error {

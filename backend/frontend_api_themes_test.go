@@ -155,6 +155,54 @@ func TestFrontendAPI_Themes_ImportValidationErrors(t *testing.T) {
 	}
 }
 
+func TestFrontendAPI_Themes_ImportBatchIndependentResults(t *testing.T) {
+	f, agentDir := newThemesTestAPI(t)
+	srcDir := filepath.Join(agentDir, "src")
+
+	nord := writeThemeFile(t, srcDir, "nord.css",
+		"/* c0wrk-theme: Nord | dark */\n:root { --color-background: #2e3440; --color-foreground: #d8dee9; }\n")
+	paper := writeThemeFile(t, srcDir, "paper.css",
+		"/* c0wrk-theme: Paper | light */\n:root { --color-background: #faf8f2; --color-foreground: #3a3a38; }\n")
+	broken := writeThemeFile(t, srcDir, "broken.css", ":root { --accent: #528bff; }")
+	missing := filepath.Join(srcDir, "does-not-exist.css")
+
+	results := f.ImportThemesFromPaths([]string{nord, broken, paper, missing})
+	if len(results) != 4 {
+		t.Fatalf("expected one result per input path, got %d: %+v", len(results), results)
+	}
+	// Input order is preserved across successes and failures alike.
+	if results[0].File != nord || results[1].File != broken || results[2].File != paper || results[3].File != missing {
+		t.Fatalf("results must preserve input order, got %+v", results)
+	}
+
+	// Success entries carry the theme and no error.
+	if results[0].Theme == nil || results[0].Theme.ID != "nord" || results[0].Error != "" {
+		t.Fatalf("unexpected nord result: %+v", results[0])
+	}
+	if results[2].Theme == nil || results[2].Theme.ID != "paper" || results[2].Error != "" {
+		t.Fatalf("unexpected paper result: %+v", results[2])
+	}
+	// The broken and missing files failed — with an error, never a theme.
+	if results[1].Theme != nil || results[1].Error == "" {
+		t.Fatalf("expected failure for broken.css, got %+v", results[1])
+	}
+	if results[3].Theme != nil || results[3].Error == "" {
+		t.Fatalf("expected failure for missing file, got %+v", results[3])
+	}
+
+	// One invalid file must not block the rest of the batch: both valid
+	// themes are installed.
+	list := f.ListThemes()
+	if len(list) != 2 {
+		t.Fatalf("expected 2 installed themes despite 2 failed files, got %+v", list)
+	}
+
+	// An empty batch yields an empty non-nil slice.
+	if got := f.ImportThemesFromPaths(nil); got == nil || len(got) != 0 {
+		t.Fatalf("expected empty non-nil result for empty input, got %#v", got)
+	}
+}
+
 func TestFrontendAPI_Themes_DeleteMissing(t *testing.T) {
 	f, _ := newThemesTestAPI(t)
 	if err := f.DeleteTheme("never-installed"); err == nil {

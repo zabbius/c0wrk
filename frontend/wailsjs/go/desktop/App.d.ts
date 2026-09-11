@@ -195,6 +195,8 @@ export function HasDefaultModel():Promise<boolean>;
 
 export function ImportThemeFromPath(arg1:string):Promise<backend.ThemeDTO>;
 
+export function ImportThemesFromPaths(arg1:Array<string>):Promise<Array<backend.ThemeImportResult>>;
+
 export function Lifecycle():Promise<backend.FrontendAPILifecycle>;
 
 export function ListAgents():Promise<Array<backend.AgentDescriptorDTO>>;
@@ -229,7 +231,7 @@ export function PauseSession(arg1:string):Promise<void>;
 
 export function PersistWindowBounds():Promise<void>;
 
-export function PickAndImportTheme():Promise<backend.ThemeDTO>;
+export function PickAndImportThemes():Promise<Array<backend.ThemeImportResult>>;
 
 export function PickAttachmentFiles():Promise<Array<string>>;
 
