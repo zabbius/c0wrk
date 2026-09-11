@@ -122,9 +122,12 @@ func TestConversationHistory_CancellationRecorded(t *testing.T) {
 
 // TestConversationHistory_ResumeAppendsAssistant verifies that resuming an
 // interrupted task (e.g. after an app restart) records the assistant output
-// in the conversation history.
+// in the conversation history. With the system-driven auto-resume wave, the
+// declared plan's unstarted step_1 executes in the wave (its subagent's LLM
+// call is scripted first) before the conductor loop runs.
 func TestConversationHistory_ResumeAppendsAssistant(t *testing.T) {
 	mockLLM := &mockLLMCaller{responses: []*llm.ChatResponse{
+		executorFinishResponse("step_1 done"),
 		executorFinishResponse("Resumed and finished"),
 	}}
 	orchestrator := newHistoryTestOrchestrator(mockLLM)

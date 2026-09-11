@@ -691,11 +691,16 @@ orchestration:
 # GPU requirements — "auto" and "cuda" only use the GPU when a CUDA-
 # enabled ONNX Runtime build sits next to the executable (the standard
 # `make build` / `make fetch-onnx` downloads the CPU-only build; fetch
-# the GPU variant with `make fetch-onnx-gpu`, Linux x64 only). The GPU
-# build additionally needs an NVIDIA driver and the CUDA provider
-# libraries that ship beside the runtime library. On any other platform,
-# or with the CPU build in place, "auto" quietly resolves to the CPU
-# provider.
+# the GPU variant with `make fetch-onnx-gpu`, Linux x64 only — or
+# install the release archive
+# `c0wrk-desktop-linux-amd64-cuda13.tar.gz`, which bundles the GPU
+# flavor). The GPU build additionally needs an NVIDIA driver and the
+# CUDA 13 runtime (`libcudart.so.13`, cuBLAS, cuRAND) plus the CUDA
+# provider libraries that ship beside the runtime library. On any other
+# platform, or with the CPU build in place, "auto" quietly resolves to
+# the CPU provider. The in-app updater always updates within the same
+# flavor — a cuda13 install receives cuda13 archives and vice versa
+# (switching flavors is a manual reinstall).
 #
 # Changing either knob requires an app restart: the provider is chosen
 # once when the embedder is created at startup and the ONNX session is
@@ -712,6 +717,13 @@ orchestration:
 #                              # and single-call latency. 32 sits at the knee
 #                              # of the measured throughput curve; lower it on
 #                              # memory-constrained machines.
+#
+#   embedding_cache_max_bytes: 536870912
+#                              # per-project disk cap for content-addressed
+#                              # embeddings (default 512 MiB). The cache lives
+#                              # inside vector_index/embedding_cache and is
+#                              # shared by branches, renames, and moved files.
+#                              # Negative disables it; 0/unset uses default.
 #
 #   prep_workers: 2            # parallel file-preparation workers
 #                              # (read/hash/chunk) overlapping ONNX inference
@@ -745,6 +757,47 @@ orchestration:
 #                              # under, and the next incremental pass re-
 #                              # indexes affected files — no manual Reindex
 #                              # needed.
+#
+# Content filter (early skip of generated/minified/pathological files):
+#
+#   content_filter:
+#     enabled: true              # master switch (default true). Deterministic
+#                                # content-based skip BEFORE chunking, so
+#                                # filtered files cost no chunks, no
+#                                # embeddings, no inference. Runs on top of
+#                                # the existing ignore rules and hard limits
+#                                # (max_file_size / max_chunks_per_file are
+#                                # unaffected and still enforced). Exact
+#                                # path-level control remains available via
+#                                # .aiignore.
+#     detect_generated: true     # skip files whose header (first 2 KiB)
+#                                # carries a canonical "code generated ...
+#                                # DO NOT EDIT" marker (default true).
+#     detect_minified: true      # skip files that are at least 16 KiB, have
+#                                # a line longer than 10 KiB, and whose
+#                                # whitespace share is at most 8% — the
+#                                # minified-bundle signature (default true).
+#     detect_pathological: true  # skip files of at least 32 KiB containing a
+#                                # single unbroken token longer than 24 KiB —
+#                                # embedded blobs/base64 dumps (default true).
+#     generated_header_bytes: 2048
+#     minified_min_bytes: 16384
+#     minified_max_line_bytes: 10240
+#     minified_max_whitespace_ratio: 0.08
+#     pathological_min_bytes: 32768
+#     pathological_max_token_bytes: 24576
+#                                # numeric thresholds (defaults shown); every
+#                                # heuristic requires a strong signal, and a
+#                                # false skip is recoverable by raising the
+#                                # relevant threshold or flipping its detect_
+#                                # flag. Changing ANY of these knobs changes
+#                                # the chunker fingerprint, so the next
+#                                # incremental pass re-evaluates affected
+#                                # files automatically: newly excluded files
+#                                # have their documents removed, newly
+#                                # included files are (re)indexed, and
+#                                # unchanged re-chunks hit the embedding
+#                                # cache instead of ONNX.
 #
 # Search readiness bound:
 #
@@ -808,6 +861,7 @@ orchestration:
 #   execution_provider: auto
 #   device_id: 0
 #   embedding_batch_size: 32
+#   embedding_cache_max_bytes: 536870912
 #   prep_workers: 2
 #   debounce_ms: 1000
 #   chunk_overlap: 200
@@ -815,6 +869,17 @@ orchestration:
 #   max_file_size: 4194304
 #   max_chunk_size: 1500
 #   max_chunks_per_file: 4000
+#   content_filter:
+#     enabled: true
+#     detect_generated: true
+#     detect_minified: true
+#     detect_pathological: true
+#     generated_header_bytes: 2048
+#     minified_min_bytes: 16384
+#     minified_max_line_bytes: 10240
+#     minified_max_whitespace_ratio: 0.08
+#     pathological_min_bytes: 32768
+#     pathological_max_token_bytes: 24576
 
 # ---------------------------------------------------------------------------
 # Proxy — HTTP/HTTPS proxy for all outbound connections.

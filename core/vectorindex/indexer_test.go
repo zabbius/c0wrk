@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1083,6 +1084,85 @@ func compareDocSets(t *testing.T, label string, want, got map[string]docSnapshot
 			shown++
 		}
 	}
+}
+
+// TestIndexFull_BatchAccumulatorCarriesTailsAcrossFiles exercises the actual
+// indexPrepared wiring. Twenty-four four-chunk files produce 96 documents:
+// the old per-50-doc AddDocuments flush yielded two underfilled inferences,
+// while the streaming path yields one full 50-row inference and one final 46.
+func TestIndexFull_BatchAccumulatorCarriesTailsAcrossFiles(t *testing.T) {
+	ws := createPrepWorkspace(t, 24)
+	batch := &fakeBatchEmbedder{}
+	svc := newBatchTestService(t, batch, 50, normalizedFakeEmbeddingFunc(), nil)
+	indexer := NewIndexer(IndexerConfig{
+		Service:     svc,
+		ChunkFn:     linesChunker,
+		HashFn:      fakeHashFunc,
+		PrepWorkers: DefaultPrepWorkers,
+	})
+	if err := indexer.IndexFull(context.Background(), ws); err != nil {
+		t.Fatalf("IndexFull: %v", err)
+	}
+	if got, want := batch.recordedBatchSizes(), []int{50, 46}; !reflect.DeepEqual(got, want) {
+		t.Errorf("IndexFull inference batches = %v; want %v", got, want)
+	}
+}
+
+// TestIndexIncremental_BatchAccumulatorMatchesFullRebuild verifies full and
+// incremental pipelines converge on the same IDs/content/metadata while an
+// incremental pass carries inference tails across several changed files.
+func TestIndexIncremental_BatchAccumulatorMatchesFullRebuild(t *testing.T) {
+	ws := createPrepWorkspace(t, 24)
+	batch := &fakeBatchEmbedder{l2Normalize: true}
+	svc := newBatchTestService(t, batch, 50, normalizedFakeEmbeddingFunc(), nil)
+	indexer := NewIndexer(IndexerConfig{
+		Service:     svc,
+		ChunkFn:     linesChunker,
+		HashFn:      fakeHashFunc,
+		PrepWorkers: DefaultPrepWorkers,
+	})
+	if err := indexer.IndexFull(context.Background(), ws); err != nil {
+		t.Fatalf("initial IndexFull: %v", err)
+	}
+
+	for i := 0; i < 15; i++ {
+		path := filepath.Join(ws, fmt.Sprintf("pkg%d", i%3), fmt.Sprintf("file%02d.go", i))
+		var content strings.Builder
+		for line := 0; line < 13; line++ {
+			fmt.Fprintf(&content, "changed file %02d line %02d\n", i, line)
+		}
+		if err := os.WriteFile(path, []byte(content.String()), 0o644); err != nil {
+			t.Fatalf("rewrite %s: %v", path, err)
+		}
+	}
+	batch.resetCalls()
+	if err := indexer.IndexIncremental(context.Background(), ws); err != nil {
+		t.Fatalf("IndexIncremental: %v", err)
+	}
+	sizes := batch.recordedBatchSizes()
+	for i, size := range sizes {
+		if i < len(sizes)-1 && size != 50 {
+			t.Errorf("incremental non-final inference batch %d = %d; want 50", i, size)
+		}
+		if size > 50 {
+			t.Errorf("incremental inference batch %d = %d; exceeds capacity 50", i, size)
+		}
+	}
+	incremental := snapshotCollection(t, svc)
+
+	rebuildBatch := &fakeBatchEmbedder{l2Normalize: true}
+	rebuildSvc := newBatchTestService(t, rebuildBatch, 50, normalizedFakeEmbeddingFunc(), nil)
+	rebuildIndexer := NewIndexer(IndexerConfig{
+		Service:     rebuildSvc,
+		ChunkFn:     linesChunker,
+		HashFn:      fakeHashFunc,
+		PrepWorkers: DefaultPrepWorkers,
+	})
+	if err := rebuildIndexer.IndexFull(context.Background(), ws); err != nil {
+		t.Fatalf("rebuild IndexFull: %v", err)
+	}
+	rebuild := snapshotCollection(t, rebuildSvc)
+	compareDocSets(t, "incremental versus full rebuild", rebuild, incremental)
 }
 
 // TestIndexFull_PrepWorkers_ProduceIdenticalDocumentSet is the acceptance

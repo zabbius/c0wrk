@@ -9,6 +9,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/goal"
+	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -189,6 +190,45 @@ func (a *TaskStoreAdapter) LoadGoalState(taskID string) (*goal.GoalState, error)
 	return &gs, nil
 }
 
+// PersistDelegationSpec JSON-marshals the delegation spec (task text, tools,
+// agent profile, mode, deps, parent/depth) and stores it for a task so a
+// paused delegation can be rebuilt and resumed by the system.
+func (a *TaskStoreAdapter) PersistDelegationSpec(taskID string, spec tools.DelegationSpec) error {
+	data, err := json.Marshal(spec)
+	if err != nil {
+		return fmt.Errorf("marshal delegation spec: %w", err)
+	}
+	return a.store.SaveDelegationSpec(context.Background(), taskID, TaskDelegationRecord{
+		DelegationID: spec.Task.ID,
+		TaskID:       taskID,
+		ParentID:     spec.ParentID,
+		Depth:        spec.Depth,
+		Spec:         data,
+		CreatedAt:    time.Now(),
+	})
+}
+
+// LoadDelegationSpecs loads the delegation specs for a task and unmarshals
+// them into []tools.DelegationSpec. Returns nil, nil when none are persisted.
+func (a *TaskStoreAdapter) LoadDelegationSpecs(taskID string) ([]tools.DelegationSpec, error) {
+	recs, err := a.store.LoadDelegationSpecs(context.Background(), taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load delegation specs: %w", err)
+	}
+	if len(recs) == 0 {
+		return nil, nil
+	}
+	specs := make([]tools.DelegationSpec, 0, len(recs))
+	for _, rec := range recs {
+		var spec tools.DelegationSpec
+		if err := json.Unmarshal(rec.Spec, &spec); err != nil {
+			return nil, fmt.Errorf("unmarshal delegation spec %s: %w", rec.DelegationID, err)
+		}
+		specs = append(specs, spec)
+	}
+	return specs, nil
+}
+
 // LoadTaskState loads a task and its steps from the store, deserializes JSON back
 // to core types, and returns a populated *core.TaskState.
 // Returns nil, nil if the task is not found.
@@ -298,6 +338,13 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 		}
 		state.GoalState = &gs
 	}
+
+	// Load delegation specs (empty for plan-only tasks or fresh tasks).
+	specs, err := a.LoadDelegationSpecs(taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load delegation specs: %w", err)
+	}
+	state.Delegations = specs
 
 	return state, nil
 }

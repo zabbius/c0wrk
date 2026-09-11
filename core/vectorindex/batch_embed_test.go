@@ -100,6 +100,12 @@ func (f *fakeBatchEmbedder) recordedBatchSizes() []int {
 	return sizes
 }
 
+func (f *fakeBatchEmbedder) resetCalls() {
+	f.mu.Lock()
+	f.calls = nil
+	f.mu.Unlock()
+}
+
 // recordedTexts returns the concatenation of all texts across calls, in order.
 func (f *fakeBatchEmbedder) recordedTexts() []string {
 	f.mu.Lock()
@@ -239,7 +245,7 @@ func TestAddDocuments_BatchEmbedder_ZeroChromemEmbeddingCalls(t *testing.T) {
 }
 
 // TestAddDocuments_BatchEmbedder_SubBatchChunkBounds crosses the 200-doc
-// embeddingSubBatchSize boundary (250 docs): chunking must respect BOTH
+// standalone commit-window boundary (250 docs): chunking must respect BOTH
 // bounds — every EmbedDocuments call at most embeddingBatchSize texts, and
 // the outer sub-batch semantics preserved (no call mixes documents from
 // different sub-batches; the boundary falls between calls).
@@ -641,6 +647,209 @@ func TestAddDocuments_BatchEmbedder_AllTextsFailIndividually(t *testing.T) {
 	}
 	if len(files) != 0 {
 		t.Errorf("file-hash sidecar entries = %d; want 0 after a failed pass", len(files))
+	}
+}
+
+func lexicalBatchTestDocs(docs []chromem.Document) []lexical.Doc {
+	out := make([]lexical.Doc, len(docs))
+	for i := range docs {
+		out[i] = lexical.Doc{
+			ID:       docs[i].ID,
+			FilePath: docs[i].Metadata["file_path"],
+			Language: "go",
+			Content:  docs[i].Content,
+		}
+	}
+	return out
+}
+
+// TestDocumentAccumulator_FillsInferenceAcrossFileAndCommitBoundaries pins
+// the streaming behavior at the old 50-document index flush and the bounded
+// 200-document commit window. Every non-final ONNX call is full, while commit
+// count and item totals prove the ready-document queue stays bounded.
+func TestDocumentAccumulator_FillsInferenceAcrossFileAndCommitBoundaries(t *testing.T) {
+	fb := &fakeBatchEmbedder{}
+	telemetry := &Telemetry{}
+	svc := newBatchTestService(t, fb, 50, nil, nil)
+	svc.telemetry = telemetry
+
+	docs := batchTestDocs(425)
+	// Multiple files with deliberately awkward chunk counts carry inference
+	// tails across both file boundaries and the 200-document commit boundary.
+	groups := []int{17, 33, 51, 99, 7, 123, 95}
+	acc := newDocumentAccumulator(svc, telemetry)
+	svc.AcquireWriteLock()
+	offset := 0
+	for fileIdx, size := range groups {
+		group := docs[offset : offset+size]
+		for i := range group {
+			group[i].Metadata["file_path"] = fmt.Sprintf("/ws/group-%02d.go", fileIdx)
+			group[i].Metadata["content_hash"] = fmt.Sprintf("group-hash-%02d", fileIdx)
+		}
+		if err := acc.addFile(context.Background(), group, lexicalBatchTestDocs(group)); err != nil {
+			svc.ReleaseWriteLock()
+			t.Fatalf("addFile(%d): %v", fileIdx, err)
+		}
+		offset += size
+	}
+	err := acc.finish(context.Background())
+	svc.ReleaseWriteLock()
+	if err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	wantSizes := []int{50, 50, 50, 50, 50, 50, 50, 50, 25}
+	if got := fb.recordedBatchSizes(); !reflect.DeepEqual(got, wantSizes) {
+		t.Errorf("inference batch sizes = %v; want %v", got, wantSizes)
+	}
+	if got := fb.recordedTexts(); len(got) != len(docs) {
+		t.Fatalf("embedded texts = %d; want %d", len(got), len(docs))
+	} else {
+		for i := range got {
+			if got[i] != docs[i].Content {
+				t.Fatalf("embedding order mismatch at %d: got %q want %q", i, got[i], docs[i].Content)
+			}
+		}
+	}
+
+	snapshot := telemetry.Snapshot()
+	if got := snapshot.Stages[StageChromemCommit]; got.Calls != 3 || got.Items != 425 {
+		t.Errorf("chromem commit metrics = %+v; want 3 calls / 425 items (200, 200, 25)", got)
+	}
+	if got := snapshot.BatchFill(); got != float64(425)/float64(450) {
+		t.Errorf("inference batch fill = %v; want %v", got, float64(425)/float64(450))
+	}
+	if got := svc.collection.Count(); got != len(docs) {
+		t.Errorf("collection Count = %d; want %d", got, len(docs))
+	}
+	lexCount, err := svc.lexical.Count()
+	if err != nil {
+		t.Fatalf("lexical Count: %v", err)
+	}
+	if lexCount != uint64(len(docs)) {
+		t.Errorf("lexical Count = %d; want %d", lexCount, len(docs))
+	}
+	files, err := svc.GetCollectionFiles()
+	if err != nil {
+		t.Fatalf("GetCollectionFiles: %v", err)
+	}
+	if len(files) != len(groups) {
+		t.Errorf("sidecar files = %d; want %d", len(files), len(groups))
+	}
+}
+
+// TestDocumentAccumulator_FileHashWaitsForEveryChunkCommit verifies that a
+// file spanning commit windows is not published when a later inference batch
+// fails after its first 200 chunks already reached chromem.
+func TestDocumentAccumulator_FileHashWaitsForEveryChunkCommit(t *testing.T) {
+	fb := &fakeBatchEmbedder{failAfter: 4}
+	svc := newBatchTestService(t, fb, 50, nil, nil)
+	docs := batchTestDocs(250)
+	for i := range docs {
+		docs[i].Metadata["file_path"] = "/ws/large.go"
+		docs[i].Metadata["content_hash"] = "large-hash"
+	}
+	acc := newDocumentAccumulator(svc, nil)
+
+	svc.AcquireWriteLock()
+	err := acc.addFile(context.Background(), docs, lexicalBatchTestDocs(docs))
+	svc.ReleaseWriteLock()
+	if err == nil {
+		t.Fatal("addFile must fail on the fifth inference batch")
+	}
+	if got := svc.collection.Count(); got != 200 {
+		t.Errorf("collection Count = %d; want 200 committed chunks", got)
+	}
+	files, ferr := svc.GetCollectionFiles()
+	if ferr != nil {
+		t.Fatalf("GetCollectionFiles: %v", ferr)
+	}
+	if len(files) != 0 {
+		t.Errorf("sidecar published before all file chunks committed: %v", files)
+	}
+}
+
+// TestDocumentAccumulator_PoisonedTextKeepsDualIndexAlignment verifies that
+// per-text fallback remains active across streaming batches and that only the
+// poisoned ID is omitted from both stores while its file sidecar completes.
+func TestDocumentAccumulator_PoisonedTextKeepsDualIndexAlignment(t *testing.T) {
+	fb := &fakeBatchEmbedder{poisonSubstr: "POISON"}
+	svc := newBatchTestService(t, fb, 50, nil, nil)
+	docs := batchTestDocs(225)
+	docs[107].Content = "POISON"
+	for i := range docs {
+		docs[i].Metadata["file_path"] = "/ws/poison.go"
+		docs[i].Metadata["content_hash"] = "poison-hash"
+	}
+	acc := newDocumentAccumulator(svc, nil)
+
+	svc.AcquireWriteLock()
+	err := acc.addFile(context.Background(), docs, lexicalBatchTestDocs(docs))
+	if err == nil {
+		err = acc.finish(context.Background())
+	}
+	svc.ReleaseWriteLock()
+	if err != nil {
+		t.Fatalf("streaming poisoned fallback: %v", err)
+	}
+	if got := svc.collection.Count(); got != 224 {
+		t.Errorf("collection Count = %d; want 224", got)
+	}
+	lexCount, err := svc.lexical.Count()
+	if err != nil {
+		t.Fatalf("lexical Count: %v", err)
+	}
+	if lexCount != 224 {
+		t.Errorf("lexical Count = %d; want 224", lexCount)
+	}
+	if _, err := svc.collection.GetByID(context.Background(), docs[107].ID); err == nil {
+		t.Error("poisoned document unexpectedly present in chromem")
+	}
+	hits, err := svc.lexical.Query(context.Background(), "POISON", 10)
+	if err != nil {
+		t.Fatalf("lexical Query: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Errorf("poisoned document leaked into lexical index: %v", hits)
+	}
+	files, err := svc.GetCollectionFiles()
+	if err != nil {
+		t.Fatalf("GetCollectionFiles: %v", err)
+	}
+	if len(files) != 1 {
+		t.Errorf("sidecar files = %d; want poisoned file marked complete once", len(files))
+	}
+}
+
+// TestDocumentAccumulator_CancellationDoesNotCommitInferenceTail verifies that
+// cancellation between full inference batches aborts promptly without
+// publishing or committing the pending (<200) ready-document window.
+func TestDocumentAccumulator_CancellationDoesNotCommitInferenceTail(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fb := &fakeBatchEmbedder{onSuccess: func(callIdx int, _ []string) {
+		if callIdx == 1 {
+			cancel()
+		}
+	}}
+	svc := newBatchTestService(t, fb, 50, nil, nil)
+	docs := batchTestDocs(100)
+	acc := newDocumentAccumulator(svc, nil)
+
+	svc.AcquireWriteLock()
+	err := acc.addFile(ctx, docs, lexicalBatchTestDocs(docs))
+	svc.ReleaseWriteLock()
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("addFile error = %v; want wrapped context.Canceled", err)
+	}
+	if got := svc.collection.Count(); got != 0 {
+		t.Errorf("collection Count = %d; want 0", got)
+	}
+	files, ferr := svc.GetCollectionFiles()
+	if ferr != nil {
+		t.Fatalf("GetCollectionFiles: %v", ferr)
+	}
+	if len(files) != 0 {
+		t.Errorf("sidecar published after cancellation: %v", files)
 	}
 }
 

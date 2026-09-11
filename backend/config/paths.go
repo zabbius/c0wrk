@@ -162,6 +162,12 @@ func ProjectVectorIndexPath(agentDir, projectID string) string {
 	return filepath.Join(ProjectDir(agentDir, projectID), "vector_index")
 }
 
+// ProjectEmbeddingCachePath returns the content-addressed embedding cache
+// directory inside a project's vector-index storage.
+func ProjectEmbeddingCachePath(agentDir, projectID string) string {
+	return filepath.Join(ProjectVectorIndexPath(agentDir, projectID), "embedding_cache")
+}
+
 // ---------------------------------------------------------------------------
 // Per-session paths (agentDir + projectID + sessionID)
 // ---------------------------------------------------------------------------

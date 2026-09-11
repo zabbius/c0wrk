@@ -76,6 +76,18 @@ jobs:
       - name: Build
         run: xvfb-run make build
 
+      # The GPU (cuda13) flavor of ONNX Runtime is an opt-in installed only by
+      # `make fetch-onnx-gpu` — the release packaging depends on that recipe and
+      # its pinned digests, so exercise it on the amd64 leg right after the
+      # build (which installs the CPU flavor): a broken recipe or a stale
+      # digest then fails the PR instead of the release. ~240 MiB download is
+      # the price of that early detection. Skipped on arm64: the pinned
+      # linux-x64-gpu_cuda13 artifact has no arm64 build (the target exits 1
+      # there by design).
+      - name: Fetch ONNX Runtime GPU flavor (recipe smoke test)
+        if: matrix.arch == 'amd64'
+        run: make fetch-onnx-gpu
+
   macos:
     runs-on: macos-14
     timeout-minutes: 30
@@ -130,6 +142,11 @@ jobs:
       # C toolchain (MinGW-w64 gcc, installed below) must be enabled for compile,
       # lint, test, and the wails build to succeed on Windows.
       CGO_ENABLED: "1"
+      # proxy.golang.org intermittently resets HTTP/2 streams with
+      # "stream error ... INTERNAL_ERROR; received from peer" when fetching
+      # modules (seen with the Windows-only conpty dependency). Disable HTTP/2
+      # so module downloads fall back to HTTP/1.1 and dodge that flake.
+      GODEBUG: "http2client=0"
     steps:
       # Preserve LF line endings: MSYS2/Git may otherwise CRLF-convert checked-out
       # sources, which breaks shell scripts and Go tooling that assume LF.

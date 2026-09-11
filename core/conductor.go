@@ -152,6 +152,25 @@ func newCompositeTrajectoryStore(memory *trajectoryHolder, taskID string, store 
 	}
 }
 
+// wireDelegationSpecSink installs a persistence sink on a delegation registry
+// so every delegation registered in it is persisted as a full spec (task text,
+// tools, agent profile, mode, deps, parent/depth). parentID is "" for the
+// root registry (top-level delegations) or the delegating subagent's step ID
+// for child registries (allow_redelegate). Best-effort and synchronous: the
+// spec is tiny (a single row), and the delegation must be resumable even if
+// the app dies immediately after registration — a background queue could
+// drop it. Persistence failures are logged, never propagated.
+func wireDelegationSpecSink(registry *tools.DelegationRegistry, parentID, taskID string, store TaskPersistence, logger *slog.Logger) {
+	registry.SetSpecSink(parentID, func(spec tools.DelegationSpec) {
+		if err := store.PersistDelegationSpec(taskID, spec); err != nil {
+			if logger != nil {
+				logger.Warn("persist delegation spec failed (delegation remains in-memory; it cannot be auto-resumed after this run)",
+					"task_id", taskID, "delegation_id", spec.Task.ID, "error", err)
+			}
+		}
+	})
+}
+
 // Sync updates the in-memory holder synchronously (so the reflect tool sees
 // the latest trajectory immediately) and kicks off a best-effort, non-blocking
 // DB persist. The DB write runs on a background goroutine; a slow DB never
@@ -672,6 +691,18 @@ func (l *conductorLauncher) successfulStepResult(stepID string) (orchestration.S
 	return sr, true
 }
 
+// CompletedStep implements tools.DelegationLauncher: it reports the settled
+// outcome of a delegation id that already carries a successful StepResult on
+// the blackboard. The delegate tool's duplicate guard uses it to refuse the
+// re-delegation and replay the settled entry instead of re-running the work.
+func (l *conductorLauncher) CompletedStep(stepID string) (tools.DelegationCompletedStep, bool) {
+	sr, ok := l.successfulStepResult(stepID)
+	if !ok {
+		return tools.DelegationCompletedStep{}, false
+	}
+	return tools.DelegationCompletedStep{Output: sr.FullOutput, Steps: sr.Steps}, true
+}
+
 // forcedRerunSet computes the set of step IDs that must re-run when explicit
 // step IDs are passed to execute_plan: the targets themselves plus every step
 // that transitively depends on a target (its output is now stale). Returns an
@@ -830,6 +861,13 @@ func (l *conductorLauncher) planStepDepsReady(step orchestration.PlanStep, regis
 func (l *conductorLauncher) Launch(ctx context.Context, tasks []tools.DelegationTask, registry *tools.DelegationRegistry) []tools.DelegationResult {
 	results := make([]tools.DelegationResult, 0, len(tasks))
 	pending := make(map[string]tools.DelegationTask, len(tasks))
+
+	// NOTE: the duplicate guard (a task id that already carries a SUCCESSFUL
+	// StepResult on the blackboard must not silently re-run) lives in the
+	// delegate TOOL, before registration — see delegate.go. Launch itself
+	// needs no guard: its callers are the delegate tool (guarded there) and
+	// the resume wave, which relaunches only paused/crash-interrupted specs
+	// — neither can carry a successful StepResult by construction.
 	for _, t := range tasks {
 		pending[t.ID] = t
 	}
@@ -1124,6 +1162,15 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 	// Create a child registry one level deeper and inject it + the launcher
 	// into a per-task context so the subagent can use delegate/cancel_delegation.
 	childReg := tools.NewDelegationRegistryWithDepth(registry.Depth() + 1)
+	// Persist sub-delegation specs with this subagent's step ID as the parent,
+	// so a resume wave can rebuild nested paused delegations and order
+	// children before their parents. Mirrors the root-registry wiring in
+	// RunConductor (same taskID/store resolution via the blackboard).
+	if pbb, ok := l.bb.(PersistableBlackboard); ok {
+		if tid := pbb.TaskID(); tid != "" && l.deps.taskStore != nil {
+			wireDelegationSpecSink(childReg, t.ID, tid, l.deps.taskStore, l.deps.logger)
+		}
+	}
 	taskCtx := tools.WithDelegationRegistry(ctx, childReg)
 	taskCtx = tools.WithDelegationLauncher(taskCtx, l)
 	// Also inject into the sp4rk-level context key so the sp4rk Conductor's
@@ -2040,6 +2087,15 @@ func RunConductor(
 	}
 	trajStore := newCompositeTrajectoryStore(trajHolder, taskID, deps.taskStore, deps.logger)
 	runner := &conductorReflectionRunner{reflector: deps.reflector, bb: bb, emitter: deps.emitter, logger: deps.logger, traj: trajStore}
+
+	// Persist every delegation spec registered in this run's registry so a
+	// paused delegation survives the end of the run and the Resume
+	// auto-resume wave can rebuild it — without any LLM decision. Best-effort
+	// (mirrors the trajectory store): a persistence failure is logged, never
+	// propagated.
+	if taskID != "" && deps.taskStore != nil {
+		wireDelegationSpecSink(registry, "", taskID, deps.taskStore, deps.logger)
+	}
 
 	// Derive compaction strategy from routing domain + complexity.
 	domain := DomainFromContext(ctx)

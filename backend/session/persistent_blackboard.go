@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core"
+	"github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/agent/router"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -54,6 +55,12 @@ type PersistentBlackboard struct {
 	// the value without a DB round-trip in active execution paths.
 	routingMu sync.RWMutex
 	routing   *router.RoutingDecision
+
+	// delegationSpecsMu guards delegationSpecs — the task's persisted
+	// delegation specs, hydrated once at restore and read by the Resume
+	// auto-resume wave via the DelegationSpecReader capability.
+	delegationSpecsMu sync.RWMutex
+	delegationSpecs   []tools.DelegationSpec
 }
 
 // persistOp is a single persistence operation sent to the worker goroutine.
@@ -502,9 +509,21 @@ func RestoreBlackboard(taskID, sessionID string, store core.TaskPersistence, log
 		logger:             logger,
 		persistenceTimeout: defaultPersistenceTimeout,
 		persistCh:          ch,
+		delegationSpecs:    state.Delegations,
 	}
 	go pb.persistenceWorker(ch)
 	return pb, nil
+}
+
+// DelegationSpecs returns the task's persisted delegation specs (hydrated at
+// restore), implementing core.DelegationSpecReader. The Resume auto-resume
+// wave uses them to rebuild paused delegates. Fresh (non-restored)
+// blackboards return nil — a task that never paused has no delegation specs
+// to expose beyond what its live registry holds.
+func (pb *PersistentBlackboard) DelegationSpecs() []tools.DelegationSpec {
+	pb.delegationSpecsMu.RLock()
+	defer pb.delegationSpecsMu.RUnlock()
+	return pb.delegationSpecs
 }
 
 // ---------------------------------------------------------------------------
