@@ -277,7 +277,11 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	// while the frontend's serialized chain already moved on, a desync under
 	// which every ListDirectory (and with it @-file completion) fails
 	// containment until an app restart.
-	f.switchMu.Lock()
+	if err := f.acquireSwitchLock(); err != nil {
+		f.log().Warn("SwitchProject: timed out waiting for an in-flight switch",
+			"project", id, "error", err)
+		return err
+	}
 	defer f.switchMu.Unlock()
 	if f.switchInProgressHook != nil {
 		f.switchInProgressHook(id)
@@ -347,14 +351,27 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 		return errors.New("git is required for CODE mode")
 	}
 
+	// Teardown persists the PREVIOUS project's state and cancels its in-flight
+	// indexing; it stays first. Everything that can still fail (vector setup)
+	// runs BEFORE both the watcher swap and the activation commit below, so a
+	// failure leaves activeProjectID/activeProjectPath AND the live watcher on
+	// the previous project — the backend never half-switches, and the frontend
+	// (which treats a non-nil RPC error as "switch did not happen") cannot
+	// diverge from the backend.
 	f.switchProjectTeardown(id)
-	f.switchProjectActivate(p)
-	f.switchProjectSetupWatcher(p)
-
-	if err := f.switchProjectSetupVector(p); err != nil {
+	// The fallible vector setup runs before the watcher swap on purpose: the
+	// two steps are independent, and a vector failure here leaves the previous
+	// watcher untouched (still scoped to the still-active project) instead of
+	// closing it and starting one scoped to a project that never activated.
+	if err := f.switchSetupVector(p); err != nil {
 		return err
 	}
+	f.switchProjectSetupWatcher(p)
 
+	// All fallible steps succeeded: commit the activation. From here on the
+	// switch cannot fail, so the active marker and the project:switched event
+	// stay consistent with what the frontend is told.
+	f.switchProjectActivate(p)
 	f.applySavedProjectSwitchState(p.ID)
 	f.emitEvent(EventProjectSwitched, p)
 
@@ -363,6 +380,16 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	// for a clean config. See frontend_api_gitconfig_risk.go.
 	f.notifyGitConfigRisk(GitConfigRiskSourceProject, p.WorkspacePath)
 
+	// Kick the auto-fetch funnel on the REAL-switch path only (the
+	// already-active early return above deliberately skips it — the project
+	// was already fetched-for when it was switched to). Fire-and-forget:
+	// every gate (config, No Project, repo check, shared 60s min-interval,
+	// TryLock against manual remote ops) plus the quiet-failure contract
+	// live inside autoFetchOnce. App-startup restoration rides along for
+	// free: the frontend replays the last active project through this same
+	// SwitchProject call.
+	go f.autoFetchOnce(autoFetchTriggerSwitch)
+
 	return nil
 }
 
@@ -370,6 +397,52 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 func gitOnPath() bool {
 	_, err := exec.LookPath("git")
 	return err == nil
+}
+
+// errSwitchLockTimeout is returned by SwitchProject when switchMu cannot be
+// acquired within switchLockTimeout. Exposed as a sentinel so callers/tests
+// can detect the bounded-wait failure specifically.
+var errSwitchLockTimeout = errors.New("project switch timed out waiting for in-flight switch")
+
+// acquireSwitchLock acquires switchMu, waiting at most switchLockTimeout (or
+// the switchLockTimeoutOverride seam) for any in-flight switch to finish.
+//
+// It polls with TryLock rather than blocking on Lock so a switch wedged behind
+// a stuck predecessor surfaces a bounded, actionable error instead of hanging
+// the RPC goroutine forever — an unbounded wait leaves the frontend's
+// project-load waterfall hung with no feedback and no way to recover short of
+// an app restart.
+func (f *FrontendAPI) acquireSwitchLock() error {
+	timeout := switchLockTimeout
+	if f.switchLockTimeoutOverride > 0 {
+		timeout = f.switchLockTimeoutOverride
+	}
+	const tick = 250 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	for {
+		if f.switchMu.TryLock() {
+			return nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return errSwitchLockTimeout
+		}
+		if remaining > tick {
+			remaining = tick
+		}
+		time.Sleep(remaining)
+	}
+}
+
+// switchSetupVector runs the vector-index setup for a project switch, honoring
+// the test-only switchProjectSetupVectorFn seam (nil in production). It lets a
+// test drive the fallible pre-watcher step to verify the switch stays atomic
+// on failure.
+func (f *FrontendAPI) switchSetupVector(p *project.ProjectInfo) error {
+	if f.switchProjectSetupVectorFn != nil {
+		return f.switchProjectSetupVectorFn(p)
+	}
+	return f.switchProjectSetupVector(p)
 }
 
 // switchProjectTeardown persists the previous project state and cancels in-flight work.
@@ -408,6 +481,10 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 	f.invalidateSkillCache()
 	// Invalidate cached agent list since project-local agents may differ.
 	f.invalidateAgentCache()
+	// Invalidate both per-repo git caches (status / ignored paths) so no
+	// snapshot from the previous workspace can leak into the new one. Runs for
+	// every real switch (CODE and No Project). See frontend_api_gitcache.go.
+	f.invalidateAllGitCaches()
 
 	// Set MCP working directory to the new project workspace
 	if b := f.builder(); b != nil {
@@ -466,12 +543,12 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 
 	// CODE mode: tear down the previous watcher and create a new one scoped
 	// to the project workspace.
-	// Read the active research root BEFORE acquiring watcherMu so the lock
-	// order stays activeProjectMu → watcherMu (switchProjectActivate runs
-	// first and has already set it for a project with research enabled).
-	f.activeProjectMu.RLock()
-	researchRoot := f.activeResearchRoot
-	f.activeProjectMu.RUnlock()
+	// Read the research root from the TARGET project (p), not from the active
+	// fields: watcher setup now runs BEFORE switchProjectActivate commits the
+	// new project, so f.activeResearchRoot still holds the PREVIOUS project's
+	// root here. Taking p.ResearchRoot directly keeps the watcher scoped to
+	// the destination without acquiring activeProjectMu at all.
+	researchRoot := p.ResearchRoot
 
 	f.watcherMu.Lock()
 	defer f.watcherMu.Unlock()
@@ -506,6 +583,14 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 		if f.app != nil && f.app.Manager() != nil {
 			f.app.Manager().InvalidateIgnoreCache(changedPaths)
 		}
+
+		// Any tree change can alter the working-tree status of the active
+		// repo, and an ignore-rule edit additionally stales the ignored-path
+		// set. Treat the debounced batch as the cache-invalidation point for
+		// the active project (this callback only runs for CODE-mode watchers;
+		// No Project uses a separate, cache-free watcher). See
+		// frontend_api_gitcache.go.
+		f.invalidateGitCachesOnWatcher(p.WorkspacePath, changedPaths)
 
 		// Project-local skills live under <workspace>/.agents/skills, so a
 		// workspace change may have added/removed/modified them. Invalidate
@@ -643,10 +728,29 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 // is reset to an empty state (clearing any stale CODE-project collection) and
 // a disabled status is emitted, but no index is built and no embedder is loaded.
 func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
+	// Handshake with the background ONNX init. The vector manager is created
+	// asynchronously (its own goroutine, after EventBackendReady) and is usually
+	// NOT ready when the frontend fires its first SwitchProject on
+	// backend:ready. Rather than silently dropping the setup (which left the
+	// startup project unindexed until the user manually switched projects), record
+	// the project so InitVectorIndexForActiveProject applies it once the manager
+	// is wired in. The read-and-record is atomic under vectorSetupMu so it cannot
+	// race that drain.
+	f.vectorSetupMu.Lock()
 	vm := f.getVectorManager()
 	if vm == nil {
+		if p.IsNoProject {
+			// CHAT mode never indexes: drop any pending setup.
+			f.deferredVectorProject = nil
+		} else {
+			f.deferredVectorProject = p
+		}
+		f.vectorSetupMu.Unlock()
 		return nil
 	}
+	// Manager is ready: this switch supersedes any deferred setup.
+	f.deferredVectorProject = nil
+	f.vectorSetupMu.Unlock()
 
 	// No Project (CHAT mode): vector indexing is disabled. Delegate to the
 	// manager, which short-circuits without running git branch detection,
@@ -682,7 +786,7 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 				State:        string(state),
 				Phase:        string(phase),
 				Indices:      []string{"vector", "lexical"},
-				Progress:     progressPercent(indexed, total),
+				Progress:     progressFraction(indexed, total),
 				FilesIndexed: indexed,
 				TotalFiles:   total,
 				CurrentFile:  file,
@@ -708,12 +812,18 @@ func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
 	return nil
 }
 
-// progressPercent calculates a percentage value for indexing progress.
-func progressPercent(indexed, total int) float64 {
+// progressFraction calculates indexing progress as a fraction in [0, 1].
+//
+// It deliberately mirrors the Progress value returned by GetVectorIndexStatus
+// (FilesIndexed / TotalFiles) and the frontend contract: IndexingStatus.tsx
+// renders the bar as `progress * 100` percent. Returning a 0–100 percentage
+// here would push the bar to 100% as soon as ~1% of files were indexed and
+// pin it there (the track clips an over-wide fill) until indexing finished.
+func progressFraction(indexed, total int) float64 {
 	if total == 0 {
 		return 0
 	}
-	return float64(indexed) / float64(total) * 100
+	return float64(indexed) / float64(total)
 }
 
 // SaveProjectSwitchState persists project-scoped UI switch state.
@@ -978,8 +1088,14 @@ func (f *FrontendAPI) resolveNoProjectSessionWorkspace() string {
 		return ""
 	}
 	// ListSessionsByProject returns sessions sorted by last_active_at desc,
-	// so sessions[0] is the most recently active.
-	ws, ok := f.app.Manager().GetSessionWorkspacePath(sessions[0].ID)
+	// so sessions[0] is the most recently active. Resolve its workspace via the
+	// READ-ONLY WorkspacePathFor lookup, never GetSessionWorkspacePath: the
+	// latter lazily restores the session (full orchestrator build + unbounded
+	// store reads) inside SwitchProject while switchMu is held, which is the
+	// hang WorkspacePathFor was introduced to avoid.
+	ctx, cancel := context.WithTimeout(context.Background(), terminalPathLookupTimeout)
+	defer cancel()
+	ws, ok := f.app.Manager().WorkspacePathFor(ctx, sessions[0].ID)
 	if !ok || ws == "" {
 		return ""
 	}

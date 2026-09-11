@@ -206,7 +206,7 @@ func (g *HypothesisGraph) Roots() []*HypothesisNode {
 			roots = append(roots, n)
 		}
 	}
-	sort.Slice(roots, func(i, j int) bool { return roots[i].ID < roots[j].ID })
+	sort.Slice(roots, func(i, j int) bool { return compareHypothesisIDs(roots[i].ID, roots[j].ID) < 0 })
 	return roots
 }
 
@@ -318,7 +318,10 @@ func ComputeMetrics(g *HypothesisGraph) Metrics {
 			activeFront = append(activeFront, n.ID)
 		}
 	}
-	sort.Strings(activeFront)
+	// Numeric H-NNN order (compareHypothesisIDs), matching the graph's own node
+	// order: lexicographic sort would put H-1000 before H-999, flipping the
+	// "leading entry" ActiveFront[0] that RecommendNextStep targets.
+	sort.Slice(activeFront, func(i, j int) bool { return compareHypothesisIDs(activeFront[i], activeFront[j]) < 0 })
 	m.ActiveFront = activeFront
 
 	decided := confirmed + refuted

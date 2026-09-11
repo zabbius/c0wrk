@@ -1,15 +1,7 @@
-import { useMemo, useRef, useState } from 'react'
+import { useMemo } from 'react'
 import { Check, ChevronDown, Loader2, Pin, PinOff, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { logger } from '@/lib/logger'
-import { updateHypothesis, setHypothesisPinned } from '@/api/research'
-import { useMessageSender } from '@/hooks/useMessageSender'
-import { useProjectStore } from '@/stores/projectStore'
-import {
-  useResearchStore,
-  selectActiveProject,
-  selectActiveHypothesisId,
-} from '@/stores/researchStore'
+import { useResearchStore, selectActiveProject, selectActiveHypothesisId } from '@/stores/researchStore'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -18,18 +10,9 @@ import {
   DropdownMenuItem,
 } from '@/components/ui/dropdown-menu'
 import { ItemAction, ItemActions } from '@/components/layout/ItemAction'
-import {
-  applyGraphOrRefresh,
-  fullResearchRefresh,
-  refreshNextStep,
-} from './applyGraphOrRefresh'
-import {
-  statusColorVar,
-  projectDir,
-  isHypothesisPinned,
-} from './researchDagRender'
+import { statusColorVar, projectDir, isHypothesisPinned } from './researchDagRender'
 import { statusOptions } from './hypothesisStatus'
-import { CREATE_HYPOTHESIS_ACTION } from './researchActions'
+import { useResearchProjectActions } from './useResearchProjectActions'
 import type { HypothesisNode, HypothesisStatus } from '@/types/models'
 
 /** Numeric H-NNN sort key (ids without a canonical form sort last). */
@@ -43,30 +26,20 @@ function hypothesisSortKey(id: string): number {
  * control surface for the dashboard's CURRENT card (the card the recommended
  * next step is scoped to). Lists every hypothesis of the active research
  * (pinned first, then the active front, then the rest — each group by
- * H-NNN) with status dots; picking one stamps it as the current card
- * (`setActiveHypothesis`) and refetches the next step scoped to it. The
- * adjacent status select persists a flip through the UpdateHypothesis RPC
- * (inherited from the former ResearchQuickMutate block: the [71] action
- * generation mutex, the cross-project guard, the [60] LWW ticket, and the
- * shared applyGraphOrRefresh convergence path), and the plus button
- * dispatches the Create-hypothesis gesture.
+ * H-NNN) with status dots; picking one stamps it as the current card and
+ * refetches the scoped next step; the status select persists a flip and the
+ * plus button dispatches the Create gesture. All RPC flows (cross-project
+ * guards, [71] generation mutex, [60] LWW ticket, applyGraphOrRefresh
+ * convergence) live in useResearchProjectActions.
  */
 export function ResearchHypothesisPicker() {
-  const { send } = useMessageSender()
   const project = useResearchStore(selectActiveProject)
   const currentId = useResearchStore(selectActiveHypothesisId)
   const pinnedHypotheses = useResearchStore((s) => s.pinnedHypotheses)
   const root = useResearchStore((s) => s.status?.root)
 
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  // [71] Action generation: bumped at every mutation START and captured by
-  // the mutating action. Effects on this block's local state (saving /
-  // error) apply only while the captured generation is current, so a late
-  // resolve/failure of an OLDER flip can neither re-enable nor annotate
-  // over a NEWER flip's state.
-  const generationRef = useRef(0)
+  const { saving, error, changeStatus, handleHypothesisPin, handleSelectHypothesis, dispatchCreateHypothesis } =
+    useResearchProjectActions()
 
   const nodes = useMemo(() => project?.graph.nodes ?? [], [project])
   const dir = project ? projectDir(root, project.id) : ''
@@ -84,109 +57,6 @@ export function ResearchHypothesisPicker() {
       (a, b) => rank(a) - rank(b) || hypothesisSortKey(a.id) - hypothesisSortKey(b.id),
     )
   }, [nodes, project, pinnedHypotheses, dir])
-
-  const changeStatus = async (node: HypothesisNode, status: HypothesisStatus) => {
-    const projectId = useProjectStore.getState().activeProjectId
-    if (!projectId || status === node.status) return
-    // [19]a: resolve the research project from the LIVE store at action
-    // start — the click's render snapshot can be one sync behind a
-    // research-init that switched the active R-NNN, and H-001-style ids
-    // collide across projects. The fresh read (plus the backend's [19]b
-    // expected-R validation) keeps the flip on the project the user sees.
-    const store = useResearchStore.getState()
-    const researchId = selectActiveProject(store)?.id ?? null
-    if (!researchId) return
-    // Cross-project guard (see useHypothesisEditor's handleSave): the
-    // research store's snapshot is stamped with the workspace project it
-    // was loaded for. After a workspace project switch the store can keep
-    // rendering the OLD project's graph until the new project's status
-    // fetch lands, and R-NNN / H-NNN ids collide across projects — an
-    // unconditional flip would overwrite the NEW project's card. Bail
-    // without sending.
-    if (store.projectId !== projectId) {
-      setError(
-        'The research view belongs to a different project — re-open it after the project switch.',
-      )
-      return
-    }
-
-    // [71]: capture this action's generation.
-    const generation = ++generationRef.current
-    setSaving(true)
-    setError(null)
-    try {
-      // [60] LWW ticket: capture the sync sequence at RPC START so the
-      // store can reject this response when a newer sync (watchdog refresh,
-      // file-watcher fallback) lands while the mutation is in flight —
-      // applying the older snapshot would visually revert the flip.
-      const startedSeq = useResearchStore.getState().graphSyncSeq
-      const res = await updateHypothesis(projectId, researchId, node.id, { status })
-      // [18]b: apply through the shared convergence helper (active-project
-      // re-check + incremental loadGraph + full-refetch fallback).
-      if (generation === generationRef.current) {
-        await applyGraphOrRefresh(res, projectId, startedSeq)
-      }
-    } catch (err) {
-      if (generation === generationRef.current) {
-        logger.error('Failed to update hypothesis status:', err)
-        setError(err instanceof Error ? err.message : 'Failed to update hypothesis status')
-      }
-    } finally {
-      if (generation === generationRef.current) {
-        setSaving(false)
-      }
-    }
-  }
-
-  const handleSelect = async (id: string) => {
-    if (id === currentId) return
-    useResearchStore.getState().setActiveHypothesis(id)
-    const projectId = useProjectStore.getState().activeProjectId
-    if (!projectId) return
-    // The recommendation follows the newly picked card (refreshNextStep
-    // resolves the current card from the live store and is a no-op fetch
-    // guard when the active project moved on).
-    await refreshNextStep(projectId)
-  }
-
-  const handlePin = async (hypothesisId: string, pinned: boolean) => {
-    const projectId = useProjectStore.getState().activeProjectId
-    if (!projectId) return
-    const researchId = selectActiveProject(useResearchStore.getState())?.id ?? null
-    if (!researchId) return
-    try {
-      // The pin RPC emits no event — the resolved promise is the refresh
-      // signal; the full refetch mirrors the new pins into the store (and
-      // re-sorts the list: pinned cards float to the top).
-      await setHypothesisPinned(projectId, researchId, hypothesisId, pinned)
-      await fullResearchRefresh(projectId)
-    } catch (err) {
-      logger.error('Failed to toggle hypothesis pin:', err)
-      setError(err instanceof Error ? err.message : 'Failed to toggle hypothesis pin')
-    }
-  }
-
-  // [22]a: send() renders sendMessage failures in-chat itself, but RETHROWS
-  // when the auto-created session fails (the splash race); the rejection is
-  // surfaced on the research panel's error banner (the research store).
-  const handleCreate = (e: React.MouseEvent<HTMLButtonElement>) =>
-    Promise.resolve(
-      send(
-        CREATE_HYPOTHESIS_ACTION.prompt,
-        [CREATE_HYPOTHESIS_ACTION.skill],
-        undefined,
-        undefined,
-        { newSession: e.shiftKey },
-      ),
-    ).catch((err) => {
-      useResearchStore
-        .getState()
-        .setError(
-          `Failed to dispatch ${CREATE_HYPOTHESIS_ACTION.skill}: ${
-            err instanceof Error ? err.message : 'unknown error'
-          }`,
-        )
-    })
 
   const hasNodes = nodes.length > 0
 
@@ -246,7 +116,7 @@ export function ResearchHypothesisPicker() {
                 <DropdownMenuItem
                   key={n.id}
                   className="group/item gap-2"
-                  onSelect={() => void handleSelect(n.id)}
+                  onSelect={() => void handleSelectHypothesis(n.id, currentId)}
                 >
                   <div className="flex min-w-0 flex-1 items-center gap-1.5">
                     {n.id === currentId && <Check className="size-3.5 shrink-0" />}
@@ -271,7 +141,7 @@ export function ResearchHypothesisPicker() {
                   <ItemActions>
                     <ItemAction
                       label={pinned ? 'Unpin' : 'Pin'}
-                      onClick={() => void handlePin(n.id, !pinned)}
+                      onClick={() => void handleHypothesisPin(n.id, !pinned)}
                     >
                       {pinned ? (
                         <PinOff className="size-3 text-info" />
@@ -312,7 +182,7 @@ export function ResearchHypothesisPicker() {
         <button
           type="button"
           data-testid="research-create-hypothesis"
-          onClick={(e) => handleCreate(e)}
+          onClick={(e) => void dispatchCreateHypothesis(e.shiftKey)}
           title="Create a new hypothesis (research-hypothesis) — Shift = new session"
           aria-label="Create a new hypothesis"
           className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted/50 active:bg-muted/30"

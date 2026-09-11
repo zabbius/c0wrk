@@ -223,7 +223,7 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 		return nil, errors.New("path outside project workspace")
 	}
 
-	return workspace.GitStatus(f.ctx(), absRoot)
+	return f.cachedGitStatus(absRoot)
 }
 
 // ReadFile returns the content of a file. The path is not constrained to the
@@ -412,7 +412,7 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 	var ignoredPaths map[string]bool
 	isRepo := f.isGitRepo(absRoot)
 	if isRepo {
-		ignored, gitErr := workspace.GitIgnoredPaths(f.ctx(), absRoot)
+		ignored, gitErr := f.cachedGitIgnoredPaths(absRoot)
 		if gitErr != nil {
 			// Degrade instead of failing the whole listing: the ignore set
 			// only drives cosmetic GitIgnored flags in the tree, so a broken

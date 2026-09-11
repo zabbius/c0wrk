@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useChatStore } from '@/stores/chatStore'
@@ -350,28 +350,42 @@ export function useChatInputController(): ChatInputController {
   // without a nudge; the backend's session_resumed/task_resumed events
   // reconcile. The user's current model/reasoning selection is forwarded
   // so a switch made before resuming is honored (same semantics as a fresh send).
+  // In-flight guard: a second Resume activation while the first (nudge-send
+  // or plain resume RPC) is still pending must be a no-op. Without it, a
+  // double activation could take the plain-resume branch (the first
+  // activation clears the editor synchronously), and when the backend then
+  // rejected the second resume (the task is no longer paused) its catch
+  // restored paused=true / taskActive=false — transiently contradicting the
+  // first activation's optimistic state until the next backend event
+  // reconciled. Same pattern as restartingRef in Terminal.tsx.
+  const resumingRef = useRef(false)
   const handleResume = useCallback(async () => {
-    if (!activeSessionId) return
-    if (mode === 'chat' && editor.getText().trim()) {
-      // Delegate to the send flow so the optimistic user card + nudge badge,
-      // the editor clearing, the attachment in-flight guard and the failure
-      // rollback (text restored, paused state re-entered) all match an Enter
-      // send exactly. Passing the text as resumeSession's nudge instead would
-      // skip persistence (the message would vanish on reload) and duplicate
-      // the optimistic-UI/rollback logic.
-      await handleSend()
-      return
-    }
-    const modelOverride = useInputModeStore.getState().selectedModel ?? ''
-    const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
-    useChatStore.getState().setPaused(activeSessionId, false)
-    useChatStore.getState().setTaskActive(activeSessionId, true)
+    if (!activeSessionId || resumingRef.current) return
+    resumingRef.current = true
     try {
-      await resumeSession(activeSessionId, modelOverride, reasoningOverride, '')
-    } catch (err) {
-      logger.error('Failed to resume session:', err)
-      useChatStore.getState().setPaused(activeSessionId, true)
-      useChatStore.getState().setTaskActive(activeSessionId, false)
+      if (mode === 'chat' && editor.getText().trim()) {
+        // Delegate to the send flow so the optimistic user card + nudge badge,
+        // the editor clearing, the attachment in-flight guard and the failure
+        // rollback (text restored, paused state re-entered) all match an Enter
+        // send exactly. Passing the text as resumeSession's nudge instead would
+        // skip persistence (the message would vanish on reload) and duplicate
+        // the optimistic-UI/rollback logic.
+        await handleSend()
+        return
+      }
+      const modelOverride = useInputModeStore.getState().selectedModel ?? ''
+      const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
+      useChatStore.getState().setPaused(activeSessionId, false)
+      useChatStore.getState().setTaskActive(activeSessionId, true)
+      try {
+        await resumeSession(activeSessionId, modelOverride, reasoningOverride, '')
+      } catch (err) {
+        logger.error('Failed to resume session:', err)
+        useChatStore.getState().setPaused(activeSessionId, true)
+        useChatStore.getState().setTaskActive(activeSessionId, false)
+      }
+    } finally {
+      resumingRef.current = false
     }
   }, [activeSessionId, mode, editor, handleSend])
 

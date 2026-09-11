@@ -242,8 +242,8 @@ export function GetFileIcon(arg1) {
   return window['go']['desktop']['App']['GetFileIcon'](arg1);
 }
 
-export function GetGitHistory() {
-  return window['go']['desktop']['App']['GetGitHistory']();
+export function GetGitHistory(arg1, arg2) {
+  return window['go']['desktop']['App']['GetGitHistory'](arg1, arg2);
 }
 
 export function GetGitStatus(arg1) {
@@ -252,6 +252,10 @@ export function GetGitStatus(arg1) {
 
 export function GetHardenGitRepos() {
   return window['go']['desktop']['App']['GetHardenGitRepos']();
+}
+
+export function GetIsGitRepo() {
+  return window['go']['desktop']['App']['GetIsGitRepo']();
 }
 
 export function GetLastActiveProjectID() {
@@ -474,6 +478,10 @@ export function Rebase(arg1) {
   return window['go']['desktop']['App']['Rebase'](arg1);
 }
 
+export function ReindexVectorIndex() {
+  return window['go']['desktop']['App']['ReindexVectorIndex']();
+}
+
 export function RemoveAttachment(arg1, arg2) {
   return window['go']['desktop']['App']['RemoveAttachment'](arg1, arg2);
 }
@@ -500,6 +508,10 @@ export function RenameProject(arg1, arg2) {
 
 export function RenameSession(arg1, arg2) {
   return window['go']['desktop']['App']['RenameSession'](arg1, arg2);
+}
+
+export function RequestGitRemoteRefresh() {
+  return window['go']['desktop']['App']['RequestGitRemoteRefresh']();
 }
 
 export function ResetToCommit(arg1, arg2) {

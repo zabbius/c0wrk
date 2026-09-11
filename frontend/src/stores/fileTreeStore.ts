@@ -29,9 +29,27 @@ interface FileTreeState {
   rootLoadError: string | null
 }
 
+/** The file-tree slice of a project snapshot — the bulk payload rehydrated in
+ *  one shot by `restoreFromSnapshot` when switching back to a recently visited
+ *  project (see `lib/projectSnapshotCache`). Consumed by the snapshot cache and
+ *  `useProjectSwitchState`. */
+export interface FileTreeSnapshot {
+  rootPath: string | null
+  tree: Record<string, FileEntry[]>
+  expandedDirs: Record<string, true>
+  gitStatus: Record<string, GitStatusEntry>
+}
+
 interface FileTreeActions {
   setRootPath: (path: string | null) => void
   setEntries: (dirPath: string, entries: FileEntry[]) => void
+  /** Bulk-rehydrate the tree slice in a single store write (rootPath, tree,
+   *  expandedDirs, gitStatus) for the snapshot fast path on project switch.
+   *  Also clears per-project transient state (search filter, flat-entry cache,
+   *  reveal selection, loading flags, root error) so nothing from the previous
+   *  project leaks in — unlike the many small setters, this is one atomic set. */
+  restoreFromSnapshot: (snapshot: FileTreeSnapshot) => void
+
   toggleDir: (path: string) => void
   setLoading: (path: string, loading: boolean) => void
   setSearchEntries: (entries: FileEntry[]) => void
@@ -74,6 +92,21 @@ export const useFileTreeStore = create<FileTreeState & FileTreeActions>((set, ge
   setEntries: (dirPath, entries) => set((s) => ({
     tree: { ...s.tree, [dirPath]: entries },
   })),
+
+  restoreFromSnapshot: (snapshot) => set({
+    rootPath: snapshot.rootPath,
+    tree: snapshot.tree,
+    expandedDirs: snapshot.expandedDirs,
+    gitStatus: snapshot.gitStatus,
+    searchEntries: [],
+    filterText: '',
+    isSearching: false,
+    loadingDirs: {},
+    flatEntries: [],
+    flatEntriesRoot: null,
+    selectedPath: null,
+    rootLoadError: null,
+  }),
 
   toggleDir: (path) => {
     const { expandedDirs, tree, loadingDirs } = get()

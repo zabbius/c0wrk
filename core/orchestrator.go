@@ -1386,6 +1386,18 @@ func (o *Orchestrator) resumePausedWork(ctx context.Context, bb orchestration.Bl
 
 	// Branch 1 — continue the plan through the DAG engine.
 	if continuablePlan {
+		// Snapshot the plan steps already successful BEFORE the wave
+		// (mirroring hasPausedDelegates' scan): Execute replays those as
+		// skipped "completed" results, and the wave summary must not re-list
+		// work that finished normally in an earlier run — each resume would
+		// otherwise grow the task message by one factually wrong "settled by
+		// the system" line per completed step.
+		preWaveSuccess := make(map[string]bool, len(planStepIDs))
+		for id := range planStepIDs {
+			if sr, ok := bb.GetStepResult(id); ok && sr.Error == nil {
+				preWaveSuccess[id] = true
+			}
+		}
 		results, err := launcher.Execute(ctx, nil)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -1396,6 +1408,9 @@ func (o *Orchestrator) resumePausedWork(ctx context.Context, bb orchestration.Bl
 		for _, r := range results {
 			if r.Status == "paused" {
 				outcome.pausedAgain = true
+			}
+			if preWaveSuccess[r.StepID] {
+				continue
 			}
 			writeWaveSummaryLine(&sb, r.StepID, r.Status, r.Output, r.Error)
 		}
@@ -1491,8 +1506,19 @@ func (o *Orchestrator) resumePausedDelegates(
 	pausedAgain := false
 	for _, depth := range depths {
 		registry := tools.NewDelegationRegistryWithDepth(depth)
+		// Replaying a settled spec uses Register (NOT RegisterTask) so the
+		// spec sink can never re-fire, matching the comment above: even if a
+		// future change wires a sink onto wave registries, re-persisting
+		// already-stored specs would shift created_at ordering. Register's
+		// signature carries everything the replay needs (id, summary, deps,
+		// mode); the mode default mirrors RegisterTask so the registry entry
+		// is byte-for-byte identical to a sinkless RegisterTask call.
 		for _, s := range settled {
-			if err := registry.RegisterTask(s.task); err == nil {
+			mode := s.task.Mode
+			if mode == "" {
+				mode = "blocking"
+			}
+			if err := registry.Register(s.task.ID, s.task.Summary, s.task.DependsOn, mode); err == nil {
 				registry.Complete(s.task.ID, s.output, s.execErr, s.steps)
 			}
 		}
@@ -2405,8 +2431,11 @@ func (o *Orchestrator) recordConversationOutcome(ctx context.Context, message st
 // recordResumeOutcome appends the outcome of a resumed execution (interrupted
 // task) to the in-memory conversation history. The
 // user message that spawned the task was recorded when the task first ran (or
-// restored from the message store after a restart), so only the assistant
-// side is appended here.
+// restored from the message store after a restart), so the assistant side is
+// what gets appended here — except on failure, where appendResumeFailure
+// re-anchors the recorded exchange at the original request so repeated
+// failed resumes keep the [user:request, failed] tail shape (see its doc
+// comment).
 func (o *Orchestrator) recordResumeOutcome(ctx context.Context, bb orchestration.Blackboard, result *HandleResult, err error) {
 	switch {
 	case (err == nil || errors.Is(err, orchestration.ErrExecutionIncomplete)) && result != nil:
@@ -2420,9 +2449,61 @@ func (o *Orchestrator) recordResumeOutcome(ctx context.Context, bb orchestration
 		o.appendHistory("",
 			llm.Message{Role: "assistant", Content: HistoryNoteCancelled})
 	case err != nil:
-		o.appendHistory("",
+		o.appendResumeFailure(bb.GetOriginalRequest(),
 			llm.Message{Role: "assistant", Content: HistoryNoteFailed(err.Error())})
 	}
+}
+
+// appendResumeFailure records a failed resumed execution as exactly one
+// well-formed [user:originalRequest, assistant:failed] exchange, in ONE
+// locked step (historyMu discipline mirrors appendHistory — other readers
+// are Wails-RPC goroutines).
+//
+// Why not a plain appendHistory("", failedNote): repeated failed resumes
+// would stack assistant-only failure notes ([user:req, failed1, failed2, …])
+// and dropFailedExchangeTail — which matches exactly [user:req, failed] —
+// would stop working from the second resume on. And why not the review's
+// minimal appendHistory(origReq, failedNote): after the retry collapse drops
+// the prior [user:req, failed1] pair, the re-appended note alone leaves an
+// assistant-only tail, so the NEXT resume still cannot match.
+//
+// The stored tail is re-anchored at the original request in every case:
+//
+//   - tail [user:req, failedN] (task failed before — recorded by
+//     recordConversationOutcome or an earlier failed resume): the replaceable
+//     assistant run is dropped and one fresh failed note recorded, so the
+//     stored history re-collapses to [user:req, failed] which
+//     dropFailedExchangeTail matches on the next resume.
+//   - tail [user:req] alone (restored paused/crash-interrupted task whose
+//     outcome was never recorded): the lone user message is kept and the
+//     failed note appended after it — never a duplicated user message.
+//   - replaceable notes are prior failure notes and empty pause records;
+//     real assistant output and HistoryNoteCancelled records are legitimate
+//     dialogue and stay (mirroring dropFailedExchangeTail's cancelled rule).
+//   - no anchoring user message at all: the full pair is appended so the
+//     stored history still reads as a proper exchange.
+func (o *Orchestrator) appendResumeFailure(origReq string, failed llm.Message) {
+	o.historyMu.Lock()
+	defer o.historyMu.Unlock()
+	i := len(o.conversationHistory)
+	for i > 0 {
+		msg := o.conversationHistory[i-1]
+		if msg.Role != "assistant" {
+			break
+		}
+		if strings.HasPrefix(msg.Content, historyNoteFailedPrefix) || msg.Content == "" {
+			i--
+			continue
+		}
+		break
+	}
+	anchored := i > 0 && o.conversationHistory[i-1].Role == "user" && o.conversationHistory[i-1].Content == origReq
+	if anchored {
+		o.conversationHistory = append(o.conversationHistory[:i], failed)
+		return
+	}
+	o.conversationHistory = append(o.conversationHistory,
+		llm.Message{Role: "user", Content: origReq}, failed)
 }
 
 // SetBlackboardRestoreFunc sets the function used to restore a PersistableBlackboard from persistence.

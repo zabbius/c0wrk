@@ -282,11 +282,33 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 			"modified", len(agentSeedRes.Modified))
 	}
 
-	// Persist the research root on the project.
-	proj.ResearchRoot = researchRoot
-	if err := f.projStore.SaveProject(context.Background(), *proj); err != nil {
+	// Persist the research root on the project. All writers of the projects
+	// row serialize on the per-root research mutation mutex, keyed by the root
+	// the row carries BEFORE this mutation (the pin RPCs and DisableResearch
+	// load the row and lock that same root): keying on the NEW root instead
+	// would take a different mutex during an explicit-root re-enable and let a
+	// concurrent pin's save land on a stale snapshot. Inside the lock this
+	// save re-loads the row, verifies the root did not change meanwhile, and
+	// merges only ResearchRoot — a full-row save of the snapshot taken before
+	// seeding would clobber a pin toggle committed meanwhile (the projects-row
+	// lost update).
+	persistMu := f.researchMutationMu(proj.ResearchRoot)
+	persistMu.Lock()
+	persistProj, err := f.loadProjectForResearch(projectID)
+	if err != nil {
+		persistMu.Unlock()
+		return nil, err
+	}
+	if persistProj.ResearchRoot != proj.ResearchRoot {
+		persistMu.Unlock()
+		return nil, errResearchRootChanged
+	}
+	persistProj.ResearchRoot = researchRoot
+	if err := f.projStore.SaveProject(context.Background(), *persistProj); err != nil {
+		persistMu.Unlock()
 		return nil, fmt.Errorf("failed to persist research root: %w", err)
 	}
+	persistMu.Unlock()
 
 	// Invalidate the skill cache so the next ListSkills re-scans and picks up
 	// the freshly seeded research-* skills.
@@ -318,7 +340,7 @@ func (f *FrontendAPI) EnableResearch(projectID, rootPath string) (*ResearchStatu
 		Root:         root,
 		SeedResult:   toSeedResultDTO(seedRes),
 	}
-	applyResearchPins(status, proj.ResearchPins)
+	applyResearchPins(status, persistProj.ResearchPins)
 
 	f.emitEvent(EventResearchChanged, map[string]string{
 		"project_id": projectID,
@@ -350,11 +372,33 @@ func (f *FrontendAPI) DisableResearch(projectID string) error {
 		return err
 	}
 
-	// Clear the toggle.
-	proj.ResearchRoot = ""
-	if err := f.projStore.SaveProject(context.Background(), *proj); err != nil {
+	// Clear the toggle. Take the same per-root mutation mutex the pin RPCs
+	// and EnableResearch serialize on (keyed by the root observed on the
+	// loaded row), re-load the row inside the lock, and merge only this
+	// clear: a pin committed while we waited on the mutex survives the save
+	// instead of being overwritten by a stale full-row snapshot (the
+	// projects-row lost update).
+	mu := f.researchMutationMu(proj.ResearchRoot)
+	mu.Lock()
+	fresh, err := f.loadProjectForResearch(projectID)
+	if err != nil {
+		mu.Unlock()
+		return err
+	}
+	// Sentinel guard (mirrors the pin/delete RPCs): the root observed on the
+	// initial load changed while we waited for the mutex, so clearing it here
+	// would clear a root this call never observed. Nothing was written; a
+	// retry against the fresh state resolves.
+	if fresh.ResearchRoot != proj.ResearchRoot {
+		mu.Unlock()
+		return errResearchRootChanged
+	}
+	fresh.ResearchRoot = ""
+	if err := f.projStore.SaveProject(context.Background(), *fresh); err != nil {
+		mu.Unlock()
 		return fmt.Errorf("failed to clear research root: %w", err)
 	}
+	mu.Unlock()
 
 	// Clear the tracked research root so the watcher stops emitting
 	// research:file_changed events. Only activeResearchRoot is cleared — the
@@ -714,7 +758,7 @@ func (f *FrontendAPI) CreateHypothesis(projectID string, newCard NewHypothesisCa
 // graph and the project's pins) and emits a research:changed event
 // (action="active_changed").
 func (f *FrontendAPI) SetActiveResearch(projectID, researchID string) (*ResearchStatusDTO, error) {
-	researchRoot, proj, err := f.researchRootForMutation(projectID)
+	researchRoot, _, err := f.researchRootForMutation(projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -728,6 +772,19 @@ func (f *FrontendAPI) SetActiveResearch(projectID, researchID string) (*Research
 	mu := f.researchMutationMu(researchRoot)
 	mu.Lock()
 	defer mu.Unlock()
+
+	// Re-load the row under the lock: the researchRootForMutation snapshot
+	// predates it, so the pins in the returned status would miss a pin toggle
+	// committed while we waited (SetResearchPinned emits no event, so that
+	// staleness would persist until a later refresh). Guard against a
+	// research-root change, exactly like DeleteResearch.
+	proj, err := f.loadProjectForResearch(projectID)
+	if err != nil {
+		return nil, err
+	}
+	if proj.ResearchRoot != researchRoot {
+		return nil, errResearchRootChanged
+	}
 
 	if err := research.SetActiveResearch(researchRoot, rid); err != nil {
 		return nil, err
@@ -765,7 +822,7 @@ func (f *FrontendAPI) DeleteResearch(projectID, researchID string) (*ResearchSta
 	if f.projStore == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
-	researchRoot, proj, err := f.researchRootForMutation(projectID)
+	researchRoot, _, err := f.researchRootForMutation(projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -777,6 +834,19 @@ func (f *FrontendAPI) DeleteResearch(projectID, researchID string) (*ResearchSta
 	mu := f.researchMutationMu(researchRoot)
 	mu.Lock()
 	defer mu.Unlock()
+
+	// Re-load the row under the lock and persist only the pins delta: the
+	// load in researchRootForMutation ran before the mutex, so saving that
+	// snapshot could clobber row state committed while we waited (a pin
+	// toggle, or a research-root change — guarded below). See
+	// SetResearchPinned for the full lost-update rationale.
+	proj, err := f.loadProjectForResearch(projectID)
+	if err != nil {
+		return nil, err
+	}
+	if proj.ResearchRoot != researchRoot {
+		return nil, errResearchRootChanged
+	}
 
 	// Ownership check BEFORE deleting — once the directory is gone the id no
 	// longer resolves. The resolved directory also fixes the pin prefix
@@ -834,7 +904,7 @@ func (f *FrontendAPI) SetResearchPinned(projectID, researchID string, pinned boo
 	if f.projStore == nil {
 		return errors.New("project subsystem not initialized")
 	}
-	researchRoot, proj, err := f.researchRootForMutation(projectID)
+	researchRoot, _, err := f.researchRootForMutation(projectID)
 	if err != nil {
 		return err
 	}
@@ -850,6 +920,22 @@ func (f *FrontendAPI) SetResearchPinned(projectID, researchID string, pinned boo
 	mu := f.researchMutationMu(researchRoot)
 	mu.Lock()
 	defer mu.Unlock()
+
+	// Re-load the row under the lock and persist only the pins delta. The
+	// load in researchRootForMutation ran before the mutex was acquired, so
+	// a full-row save of that snapshot would clobber whatever was committed
+	// while this RPC waited on the mutex: a DisableResearch clear of
+	// ResearchRoot (resurrecting the toggle), an EnableResearch root change
+	// (guarded below), or another pin toggle on a different card (losing
+	// its pin). All writers of the projects row — the pin RPCs, Enable and
+	// Disable — serialize on this same per-root mutex.
+	proj, err := f.loadProjectForResearch(projectID)
+	if err != nil {
+		return err
+	}
+	if proj.ResearchRoot != researchRoot {
+		return errResearchRootChanged
+	}
 
 	projectDir, err := research.ProjectDir(researchRoot, rid)
 	if err != nil {
@@ -882,7 +968,7 @@ func (f *FrontendAPI) SetHypothesisPinned(projectID, researchID, hypothesisID st
 	if f.projStore == nil {
 		return errors.New("project subsystem not initialized")
 	}
-	researchRoot, proj, err := f.researchRootForMutation(projectID)
+	researchRoot, _, err := f.researchRootForMutation(projectID)
 	if err != nil {
 		return err
 	}
@@ -898,6 +984,17 @@ func (f *FrontendAPI) SetHypothesisPinned(projectID, researchID, hypothesisID st
 	mu := f.researchMutationMu(researchRoot)
 	mu.Lock()
 	defer mu.Unlock()
+
+	// Re-load the row under the lock and persist only the pins delta — the
+	// pre-mutex snapshot must never be saved as a full row (see
+	// SetResearchPinned for the lost-update rationale).
+	proj, err := f.loadProjectForResearch(projectID)
+	if err != nil {
+		return err
+	}
+	if proj.ResearchRoot != researchRoot {
+		return errResearchRootChanged
+	}
 
 	projectDir, err := research.ProjectDir(researchRoot, rid)
 	if err != nil {
@@ -1014,6 +1111,17 @@ func removePinnedUnderDir(pins project.ResearchPins, dir string) (project.Resear
 	return pins, changed
 }
 
+// errResearchRootChanged is returned by the research-root writers (the
+// pin/delete RPCs, EnableResearch, and DisableResearch) when the project's
+// persisted research root changed between the call's initial load and its
+// mutex-guarded re-load: the pin paths / the observed root were resolved
+// against the old root, so persisting them would misattribute work to the new
+// one. No row write happens in that case; a retry against the fresh state
+// resolves. (EnableResearch may already have performed best-effort skill/agent
+// seeding before it detects the change — those side effects are idempotent and
+// non-destructive.)
+var errResearchRootChanged = errors.New("research root changed concurrently")
+
 // researchMutationMu returns the mutex serializing hypothesis mutations for a
 // research root, creating it on first use (see the researchRootsMu /
 // researchRootMus field docs in frontend_api.go for the rationale).
@@ -1034,10 +1142,11 @@ func (f *FrontendAPI) researchMutationMu(researchRoot string) *sync.Mutex {
 // researchRootForMutation loads the project, verifies RESEARCH is enabled, and
 // returns the project's research root (with
 // workspace containment enforced — SECURITY.md; defense in depth even though
-// the root was already validated at enable time) together with the loaded
-// project record, whose ResearchPins feed the RPC responses. Callers that
-// persist the project back must additionally check projStore themselves (this
-// helper only requires the read path).
+// the root was already validated at enable time). The returned project record
+// predates the caller's mutex acquisition, so callers that persist the project
+// back must re-load the row under the per-root mutation mutex and merge only
+// their field delta (see SetResearchPinned); this helper only requires the
+// read path.
 func (f *FrontendAPI) researchRootForMutation(projectID string) (string, *project.ProjectInfo, error) {
 	if projectID == "" {
 		return "", nil, errors.New("project_id is required")

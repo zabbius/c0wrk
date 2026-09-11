@@ -16,7 +16,7 @@ vi.hoisted(() => {
 })
 
 import { useFileViewerStore } from '@/stores/fileViewerStore'
-import { useUIStore, SIDEBAR_MIN, SIDEBAR_MAX } from '@/stores/uiStore'
+import { useUIStore, selectWorkspaceTab, SIDEBAR_MIN, SIDEBAR_MAX } from '@/stores/uiStore'
 
 const SIDEBAR_STORAGE_KEY = 'c0wrk-sidebar-collapsed'
 const FILE_VIEWER_STORAGE_KEY = 'c0wrk-file-viewer'
@@ -165,5 +165,180 @@ describe('file viewer pin default & empty auto-collapse', () => {
 
     expect(useFileViewerStore.getState().collapsed).toBe(false)
     expect(useFileViewerStore.getState().activeFile).toBe('/c.ts')
+  })
+})
+
+describe('per-project workspace tab persistence', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useUIStore.setState({ workspaceTabByProject: {} })
+  })
+
+  it('setWorkspaceTab changes only the targeted project', () => {
+    useUIStore.setState({ workspaceTabByProject: { p1: 'explorer', p2: 'explorer' } })
+
+    useUIStore.getState().setWorkspaceTab('p1', 'git')
+
+    const map = useUIStore.getState().workspaceTabByProject
+    expect(map.p1).toBe('git')
+    expect(map.p2).toBe('explorer')
+  })
+
+  it('selectWorkspaceTab defaults to "explorer" for unknown projects', () => {
+    expect(selectWorkspaceTab({ workspaceTabByProject: {} }, 'missing')).toBe('explorer')
+
+    useUIStore.setState({ workspaceTabByProject: { p1: 'semantics' } })
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('semantics')
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p2')).toBe('explorer')
+  })
+
+  it('dropProjectTabs removes exactly one project', () => {
+    useUIStore.setState({ workspaceTabByProject: { p1: 'git', p2: 'research' } })
+
+    useUIStore.getState().dropProjectTabs('p1')
+
+    expect(useUIStore.getState().workspaceTabByProject).toEqual({ p2: 'research' })
+  })
+
+  it('persist version is 5', () => {
+    expect(useUIStore.persist.getOptions().version).toBe(5)
+  })
+
+  it('same-version corrupt tab values are dropped on rehydrate (merge, not migrate)', async () => {
+    // A corrupt/unknown tab in SAME-version storage (hand-edited
+    // localStorage) never reaches `migrate` (version matches), so validation
+    // must live in `merge` — otherwise the workspace panel renders blank for
+    // that project on every launch. Mirrors mergeGitPanel.
+    localStorage.setItem(
+      SIDEBAR_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          sidebarCollapsed: false,
+          sidebarWidth: 240,
+          chatSessionListRatio: 0.5,
+          showSessionStats: false,
+          workspaceTabByProject: { p1: 'git', p2: 'graph' },
+        },
+        version: 5,
+      }),
+    )
+
+    await useUIStore.persist.rehydrate()
+
+    const state = useUIStore.getState()
+    expect(state.workspaceTabByProject).toEqual({ p1: 'git' })
+    expect(selectWorkspaceTab(state, 'p2')).toBe('explorer')
+  })
+
+  it('rehydrate falls back to defaults for wrong-typed scalar fields', async () => {
+    useUIStore.setState({
+      sidebarCollapsed: false,
+      sidebarWidth: 300,
+      chatSessionListRatio: 0.5,
+      showSessionStats: false,
+      workspaceTabByProject: {},
+    })
+    localStorage.setItem(
+      SIDEBAR_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          sidebarCollapsed: 'yes',
+          sidebarWidth: 'wide',
+          chatSessionListRatio: null,
+          showSessionStats: 1,
+          workspaceTabByProject: 'nope',
+        },
+        version: 5,
+      }),
+    )
+
+    await useUIStore.persist.rehydrate()
+
+    const state = useUIStore.getState()
+    expect(state.sidebarCollapsed).toBe(false)
+    expect(state.sidebarWidth).toBe(300)
+    expect(state.chatSessionListRatio).toBe(0.5)
+    expect(state.showSessionStats).toBe(false)
+    expect(state.workspaceTabByProject).toEqual({})
+  })
+
+  it('migrate validates workspaceTabByProject entry-by-entry and drops unknown tab values', async () => {
+    // A payload written by a hypothetical newer build (version > 5) carrying
+    // an unknown tab ('graph') and a non-string value alongside valid ones:
+    // the migration must keep only the known values, mirroring the
+    // fail-closed mergeGitPanel contract — an unknown tab matches no
+    // TabsTrigger/TabsContent and would render a blank workspace panel.
+    localStorage.setItem(
+      SIDEBAR_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          sidebarCollapsed: true,
+          sidebarWidth: 250,
+          chatSessionListRatio: 0.4,
+          showSessionStats: true,
+          workspaceTabByProject: {
+            p1: 'git',
+            p2: 'graph',
+            p3: 'research',
+            p4: 42,
+          },
+        },
+        version: 6,
+      }),
+    )
+
+    await useUIStore.persist.rehydrate()
+
+    const state = useUIStore.getState()
+    expect(state.sidebarCollapsed).toBe(true)
+    expect(state.sidebarWidth).toBe(250)
+    expect(state.workspaceTabByProject).toEqual({ p1: 'git', p3: 'research' })
+    // The dropped project falls back to the default tab via the selector.
+    expect(selectWorkspaceTab(state, 'p2')).toBe('explorer')
+  })
+
+  it('migrates a v4 payload: keeps sidebar fields and yields an empty tab map', async () => {
+    localStorage.setItem(
+      SIDEBAR_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          sidebarCollapsed: true,
+          sidebarWidth: 250,
+          chatSessionListRatio: 0.3,
+          showSessionStats: true,
+        },
+        version: 4,
+      }),
+    )
+
+    await useUIStore.persist.rehydrate()
+
+    const state = useUIStore.getState()
+    expect(state.sidebarCollapsed).toBe(true)
+    expect(state.sidebarWidth).toBe(250)
+    expect(state.chatSessionListRatio).toBe(0.3)
+    expect(state.showSessionStats).toBe(true)
+    expect(state.workspaceTabByProject).toEqual({})
+  })
+
+  it('persist round-trip preserves the per-project tab map', async () => {
+    useUIStore.getState().setWorkspaceTab('p1', 'git')
+    useUIStore.getState().setWorkspaceTab('p2', 'research')
+
+    const persisted = localStorage.getItem(SIDEBAR_STORAGE_KEY)
+    expect(JSON.parse(persisted ?? '{}').state.workspaceTabByProject).toEqual({
+      p1: 'git',
+      p2: 'research',
+    })
+
+    useUIStore.setState({ workspaceTabByProject: {} })
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, persisted!)
+
+    await useUIStore.persist.rehydrate()
+
+    expect(useUIStore.getState().workspaceTabByProject).toEqual({
+      p1: 'git',
+      p2: 'research',
+    })
   })
 })

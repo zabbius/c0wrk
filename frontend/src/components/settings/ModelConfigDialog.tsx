@@ -176,7 +176,7 @@ export function ModelConfigDialog({ model, open, onOpenChange, onSaved }: ModelC
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md max-h-[85vh] overflow-y-auto custom-scrollbar">
+      <DialogContent className="sm:max-w-md max-h-[calc(var(--ui-vh)*0.85)] overflow-y-auto custom-scrollbar">
         <DialogHeader>
           <DialogTitle>Configure {model}</DialogTitle>
           <DialogDescription>

@@ -55,3 +55,19 @@ export async function listVectorIndexGPUs(): Promise<GPUDeviceResponse[]> {
     throw err
   }
 }
+
+/**
+ * Force a full reindex of the active project's vector index. The pass runs in
+ * the background; progress streams through `vector_index:status` events. The
+ * RPC itself resolves once the pass has been scheduled (or rejects when the
+ * vector index is unavailable — No Project mode or no wired manager).
+ */
+export async function reindexVectorIndex(): Promise<void> {
+  try {
+    const app = getApp()
+    await app.ReindexVectorIndex()
+  } catch (err) {
+    logger.error('Failed to reindex vector index:', err)
+    throw err
+  }
+}

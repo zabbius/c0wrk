@@ -193,6 +193,8 @@ interface ChatStoreState {
   streamingText: Record<string, string>
   activityStatus: Record<string, string>
   taskActive: Record<string, boolean>
+  // Stamp of the last live task-flag write per session (mirrors chatStore).
+  taskFlagsEventAt: Record<string, number>
   stepContextFill: Record<string, Record<string, number>>
   // Stamped by the streaming/activity actions (mirrors chatStore.ts) so the
   // reconcile can detect a stale status snapshot.
@@ -205,6 +207,7 @@ const store: ChatStoreState = {
   streamingText: {},
   activityStatus: {},
   taskActive: {},
+  taskFlagsEventAt: {},
   stepContextFill: {},
   runtimeEventAt: {},
 }
@@ -264,6 +267,9 @@ function setActivityStatus(sessionId: string, status: string | null): void {
 }
 function setTaskActive(sessionId: string, active: boolean): void {
   store.taskActive = { ...store.taskActive, [sessionId]: active }
+  // Mirrors chatStore.setTaskActive's taskFlagsEventAt stamp (freshness
+  // contract consumed by the stale-snapshot guards).
+  store.taskFlagsEventAt = { ...store.taskFlagsEventAt, [sessionId]: Date.now() }
 }
 
 function selectSessionMessages(sessionId: string): ChatMessageUI[] {
@@ -320,17 +326,19 @@ function getHistory(sid: string): Promise<ChatMessageUI[]> {
 // 5a. useSessionEvents — reset effect + live chat-event subscriptions.
 //     Source: hooks/useSessionEvents.ts (reset effect) + hooks/events/useChatEvents.ts
 function simulateSessionEvents(sessionId: string | null): void {
-  // --- reset effect [deps: sessionId] (useSessionEvents.ts:27-49) ---
+  // --- reset effect [deps: sessionId] (useSessionEvents.ts) ---
   // NOTE: streamingText/activityStatus/stepContextFill are per-session keyed
   // maps, so they are NOT reset here — they are naturally preserved across
-  // A→B→A switches. Only the just-switched session's taskActive flag is reset
-  // (restored asynchronously by the reconcile effect if still running); the
-  // runtime reconcile refreshes/clears the activity label and streaming text
-  // from the backend snapshot.
+  // A→B→A switches. The taskActive flag is NOT reset either anymore: the old
+  // blind `taskActive[sessionId] = false` corrupted the live map on every
+  // switch-TO (a rapid toggle away left a running background session flagged
+  // idle, silently un-watching it — see sessionSoundCoverage.test.tsx). The
+  // authoritative switch-time corrector is useTaskFlagRestore (ChatArea),
+  // replicated below in simulateChatAreaEffects.
   registerEffect(() => {
     if (!sessionId) return
-    store.taskActive = { ...store.taskActive, [sessionId]: false }
-    // getSessionTokens(...) is omitted; no async work to guard here.
+    // getSessionTokens(...) and the plan-group reset are omitted; no async
+    // work to guard here.
   }, [sessionId])
 
   // --- live chat events [deps: sessionId] (useChatEvents.ts:38-200) ---
@@ -481,12 +489,16 @@ function simulateChatAreaEffects(active: string | null): void {
     return () => { cancelled = true }
   }, [active])
 
-  // restore effect — fast taskActive restore
+  // restore effect — fast taskActive restore (now useTaskFlagRestore.ts)
   registerEffect(() => {
     if (!active) return
     let cancelled = false
+    // Stale-snapshot guard: a live flag transition (resume/terminal) landing
+    // after this read is fresher than the snapshot — never revert it.
+    const statusReadAt = Date.now()
     getStatus(active).then((status) => {
       if (cancelled || !status) return
+      if ((store.taskFlagsEventAt[active] ?? 0) > statusReadAt) return
       setTaskActive(active, status.active)
     }).catch(() => { /* logged */ })
     return () => { cancelled = true }
@@ -541,6 +553,7 @@ function resetAll(): void {
   store.streamingText = {}
   store.activityStatus = {}
   store.taskActive = {}
+  store.taskFlagsEventAt = {}
   store.stepContextFill = {}
   store.runtimeEventAt = {}
   activeSessionId = null
@@ -605,7 +618,7 @@ describe('concurrent session switching (A→B→A)', () => {
     expect(store.streamingText[A]).toBe('A is working')
     expect(store.activityStatus[A]).toBe('Generating response...')
     expect(store.taskActive[A]).toBe(true) // A still running
-    expect(store.taskActive[B]).toBe(false) // reset on switch, restored shortly
+    expect(store.taskActive[B]).toBeUndefined() // untouched on switch (no blind reset anymore)
 
     // background watcher now watches A's terminal events
     expect(wails.listenerCount(`session:${A}:task_complete`)).toBe(1)
@@ -618,8 +631,10 @@ describe('concurrent session switching (A→B→A)', () => {
 
     // ── Switch B → A (both still running) ──
     switchTo(A)
-    // reset effect set taskActive[A]=false synchronously; restore is async
-    expect(store.taskActive[A]).toBe(false)
+    // The switch no longer corrupts the flag (no blind reset): A stays true
+    // from its live run; useTaskFlagRestore only corrects when the backend
+    // disagrees with the live map.
+    expect(store.taskActive[A]).toBe(true)
 
     // A's LIVE listeners re-subscribe
     expect(wails.listenerCount(`session:${A}:assistant_chunk`)).toBe(1)

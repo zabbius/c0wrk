@@ -461,39 +461,228 @@ func TestShutdownReturnsWhenInitGoroutineIsStuck(t *testing.T) {
 	t.Logf("Shutdown returned in %v with stuck init goroutine (grace=%v)", elapsed, mgr.shutdownGrace)
 }
 
-// TestSwitchProjectReturnsWhenInitGoroutineIsStuck is the regression test for
-// the previously unbounded m.initWG.Wait() in SwitchProject. Both the NoProject
-// and CODE paths now use the same bounded waitBounded as Shutdown, so a stuck
-// init goroutine (e.g. one wedged inside the non-interruptible chromem
-// gob-decode) cannot hang a project switch on the RPC thread forever. On
-// timeout the switch proceeds — initCancel is already called, so the orphaned
-// goroutine aborts at its next ctx check.
-func TestSwitchProjectReturnsWhenInitGoroutineIsStuck(t *testing.T) {
-	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+// TestSwitchProjectDoesNotWaitForInitGoroutine is the regression test for the
+// RPC-path change: SwitchProject no longer drains the previous project's init
+// goroutine. It must return promptly even when a prior init has not finished
+// (here: a stuck initWG that never drains, mirroring initProject wedged inside
+// the non-interruptible chromem gob-decode) and even with a grace period set
+// far above the tolerated latency — with the old bounded drain SwitchProject
+// would have blocked for the full grace and failed the maxReturn bound.
+//
+// Serialization now comes from initCancel + initProject's per-step ctx checks
+// (plus s.mu), and only Shutdown still waits on initWG (bounded). The CODE case
+// additionally pins that readiness is reached through polling WaitReady (the
+// async init), not through SwitchProject's return.
+func TestSwitchProjectDoesNotWaitForInitGoroutine(t *testing.T) {
+	// Far above the tolerated return latency: the removed bounded drain would
+	// have blocked SwitchProject for this long, failing the maxReturn bound.
+	const (
+		grace     = 5 * time.Second
+		maxReturn = 1 * time.Second
+	)
+
+	cases := []struct {
+		name      string
+		projectID string
+	}{
+		{name: "no-project", projectID: core.NoProjectID},
+		{name: "code", projectID: "project-x"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Storage roots before the Shutdown-cleanup registration
+			// (t.Cleanup is LIFO): mgr.Shutdown must close the service and
+			// release the lexical zap/bolt handles before the TempDir
+			// RemoveAll runs — an open handle fails the unlink on Windows.
+			ws, viPath := "", ""
+			if tc.projectID != core.NoProjectID {
+				ws = t.TempDir()
+				if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
+					t.Fatalf("write a.go: %v", err)
+				}
+				viPath = filepath.Join(t.TempDir(), "vi")
+			}
+
+			svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+			if err != nil {
+				t.Fatalf("NewService: %v", err)
+			}
+
+			mgr := &Manager{
+				service:       svc,
+				logger:        slog.New(slog.DiscardHandler),
+				chunkFn:       defaultChunkFn,
+				hashFn:        embedding.ComputeFileHash,
+				shutdownGrace: grace,
+			}
+
+			// Simulate a stuck prior init: it never calls Done(), so initWG
+			// never drains — mirroring initProject wedged inside the
+			// non-interruptible SetProject. Done first in cleanup so the later
+			// bounded Shutdown does not itself wait out the grace.
+			mgr.initWG.Add(1)
+			t.Cleanup(func() {
+				mgr.initWG.Done()
+				mgr.Shutdown()
+			})
+
+			start := time.Now()
+			if err := mgr.SwitchProject(tc.projectID, ws, viPath, ProjectCallbacks{}); err != nil {
+				t.Fatalf("SwitchProject: unexpected error: %v", err)
+			}
+			elapsed := time.Since(start)
+			if elapsed > maxReturn {
+				t.Fatalf("SwitchProject took %v with a stuck prior init (grace=%v); it must not wait on initWG", elapsed, grace)
+			}
+			t.Logf("SwitchProject returned in %v with stuck prior init (grace=%v)", elapsed, grace)
+
+			if tc.projectID == core.NoProjectID {
+				// No Project disables the subsystem: no indexing goroutine runs,
+				// so readiness is never restored.
+				if svc.IsReady() {
+					t.Fatal("expected service to be not-ready for No Project")
+				}
+				return
+			}
+
+			// CODE: readiness is reached asynchronously via polling WaitReady —
+			// SwitchProject returned before the background init had finished.
+			ctxReady, cancelReady := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancelReady()
+			if err := svc.WaitReady(ctxReady); err != nil {
+				t.Fatalf("WaitReady after switch: %v", err)
+			}
+			col := svc.GetCollection()
+			if col == nil || col.Count() == 0 {
+				t.Fatal("expected the switched project's collection to be populated after polling WaitReady")
+			}
+		})
+	}
+}
+
+// TestManagerParkDoubleSwitchConsistency hammers SwitchProject back and forth
+// between two CODE projects with parking enabled (ParkCapacity > 0) and then
+// waits for the final project's index to settle. It exercises the
+// restore-vs-orphaned-init race: each switch cancels the previous async init
+// while the next one restores a parked state. Run under -race, the park/restore
+// bookkeeping must stay clean.
+func TestManagerParkDoubleSwitchConsistency(t *testing.T) {
+	persistDir := t.TempDir()
+
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc(), ParkCapacity: 2})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
 	mgr := &Manager{
-		service:       svc,
-		logger:        slog.New(slog.DiscardHandler),
-		shutdownGrace: 100 * time.Millisecond,
+		service: svc,
+		logger:  slog.New(slog.DiscardHandler),
+		chunkFn: defaultChunkFn,
+		hashFn:  embedding.ComputeFileHash,
 	}
-	// Simulate a stuck init goroutine: it never calls Done(), so initWG never
-	// drains — mirroring initProject wedged inside non-interruptible SetProject.
-	mgr.initWG.Add(1)
-	t.Cleanup(func() {
-		mgr.initWG.Done() // unblock so the test binary doesn't leak the goroutine
-		_ = svc.Close()
-	})
+	t.Cleanup(func() { mgr.Shutdown() })
 
-	start := time.Now()
-	if err := mgr.SwitchProject(core.NoProjectID, "", "", ProjectCallbacks{}); err != nil {
-		t.Fatalf("SwitchProject: unexpected error: %v", err)
+	wsA := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsA, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
 	}
-	elapsed := time.Since(start)
+	wsB := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsB, "b.go"), []byte("package b\n"), 0o644); err != nil {
+		t.Fatalf("write b.go: %v", err)
+	}
+	viA := filepath.Join(persistDir, "A")
+	viB := filepath.Join(persistDir, "B")
 
-	if elapsed > 5*time.Second {
-		t.Fatalf("SwitchProject took %v; expected it to return within the grace period when the init goroutine is stuck", elapsed)
+	for round := 0; round < 4; round++ {
+		if err := mgr.SwitchProject("A", wsA, viA, ProjectCallbacks{}); err != nil {
+			t.Fatalf("SwitchProject A (round %d): %v", round, err)
+		}
+		if err := mgr.SwitchProject("B", wsB, viB, ProjectCallbacks{}); err != nil {
+			t.Fatalf("SwitchProject B (round %d): %v", round, err)
+		}
 	}
-	t.Logf("SwitchProject returned in %v with stuck init goroutine (grace=%v)", elapsed, mgr.shutdownGrace)
+
+	// Land on A and wait for its index to settle.
+	if err := mgr.SwitchProject("A", wsA, viA, ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject A (final): %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := svc.WaitReady(ctx); err != nil {
+		t.Fatalf("WaitReady after double switches: %v", err)
+	}
+	if col := svc.GetCollection(); col == nil {
+		t.Fatal("no collection after double switches")
+	}
+}
+
+// TestManagerShutdownReleasesParked verifies that Shutdown closes the parked
+// project states (not just the current one) and returns without hanging —
+// i.e. no leaked handles or goroutines in the park LRU.
+func TestManagerShutdownReleasesParked(t *testing.T) {
+	persistDir := t.TempDir()
+
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc(), ParkCapacity: 3})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	mgr := &Manager{
+		service: svc,
+		logger:  slog.New(slog.DiscardHandler),
+		chunkFn: defaultChunkFn,
+		hashFn:  embedding.ComputeFileHash,
+	}
+
+	wsA := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsA, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	wsB := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsB, "b.go"), []byte("package b\n"), 0o644); err != nil {
+		t.Fatalf("write b.go: %v", err)
+	}
+	viA := filepath.Join(persistDir, "A")
+	viB := filepath.Join(persistDir, "B")
+
+	waitReady := func() {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := svc.WaitReady(ctx); err != nil {
+			t.Fatalf("WaitReady: %v", err)
+		}
+	}
+
+	if err := mgr.SwitchProject("A", wsA, viA, ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject A: %v", err)
+	}
+	waitReady()
+	if err := mgr.SwitchProject("B", wsB, viB, ProjectCallbacks{}); err != nil {
+		t.Fatalf("SwitchProject B: %v", err)
+	}
+	waitReady()
+
+	svc.mu.RLock()
+	parked := len(svc.parked)
+	svc.mu.RUnlock()
+	if parked != 1 {
+		t.Fatalf("parked = %d, want 1 (A parked after switching to B)", parked)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		mgr.Shutdown()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(25 * time.Second):
+		t.Fatal("Shutdown did not return — possible deadlock/leak tearing down parked states")
+	}
+
+	svc.mu.RLock()
+	defer svc.mu.RUnlock()
+	if svc.parked != nil {
+		t.Errorf("parked not cleared by Shutdown: %d states remain", len(svc.parked))
+	}
 }

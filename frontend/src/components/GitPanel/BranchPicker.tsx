@@ -160,7 +160,7 @@ export function BranchPicker() {
       <DialogContent
         showCloseButton
         aria-describedby={undefined}
-        className="max-w-sm p-0 flex flex-col max-h-[calc(100vh-2rem)] overflow-y-auto custom-scrollbar"
+        className="max-w-sm p-0 flex flex-col max-h-[calc(var(--ui-vh)-2rem)] overflow-y-auto custom-scrollbar"
       >
         <DialogHeader className="px-4 pt-4 pb-2 shrink-0">
           <DialogTitle className="flex items-center gap-2 text-sm">

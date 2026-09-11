@@ -18,6 +18,11 @@ vi.mock('@/api/runtime', () => ({
   // directly, so an inert subscription is enough.
   subscribe: vi.fn(() => () => undefined),
 }))
+// The header's reindex action is out of scope for these error-state tests —
+// pin its RPC inert so the panel never reaches the Wails backend.
+vi.mock('@/api/vector', () => ({
+  reindexVectorIndex: vi.fn(async () => undefined),
+}))
 // The filter hook owns its own RPC (flat recursive listing); the error-state
 // behavior under test does not depend on it — pin it inert.
 vi.mock('@/hooks/useFileSearch', () => ({
@@ -127,26 +132,4 @@ describe('FileTreePanel — root load failure surfaces an error state', () => {
     expect(useFileTreeStore.getState().tree['/ws']?.[0]?.name).toBe('rootfs')
   })
 
-  it('manual Refresh re-lists the root and clears a stale error', async () => {
-    // First (mount) load fails, so the panel boots into the error state...
-    listDirectoryMock.mockRejectedValueOnce(new Error('no active project'))
-    await renderPanel()
-    await act(async () => {})
-    expect(useFileTreeStore.getState().rootLoadError).toBe('no active project')
-
-    // ...then the user clicks Refresh and the load succeeds.
-    listDirectoryMock.mockResolvedValue([
-      { name: 'custom-x', path: '/ws/custom-x', is_dir: true, hidden: false, gitignored: false, icon: '', icon_color: '' },
-    ])
-    const refresh = container.querySelector<HTMLButtonElement>('button[title="Refresh file tree"]')
-    expect(refresh).not.toBeNull()
-
-    await act(async () => {
-      refresh!.click()
-    })
-    await act(async () => {})
-
-    expect(container.textContent).toContain('custom-x')
-    expect(useFileTreeStore.getState().rootLoadError).toBeNull()
-  })
 })

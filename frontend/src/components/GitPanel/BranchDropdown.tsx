@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
-import { GitBranch, ChevronDown, Plus, Settings } from "lucide-react";
+import { GitBranch, ChevronDown, Plus, GitGraph } from "lucide-react";
 import { useGitPanelStore } from "@/stores/gitPanelStore";
 import {
   DropdownMenu,
@@ -211,7 +211,7 @@ export function BranchDropdown() {
             New branch...
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openBranchPicker()}>
-            <Settings className="size-3.5" />
+            <GitGraph className="size-3.5" />
             Manage branches...
           </DropdownMenuItem>
         </DropdownMenuContent>

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
 
@@ -896,6 +897,51 @@ func TestGetCurrentBranch_NoProject(t *testing.T) {
 	_, err := f.GetCurrentBranch()
 	if err == nil {
 		t.Fatal("expected error when no active project")
+	}
+}
+
+func TestGetIsGitRepo_NoProject(t *testing.T) {
+	f := &FrontendAPI{}
+	isRepo, err := f.GetIsGitRepo()
+	if err == nil {
+		t.Fatal("expected error when no active project")
+	}
+	if isRepo {
+		t.Error("expected false alongside the error")
+	}
+}
+
+func TestGetIsGitRepo_NoProjectMode(t *testing.T) {
+	f := &FrontendAPI{activeProjectID: project.NoProjectID, activeProjectPath: t.TempDir()}
+	_, err := f.GetIsGitRepo()
+	if err == nil {
+		t.Fatal("expected error for No Project mode")
+	}
+}
+
+func TestGetIsGitRepo_RepoWorkspace(t *testing.T) {
+	tmpDir := t.TempDir()
+	gitInit(t, tmpDir)
+	commitFile(t, tmpDir, "f.txt", "x\n")
+
+	f := &FrontendAPI{activeProjectPath: tmpDir}
+	isRepo, err := f.GetIsGitRepo()
+	if err != nil {
+		t.Fatalf("GetIsGitRepo: %v", err)
+	}
+	if !isRepo {
+		t.Error("GetIsGitRepo: got false, want true for an initialised repository")
+	}
+}
+
+func TestGetIsGitRepo_NonRepoWorkspace(t *testing.T) {
+	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	isRepo, err := f.GetIsGitRepo()
+	if err != nil {
+		t.Fatalf("GetIsGitRepo: %v", err)
+	}
+	if isRepo {
+		t.Error("GetIsGitRepo: got true, want false for a plain directory")
 	}
 }
 

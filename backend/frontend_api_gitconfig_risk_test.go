@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/v0lka/c0wrk/backend/config"
@@ -29,6 +30,12 @@ func writeGitConfig(t *testing.T, dir, content string) {
 type riskRecorder struct {
 	fired bool
 	data  GitConfigRiskData
+
+	// mu guards names: the injected emitter runs both synchronously (the
+	// project:git_config_risk event) and asynchronously — emitConfigUpdated
+	// dispatches EventConfigUpdated on its own goroutine — so concurrent
+	// appends are possible.
+	mu    sync.Mutex
 	names []string
 }
 
@@ -36,7 +43,9 @@ func newRiskRecorder(t *testing.T, f *FrontendAPI) *riskRecorder {
 	t.Helper()
 	r := &riskRecorder{}
 	f.emitEvent = func(name string, args ...any) {
+		r.mu.Lock()
 		r.names = append(r.names, name)
+		r.mu.Unlock()
 		if name != EventGitConfigRisk {
 			return
 		}
@@ -56,6 +65,14 @@ func newRiskRecorder(t *testing.T, f *FrontendAPI) *riskRecorder {
 		r.data = data
 	}
 	return r
+}
+
+// eventNames returns a copy of the recorded event names, safe to call while
+// the emitter may still be appending from its asynchronous dispatch.
+func (r *riskRecorder) eventNames() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.names...)
 }
 
 func TestNotifyGitConfigRisk_DangerousKeysEmitted(t *testing.T) {
@@ -86,7 +103,7 @@ func TestNotifyGitConfigRisk_DangerousKeysEmitted(t *testing.T) {
 		}
 	}
 	// Exactly one risk event — the scan itself must not emit anything else.
-	for _, n := range rec.names {
+	for _, n := range rec.eventNames() {
 		if n != EventGitConfigRisk {
 			t.Errorf("unexpected extra event %q", n)
 		}

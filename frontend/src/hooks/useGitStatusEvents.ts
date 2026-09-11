@@ -50,6 +50,11 @@ async function enrichWithDiffStats(entries: GitPanelEntry[]): Promise<GitPanelEn
  *   firings coalesce into one refresh.
  * - Auto-unsubscribes on unmount via useEffect cleanup.
  * - Returns void — purely a side-effect hook.
+ *
+ * Note: this hook does NOT decide whether the workspace is a git repository
+ * (`isGitRepo`) — that detection is owned by useProjectGitRepo, which checks
+ * eagerly per active project via the GetIsGitRepo RPC. GitStatus succeeds
+ * with an empty map for a non-repo, so it cannot be used for detection.
  */
 export function useGitStatusEvents(): void {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
@@ -109,7 +114,6 @@ export function useGitStatusEvents(): void {
     if (statusResult.status === 'fulfilled') {
       const rawEntries = toEntries(statusResult.value)
       const store = useGitPanelStore.getState()
-      store.setGitRepo(true)
       store.setError(null)
       // Enrich with batched +N/-M DiffStat before loading so GitFileEntry's
       // conditional rendering becomes live (FE-3 / D1). toEntries stays pure.
@@ -117,7 +121,6 @@ export function useGitStatusEvents(): void {
       store.loadEntries(enriched)
     } else {
       const store = useGitPanelStore.getState()
-      store.setGitRepo(false)
       store.loadEntries([])
       store.setError('Failed to load git status')
     }

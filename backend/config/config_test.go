@@ -1673,6 +1673,13 @@ func TestVectorIndexConfig_TuningKnobs_Defaults(t *testing.T) {
 	if gotTimeout != 3000 {
 		t.Errorf("default search_wait_timeout_ms = %d, want 3000", gotTimeout)
 	}
+	gotPark := -1
+	if cfg.VectorIndex.ParkCapacity != nil {
+		gotPark = *cfg.VectorIndex.ParkCapacity
+	}
+	if gotPark != 3 {
+		t.Errorf("default park_capacity = %d, want 3", gotPark)
+	}
 }
 
 // TestVectorIndexConfig_TuningKnobs_YAMLRoundTrip covers YAML parsing of
@@ -1688,6 +1695,7 @@ vector_index:
   debounce_ms: 250
   chunk_overlap: 120
   search_wait_timeout_ms: 0
+  park_capacity: 7
 `
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(src), &cfg); err != nil {
@@ -1711,6 +1719,9 @@ vector_index:
 	if cfg.VectorIndex.SearchWaitTimeoutMs == nil || *cfg.VectorIndex.SearchWaitTimeoutMs != 0 {
 		t.Errorf("explicit search_wait_timeout_ms: 0 must parse as the fail-fast sentinel (pointer to 0), got %v", cfg.VectorIndex.SearchWaitTimeoutMs)
 	}
+	if cfg.VectorIndex.ParkCapacity == nil || *cfg.VectorIndex.ParkCapacity != 7 {
+		t.Errorf("explicit park_capacity must parse verbatim, got %v", cfg.VectorIndex.ParkCapacity)
+	}
 
 	// ApplyDefaults must fill in unset knobs but PRESERVE the explicit
 	// fail-fast sentinel (an unset key resolves to 3000 instead — covered
@@ -1724,6 +1735,9 @@ vector_index:
 	}
 	if cfg.VectorIndex.SearchWaitTimeoutMs == nil || *cfg.VectorIndex.SearchWaitTimeoutMs != 0 {
 		t.Errorf("ApplyDefaults must not overwrite an explicit search_wait_timeout_ms: 0, got %v", cfg.VectorIndex.SearchWaitTimeoutMs)
+	}
+	if cfg.VectorIndex.ParkCapacity == nil || *cfg.VectorIndex.ParkCapacity != 7 {
+		t.Errorf("ApplyDefaults must not overwrite an explicit park_capacity, got %v", cfg.VectorIndex.ParkCapacity)
 	}
 
 	// Marshal → unmarshal round-trip preserves every knob verbatim.
@@ -1752,6 +1766,40 @@ vector_index:
 	}
 	if restored.VectorIndex.SearchWaitTimeoutMs == nil || *restored.VectorIndex.SearchWaitTimeoutMs != 0 {
 		t.Errorf("round-tripped search_wait_timeout_ms must stay the fail-fast sentinel (pointer to 0), got %v", restored.VectorIndex.SearchWaitTimeoutMs)
+	}
+	if restored.VectorIndex.ParkCapacity == nil || *restored.VectorIndex.ParkCapacity != 7 {
+		t.Errorf("round-tripped park_capacity = %v, want 7", restored.VectorIndex.ParkCapacity)
+	}
+}
+
+// TestVectorIndexConfig_ParkCapacity_DisableSentinel pins that an explicit
+// park_capacity: 0 survives the full Load path (defaults + validation) as the
+// "parking disabled" sentinel — distinct from an unset key, which defaults to
+// 3 (covered by TestVectorIndexConfig_TuningKnobs_Defaults). Without the
+// pointer type the two would be indistinguishable and parking could never be
+// turned off.
+func TestVectorIndexConfig_ParkCapacity_DisableSentinel(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+vector_index:
+  park_capacity: 0
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.VectorIndex.ParkCapacity == nil {
+		t.Fatal("park_capacity should be non-nil after Load")
+	}
+	if *cfg.VectorIndex.ParkCapacity != 0 {
+		t.Errorf("explicit park_capacity: 0 must survive as the disable sentinel, got %d", *cfg.VectorIndex.ParkCapacity)
 	}
 }
 
@@ -2836,5 +2884,88 @@ func TestVectorIndexConfig_ContentFilter_Validation(t *testing.T) {
 		if err := validate(&cfg); err == nil {
 			t.Errorf("validate() must reject %q", strings.TrimSpace(src))
 		}
+	}
+}
+
+// TestGitConfig_Defaults verifies that an omitted git section resolves to
+// auto_fetch=true / auto_fetch_interval="2m" after defaults are applied.
+func TestGitConfig_Defaults(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.Git.AutoFetch == nil || !*cfg.Git.AutoFetch {
+		t.Errorf("Expected default git.auto_fetch true, got %v", cfg.Git.AutoFetch)
+	}
+	if cfg.Git.AutoFetchInterval != "2m" {
+		t.Errorf("Expected default git.auto_fetch_interval '2m', got %q", cfg.Git.AutoFetchInterval)
+	}
+}
+
+// TestGitConfig_ExplicitValues verifies that explicit YAML values win over
+// the defaults: auto_fetch: false survives (the pointer-bool default must not
+// overwrite it) and a custom interval is preserved verbatim.
+func TestGitConfig_ExplicitValues(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+git:
+  auto_fetch: false
+  auto_fetch_interval: "5m"
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.Git.AutoFetch == nil || *cfg.Git.AutoFetch {
+		t.Errorf("Expected git.auto_fetch false, got %v", cfg.Git.AutoFetch)
+	}
+	if cfg.Git.AutoFetchInterval != "5m" {
+		t.Errorf("Expected git.auto_fetch_interval '5m', got %q", cfg.Git.AutoFetchInterval)
+	}
+}
+
+// TestGitConfig_ZeroIntervalPreserved verifies that an explicit "0" interval
+// (the "ticker off, event-driven triggers stay on" sentinel) is NOT
+// overwritten by the 2m default, and that setting it alone does not flip the
+// auto_fetch master gate.
+func TestGitConfig_ZeroIntervalPreserved(t *testing.T) {
+	content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+git:
+  auto_fetch_interval: "0"
+`
+	configPath := writeTestConfig(t, content)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.Git.AutoFetchInterval != "0" {
+		t.Errorf("Expected git.auto_fetch_interval '0' to be preserved, got %q", cfg.Git.AutoFetchInterval)
+	}
+	if cfg.Git.AutoFetch == nil || !*cfg.Git.AutoFetch {
+		t.Errorf("Expected default git.auto_fetch true, got %v", cfg.Git.AutoFetch)
 	}
 }

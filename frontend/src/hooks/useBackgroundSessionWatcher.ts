@@ -9,8 +9,13 @@
 // to that session.
 //
 // This hook subscribes to lifecycle and terminal events for EVERY background
-// session that is running, pausing, or paused, and keeps the keyed UI state in
-// sync in real time. The final answer and intermediate history are already
+// session that is running, pausing, or paused — whether that state is known
+// live to chatStore OR reported as unfinished (in_progress / paused) by the
+// authoritative backend snapshot (activeSessionsStore.sessions). The snapshot
+// path is what makes a webview reload safe: chatStore's live maps start empty,
+// but the DB still says a task is in flight, so the completion is announced
+// instead of being silently dropped. It keeps the keyed UI state in sync in
+// real time. The final answer and intermediate history are already
 // by the backend's EventPersister and will be loaded from the DB by the
 // reconcile effect in ChatArea when the user switches to the session.
 //
@@ -26,6 +31,7 @@
 import { useEffect } from 'react'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useActiveSessionsStore } from '@/stores/activeSessionsStore'
 import { onSessionEvent, reportDroppedEvent } from '@/api/runtime'
 import { isToolConfirmData, isAskUserData, isStepLimitData, isPlanReviewReadyData, isGoalProposalData } from '@/types/events'
 import type { SessionEventKey } from '@/types/events'
@@ -57,6 +63,11 @@ function playBackgroundCue(event: SessionEventKey, data: unknown): void {
  * pending-action message to the chat store so the user can respond even when
  * viewing a different session).
  *
+ * The watched set is the union of chatStore's live flags and the sessions the
+ * backend snapshot still reports unfinished (in_progress / paused), so a task
+ * whose start this frontend never observed — after a reload, or in a project
+ * the user has not opened — is still announced on completion.
+ *
  * Sound parity: every watched event also plays the audible cue the active
  * session would play (`classifySessionEvent` → `playSound`), so a task that
  * finishes or blocks on HITL in the background is still announced. There is
@@ -70,17 +81,42 @@ export function useBackgroundSessionWatcher(): void {
   const paused = useChatStore(s => s.paused)
   const pausing = useChatStore(s => s.pausing)
   const activeSessionId = useSessionStore(s => s.activeSessionId)
+  // Authoritative DB snapshot (loaded at the App root by useActiveSessionsRefresh).
+  // A direct store-field reference — changes only on a real RPC refresh, so it
+  // is a stable selector value (React #185).
+  const sessions = useActiveSessionsStore(s => s.sessions)
 
   // Watch background sessions throughout the running → pausing → paused
   // lifecycle. Keeping paused sessions subscribed is necessary for a later
   // session_resumed event to reach the store even though taskActive is false.
+  //
+  // The chatStore maps are the LIVE signal, but they are blind spots: a webview
+  // reload empties them, and they only ever know sessions this frontend has
+  // followed in its lifetime. The backend snapshot fills the gap — any session
+  // it still reports unfinished (in_progress / paused) is watched too, so its
+  // task_complete / HITL events are caught even though chatStore never saw it
+  // start. `failed` is intentionally excluded: nothing is running to announce.
+  const snapshotWatchedIds = new Set<string>()
+  if (sessions) {
+    for (const session of sessions) {
+      if (session.unfinished_task_status === 'in_progress' || session.unfinished_task_status === 'paused') {
+        snapshotWatchedIds.add(session.id)
+      }
+    }
+  }
+
   const watchedIds = new Set([
     ...Object.keys(taskActive),
     ...Object.keys(paused),
     ...Object.keys(pausing),
+    ...snapshotWatchedIds,
   ])
   const watchedKey = [...watchedIds]
-    .filter(id => (taskActive[id] === true || paused[id] === true || pausing[id] === true) && id !== activeSessionId)
+    .filter(
+      id =>
+        (taskActive[id] === true || paused[id] === true || pausing[id] === true || snapshotWatchedIds.has(id)) &&
+        id !== activeSessionId,
+    )
     .sort()
     .join('\n')
 

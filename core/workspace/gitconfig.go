@@ -305,14 +305,28 @@ type GitConfigInfo struct {
 
 	// repositoryFormatVersion is core.repositoryformatversion (default 0).
 	repositoryFormatVersion int64
+	// repositoryFormatVersionSet reports whether core.repositoryformatversion
+	// was parsed from THIS layer. Layering is presence-based, not value-based:
+	// a later config layer that omits the key must not clobber an earlier
+	// layer's value with the zero default (git keeps the earlier value).
+	repositoryFormatVersionSet bool
 	// objectFormat is the lowercased extensions.objectformat ("" when unset).
 	objectFormat string
+	// objectFormatSet reports whether extensions.objectformat was parsed from
+	// this layer (see repositoryFormatVersionSet for why presence matters).
+	objectFormatSet bool
 	// worktreeConfigEnabled reports extensions.worktreeConfig=true, the
 	// switch that makes git read config.worktree in linked worktrees.
 	worktreeConfigEnabled bool
+	// worktreeConfigEnabledSet reports whether extensions.worktreeConfig was
+	// parsed from this layer.
+	worktreeConfigEnabledSet bool
 	// attributesFilePath is the last core.attributesFile value ("", or the
 	// verbatim path before ~/ and relative resolution).
 	attributesFilePath string
+	// attributesFilePathSet reports whether core.attributesFile was parsed
+	// from this layer.
+	attributesFilePathSet bool
 
 	// rawSources captures the raw bytes of every source the scan read, in a
 	// stable order (common config, config.worktree overlay, then the
@@ -673,30 +687,47 @@ func trimDiffOps(a, b []string) []diffOp {
 }
 
 // renderUnifiedDiff groups an edit script into hunks (3 lines of context) and
-// renders them as a unified diff with @@ range headers.
+// renders them as a unified diff with @@ range headers. Changes whose context
+// regions overlap or touch (their equal-gap is within 2*ctx lines) share one
+// hunk, so the output never repeats context across overlapping hunks — the
+// standard unified-diff grouping a patch-style consumer expects.
 func renderUnifiedDiff(ops []diffOp) string {
 	const ctx = 3
-	changed := make([]bool, len(ops))
-	for i, op := range ops {
-		changed[i] = op.kind != diffEqual
-	}
 	var out strings.Builder
 	out.WriteString("--- previous\n+++ current\n")
-	for i := 0; i < len(ops); {
-		if !changed[i] {
+	n := len(ops)
+	for i := 0; i < n; {
+		if ops[i].kind == diffEqual {
 			i++
 			continue
 		}
+		// The hunk starts ctx lines of context before the first change.
 		start, back := i, 0
 		for start > 0 && ops[start-1].kind == diffEqual && back < ctx {
 			start--
 			back++
 		}
-		end := i
-		for end < len(ops) && ops[end].kind != diffEqual {
-			end++
+		// Extend across every change reachable within the shared context
+		// window: consecutive changes merge when their equal-gap is at most
+		// 2*ctx (their trailing/leading context lines would otherwise overlap).
+		last := i
+		for {
+			end := last
+			for end < n && ops[end].kind != diffEqual {
+				end++
+			}
+			j := end
+			for j < n && ops[j].kind == diffEqual {
+				j++
+			}
+			if j >= n || j-end > ctx*2 {
+				last = end - 1
+				break
+			}
+			last = j
 		}
-		for fwd := 0; fwd < ctx && end < len(ops) && ops[end].kind == diffEqual; fwd++ {
+		end := last + 1
+		for fwd := 0; fwd < ctx && end < n && ops[end].kind == diffEqual; fwd++ {
 			end++
 		}
 		oldStart := lineNumberBefore(ops, start, true)
@@ -1156,7 +1187,12 @@ func resolveCommonGitDir(gitDir string) (commonDir string, isWorktree bool, err 
 // identical keys the overlay value wins, everything else unions. Findings
 // are deduplicated by FullKey (the surviving entry keeps the overlay's value
 // and line), includes and parse errors append (both files were really read),
-// and the parser-captured repository-model state takes the overlay's value.
+// and the parser-captured repository-model state layers by KEY PRESENCE —
+// the overlay overrides only the keys it actually sets. Presence (not
+// non-zero value) is what matters: config.worktree routinely omits
+// extensions.objectformat, and letting that omission zero out the common
+// config's "sha256" would downgrade the attr.tree empty-tree hash to SHA-1,
+// turning the blanket kill into a silent no-op on a SHA-256 repository.
 func mergeGitConfigInfo(base, overlay *GitConfigInfo) {
 	idx := make(map[string]int, len(base.Findings))
 	for i := range base.Findings {
@@ -1174,10 +1210,22 @@ func mergeGitConfigInfo(base, overlay *GitConfigInfo) {
 	base.Includes = append(base.Includes, overlay.Includes...)
 	base.Errors = append(base.Errors, overlay.Errors...)
 	base.rawSources = append(base.rawSources, overlay.rawSources...)
-	base.repositoryFormatVersion = overlay.repositoryFormatVersion
-	base.objectFormat = overlay.objectFormat
-	base.worktreeConfigEnabled = overlay.worktreeConfigEnabled
-	base.attributesFilePath = overlay.attributesFilePath
+	if overlay.repositoryFormatVersionSet {
+		base.repositoryFormatVersion = overlay.repositoryFormatVersion
+		base.repositoryFormatVersionSet = true
+	}
+	if overlay.objectFormatSet {
+		base.objectFormat = overlay.objectFormat
+		base.objectFormatSet = true
+	}
+	if overlay.worktreeConfigEnabledSet {
+		base.worktreeConfigEnabled = overlay.worktreeConfigEnabled
+		base.worktreeConfigEnabledSet = true
+	}
+	if overlay.attributesFilePathSet {
+		base.attributesFilePath = overlay.attributesFilePath
+		base.attributesFilePathSet = true
+	}
 }
 
 // validateRepoFormat checks that the parsed repository model is one whose
@@ -1906,6 +1954,7 @@ func (p *gitConfigParser) dispatchEntry(line int, key, value string, boolean boo
 				p.errorf(line, "core.repositoryformatversion %q is not an integer: %v", value, convErr)
 			} else {
 				p.info.repositoryFormatVersion = v
+				p.info.repositoryFormatVersionSet = true
 			}
 		case "attributesfile":
 			if boolean {
@@ -1913,6 +1962,7 @@ func (p *gitConfigParser) dispatchEntry(line int, key, value string, boolean boo
 				break
 			}
 			p.info.attributesFilePath = value
+			p.info.attributesFilePathSet = true
 			kind = GitConfigFindingAttributesFile
 			description = "core.attributesFile names an additional attributes routing file. Verified live " +
 				"on git 2.50.1: the value is respected from repository config, and attr.tree does not cover " +
@@ -1926,8 +1976,10 @@ func (p *gitConfigParser) dispatchEntry(line int, key, value string, boolean boo
 		switch key {
 		case "objectformat":
 			p.info.objectFormat = strings.ToLower(value)
+			p.info.objectFormatSet = true
 		case "worktreeconfig":
 			p.info.worktreeConfigEnabled = parseBoolConfigValue(value, boolean)
+			p.info.worktreeConfigEnabledSet = true
 		}
 	case "attr":
 		if key == "tree" {

@@ -1,6 +1,7 @@
 import { listDirectory } from '@/api/workspace'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useUIStore } from '@/stores/uiStore'
+import { focusFileExplorer } from '@/lib/workspaceLayout'
 import { logger } from '@/lib/logger'
 
 /**
@@ -38,11 +39,13 @@ export function ancestorDirsBetween(filePath: string, rootPath: string): string[
 }
 
 /**
- * Reveal a file in the sidebar workspace (Explorer) tree: switches to the
- * Explorer tab, expands the sidebar if collapsed, lazily loads every ancestor
- * directory that isn't already cached, expands the whole ancestor chain, and
- * marks the file as the transient "current" selection so it is highlighted
- * and scrolled into view.
+ * Reveal a file in the sidebar workspace tree: focuses the file explorer
+ * wherever it lives for the active project (the standalone Explorer tab for
+ * a non-git project, the Git panel's first "files" section for a git
+ * repository), expands the sidebar if collapsed, lazily loads every
+ * ancestor directory that isn't already cached, expands the whole ancestor
+ * chain, and marks the file as the transient "current" selection so it is
+ * highlighted and scrolled into view.
  *
  * Safe to call when no workspace root is loaded — the function no-ops in that
  * case.
@@ -55,9 +58,10 @@ export async function revealInWorkspace(filePath: string): Promise<void> {
     return
   }
 
-  // Ensure the sidebar is visible and on the Explorer tab before touching the
-  // tree, otherwise the expansion/selection has nothing to render into.
-  useUIStore.getState().setWorkspaceTab('explorer')
+  // Ensure the sidebar is visible and the file explorer is focused before
+  // touching the tree, otherwise the expansion/selection has nothing to
+  // render into.
+  focusFileExplorer()
   if (useUIStore.getState().sidebarCollapsed) {
     useUIStore.getState().setSidebarCollapsed(false)
   }

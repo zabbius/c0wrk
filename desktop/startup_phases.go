@@ -1227,7 +1227,11 @@ func (a *App) startVectorIndexBackground(
 			// config, never defaulted); stored on the Manager for the
 			// search-path wiring.
 			SearchWaitTimeout: time.Duration(derefInt(cfg.VectorIndex.SearchWaitTimeoutMs)) * time.Millisecond,
-			Logger:            log,
+			// ParkCapacity: how many recently-closed projects keep their
+			// vector-index state resident (vector_index.park_capacity;
+			// resolved default 3, explicit 0 disables parking).
+			ParkCapacity: derefInt(cfg.VectorIndex.ParkCapacity),
+			Logger:       log,
 		})
 		if err != nil {
 			log.Warn("vector search unavailable", "error", err)
@@ -1247,6 +1251,11 @@ func (a *App) startVectorIndexBackground(
 		// this here instead of in a separate goroutine eliminates the race where
 		// Shutdown runs Cleanup before SetVectorManager completes (W3).
 		a.Lifecycle().SetVectorManager(vectorMgr)
+		// The frontend's first SwitchProject (fired on backend:ready) almost
+		// certainly ran before the line above and skipped vector setup because
+		// the manager was still nil. Apply that deferred setup now, so the
+		// startup project is indexed without a manual project switch.
+		a.Lifecycle().InitVectorIndexForActiveProject()
 		log.Info("background init complete", "phase", "vector_index", "elapsed_ms", time.Since(startTime).Milliseconds())
 	}()
 }
@@ -1330,4 +1339,16 @@ func (a *App) startUpdateCheckerBackground(log *slog.Logger) {
 		}()
 		a.RunBackgroundUpdateCheck()
 	}()
+}
+
+// startAutoFetchBackground starts the periodic git auto-fetch ticker (config
+// git.auto_fetch_interval, default 2m). It mirrors startUpdateCheckerBackground:
+// infrastructure-only, started exactly once after the backend is ready (the
+// idempotent StartAutoFetch makes a double call harmless), never blocks or
+// breaks startup, and is stopped by FrontendAPILifecycle.Cleanup on shutdown.
+// The loop re-reads the interval on every tick, so runtime config edits apply
+// without an app restart; an interval of "0" disables only the ticker while
+// the event-driven triggers (startup, project switch, window focus) stay on.
+func (a *App) startAutoFetchBackground() {
+	a.Lifecycle().StartAutoFetch()
 }

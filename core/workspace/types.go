@@ -97,6 +97,18 @@ type GitHistoryCommit struct {
 	Refs    []string `json:"refs"`
 }
 
+// GitHistoryPage is a single page of the unified commit history. The
+// frontend loads history incrementally (git log -n <limit> --skip <skip>),
+// consuming Commits and re-issuing the call with Skip = NextSkip while
+// HasMore is true. HasMore is derived from the page being saturated
+// (len(Commits) == requested limit), which is the only signal git log
+// exposes for "there might be more below".
+type GitHistoryPage struct {
+	Commits  []GitHistoryCommit `json:"commits"`
+	NextSkip int                `json:"next_skip"`
+	HasMore  bool               `json:"has_more"`
+}
+
 // HunkDiffInfo describes a single diff hunk with its staging status and
 // raw unified-diff text. The frontend uses it to render per-hunk controls
 // (stage / unstage / discard) and hover tooltips with syntax-highlighted

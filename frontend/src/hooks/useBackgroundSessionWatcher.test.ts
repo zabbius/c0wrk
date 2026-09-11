@@ -151,6 +151,27 @@ const useSessionStoreMock = Object.assign(
 
 vi.mock('@/stores/sessionStore', () => ({ useSessionStore: useSessionStoreMock }))
 
+// --- Mock active-sessions store ---
+// The watcher folds the authoritative DB snapshot (sessions the backend still
+// reports unfinished) into its watch set, so a reload that empties chatStore
+// no longer blinds it. Keep the real store out of this node-environment test
+// (it pulls the RPC layer) and expose the hook/getState/setState shape the
+// other store mocks use.
+
+const activeSessionsStoreState = {
+  sessions: null as ReadonlyArray<{ id: string; unfinished_task_status?: string }> | null,
+}
+
+const useActiveSessionsStoreMock = Object.assign(
+  vi.fn((selector: (s: typeof activeSessionsStoreState) => unknown) => selector(activeSessionsStoreState)),
+  {
+    getState: () => activeSessionsStoreState,
+    setState: (partial: Partial<typeof activeSessionsStoreState>) => Object.assign(activeSessionsStoreState, partial),
+  },
+)
+
+vi.mock('@/stores/activeSessionsStore', () => ({ useActiveSessionsStore: useActiveSessionsStoreMock }))
+
 // Import AFTER mocks are set up.
 const { useBackgroundSessionWatcher } = await import('@/hooks/useBackgroundSessionWatcher')
 
@@ -178,6 +199,7 @@ function resetStores(): void {
   chatStoreState.pausing = {}
   chatStoreState.compacting = {}
   sessionStoreState.activeSessionId = null
+  activeSessionsStoreState.sessions = null
 }
 
 /** Call the hook (simulates a render). Named with `use` prefix to satisfy
@@ -415,6 +437,87 @@ describe('useBackgroundSessionWatcher', () => {
 
     expect(subscriptions.has('sess-a:task_complete')).toBe(true)
     expect(subscriptions.has('sess-b:task_complete')).toBe(false)
+  })
+
+  // --- Authoritative snapshot fallback: sessions the backend still reports
+  // unfinished are watched even when chatStore has no local flag for them
+  // (reload, or a session in a project the user has not opened).
+
+  it('watches a snapshot session chatStore has no flag for and cues its completion (reload path)', () => {
+    // chatStore maps are empty — a fresh webview reload. Only the DB snapshot
+    // knows the task is still running.
+    activeSessionsStoreState.sessions = [{ id: 'reload-1', unfinished_task_status: 'in_progress' }]
+    sessionStoreState.activeSessionId = 'active-1'
+
+    useRenderWatcher()
+
+    expect(subscriptions.has('reload-1:task_complete')).toBe(true)
+    expect(subscriptions.has('reload-1:error')).toBe(true)
+
+    fireSessionEvent('reload-1', 'task_complete', { output: 'done', success: true })
+
+    expect(playSoundMock).toHaveBeenCalledWith('attention')
+    // The completion still finalizes the (chatStore-unknown) session's state.
+    expect(chatStoreState.taskActive['reload-1']).toBe(false)
+  })
+
+  it('keeps the active session excluded from the watcher even when the snapshot reports it unfinished', () => {
+    activeSessionsStoreState.sessions = [{ id: 'active-1', unfinished_task_status: 'in_progress' }]
+    sessionStoreState.activeSessionId = 'active-1'
+
+    useRenderWatcher()
+
+    // No double signal: the active session's cues belong to useSoundEvents.
+    expect(subscriptions.size).toBe(0)
+  })
+
+  it('watches a snapshot-paused session so a later resume is followed', () => {
+    activeSessionsStoreState.sessions = [{ id: 'reload-paused', unfinished_task_status: 'paused' }]
+    sessionStoreState.activeSessionId = 'active-1'
+
+    useRenderWatcher()
+
+    expect(subscriptions.has('reload-paused:session_resumed')).toBe(true)
+  })
+
+  it('does not watch snapshot sessions with no unfinished task (idle / failed)', () => {
+    activeSessionsStoreState.sessions = [
+      { id: 'idle-1', unfinished_task_status: '' },
+      { id: 'failed-1', unfinished_task_status: 'failed' },
+      { id: 'missing-status' },
+    ]
+    sessionStoreState.activeSessionId = 'active-1'
+
+    useRenderWatcher()
+
+    expect(subscriptions.size).toBe(0)
+  })
+
+  it('subscribes once the snapshot arrives after mount (async load, no chatStore change)', () => {
+    sessionStoreState.activeSessionId = 'active-1'
+
+    useRenderWatcher()
+    expect(subscriptions.size).toBe(0)
+
+    // The loader (App root) fills the snapshot after this hook mounted.
+    activeSessionsStoreState.sessions = [{ id: 'bg-1', unfinished_task_status: 'in_progress' }]
+    useRenderWatcher()
+
+    expect(subscriptions.has('bg-1:task_complete')).toBe(true)
+  })
+
+  it('unions chatStore flags with the snapshot without duplicating subscriptions', () => {
+    chatStoreState.setTaskActive('bg-1', true)
+    activeSessionsStoreState.sessions = [
+      { id: 'bg-1', unfinished_task_status: 'in_progress' },
+      { id: 'bg-2', unfinished_task_status: 'in_progress' },
+    ]
+    sessionStoreState.activeSessionId = 'active-1'
+
+    useRenderWatcher()
+
+    // 11 events × 2 unique sessions = 22 — the shadowed bg-1 is not counted twice.
+    expect(subscriptions.size).toBe(22)
   })
 
   // --- Sound parity: a background session gets the same audible cues the

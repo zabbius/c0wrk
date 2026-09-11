@@ -57,25 +57,25 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.db == nil {
+	if s.current.db == nil {
 		return errors.New("no database initialized; call SetProject first")
 	}
 
-	if branchName == s.currentBranch && s.collection != nil {
+	if branchName == s.current.currentBranch && s.current.collection != nil {
 		return nil
 	}
 
 	// Persist the outgoing branch's in-memory hashes before they are
 	// overwritten by loadFileHashes for the new branch.
-	if s.currentBranch != "" && s.collection != nil {
-		if err := s.saveFileHashes(); err != nil {
+	if s.current.currentBranch != "" && s.current.collection != nil {
+		if err := s.current.saveFileHashes(); err != nil {
 			s.logger.Warn("failed to persist file-hash sidecar on branch switch",
-				"branch", s.currentBranch, "error", err)
+				"branch", s.current.currentBranch, "error", err)
 		}
 	}
 
 	name := collectionName(branchName)
-	col, err := s.db.GetOrCreateCollection(name, nil, s.embeddingFunc)
+	col, err := s.current.db.GetOrCreateCollection(name, nil, s.embeddingFunc)
 	if err != nil {
 		return fmt.Errorf("getting or creating collection %q: %w", name, err)
 	}
@@ -83,18 +83,18 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 	// Close any previously-open lexical index and open the one for this
 	// branch. The lexical index is persisted alongside the chromem DB under
 	// the project's vector_index directory (set by SetProject).
-	if s.lexical != nil {
-		if closeErr := s.lexical.Close(); closeErr != nil {
+	if s.current.lexical != nil {
+		if closeErr := s.current.lexical.Close(); closeErr != nil {
 			s.logger.Warn("failed to close previous lexical index", "error", closeErr)
 		}
-		s.lexical = nil
+		s.current.lexical = nil
 	}
 	// The lexical index directory is derived from the chromem DB path
 	// (stored in the database, which was opened from the project path).
 	// If the DB is persistent, extract its directory to place the lexical
 	// index alongside it; otherwise skip lexical persistence.
-	if s.projectPath != "" && s.projectID != "" {
-		lexDir := filepath.Join(s.projectPath, "lexical", lexicalBranchDirName(branchName))
+	if s.current.projectPath != "" && s.current.projectID != "" {
+		lexDir := filepath.Join(s.current.projectPath, "lexical", lexicalBranchDirName(branchName))
 		// Ensure the parent directory (…/{projectID}/lexical/) exists;
 		// bleve's New() creates the leaf (branch) directory itself.
 		if mkErr := os.MkdirAll(filepath.Dir(lexDir), 0o750); mkErr != nil {
@@ -104,13 +104,13 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 			if lexErr != nil {
 				s.logger.Warn("failed to open lexical index", "path", lexDir, "error", lexErr)
 			} else {
-				s.lexical = lex
+				s.current.lexical = lex
 			}
 		}
 	}
 
-	s.collection = col
-	s.currentBranch = branchName
+	s.current.collection = col
+	s.current.currentBranch = branchName
 	// Load (or migrate) the file-hash sidecar so ValidateCollection can compare
 	// stored hashes against disk without an embedding-bearing collection Query.
 	s.loadFileHashes()
@@ -237,7 +237,7 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.collection == nil {
+	if s.current.collection == nil {
 		return nil, nil, nil, errors.New("no collection available; call SwitchBranch first")
 	}
 
@@ -257,9 +257,9 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 	// eventually. The counter is atomic because this function runs under the
 	// read lock; validation passes are serialized per indexer in practice,
 	// so concurrent calls could at worst force the revalidation twice.
-	forceFullHash := s.validationsSinceFullHash.Add(1) >= fullHashRevalidationEvery
+	forceFullHash := s.current.validationsSinceFullHash.Add(1) >= fullHashRevalidationEvery
 	if forceFullHash {
-		s.validationsSinceFullHash.Store(0)
+		s.current.validationsSinceFullHash.Store(0)
 	}
 
 	// Track which stored files we've seen on disk.
@@ -432,12 +432,12 @@ func (s *Service) GetCollectionFiles() (map[string]string, error) {
 // loaded (or migrated) in SwitchBranch; if it is somehow nil, we fall back to
 // a one-shot query.
 func (s *Service) getCollectionFileHashes() (map[string]string, error) {
-	if s.collection == nil {
+	if s.current.collection == nil {
 		return nil, errors.New("no collection available")
 	}
-	if s.fileHashes != nil {
-		out := make(map[string]string, len(s.fileHashes))
-		for k, v := range s.fileHashes {
+	if s.current.fileHashes != nil {
+		out := make(map[string]string, len(s.current.fileHashes))
+		for k, v := range s.current.fileHashes {
 			out[k] = v
 		}
 		return out, nil
@@ -445,21 +445,22 @@ func (s *Service) getCollectionFileHashes() (map[string]string, error) {
 	// Fallback (e.g. collection built before sidecar existed): enumerate via
 	// Query. This pays an embedding cost, so loadFileHashes populates the
 	// sidecar eagerly in SwitchBranch to keep this path cold.
-	return s.queryCollectionFileHashes(context.Background())
+	return s.current.queryCollectionFileHashes(context.Background())
 }
 
-// queryCollectionFileHashes enumerates stored file hashes directly from the
-// chromem collection via a broad Query. This triggers an embedding and is used
-// only for the one-time sidecar migration (or the rare fallback). Caller must
-// hold at least s.mu.RLock(). ctx propagates cancellation to the underlying
-// Query (e.g. service shutdown while the background migration is in flight).
-func (s *Service) queryCollectionFileHashes(ctx context.Context) (map[string]string, error) {
-	count := s.collection.Count()
+// queryCollectionFileHashes enumerates stored file hashes directly from this
+// state's chromem collection via a broad Query. This triggers an embedding and
+// is used only for the one-time sidecar migration (or the rare fallback).
+// Caller must hold the owning Service's mu (at least RLock). ctx propagates
+// cancellation to the underlying Query (e.g. service shutdown while the
+// background migration is in flight).
+func (ps *projectState) queryCollectionFileHashes(ctx context.Context) (map[string]string, error) {
+	count := ps.collection.Count()
 	if count == 0 {
 		return make(map[string]string), nil
 	}
 
-	results, err := s.collection.Query(ctx, " ", count, nil, nil)
+	results, err := ps.collection.Query(ctx, " ", count, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("querying collection for file list: %w", err)
 	}
@@ -481,37 +482,40 @@ func (s *Service) queryCollectionFileHashes(ctx context.Context) (map[string]str
 	return fileHashes, nil
 }
 
-// fileHashesPath returns the on-disk path of the sidecar for the current
+// fileHashesPath returns the on-disk path of the sidecar for this state's
 // branch, or "" if project/branch is unset. Caller must hold s.mu.
-func (s *Service) fileHashesPath() string {
-	if s.projectPath == "" || s.currentBranch == "" {
+func (ps *projectState) fileHashesPath() string {
+	if ps.projectPath == "" || ps.currentBranch == "" {
 		return ""
 	}
-	return filepath.Join(s.projectPath, "file_hashes_"+collectionName(s.currentBranch)+".json")
+	return filepath.Join(ps.projectPath, "file_hashes_"+collectionName(ps.currentBranch)+".json")
 }
 
-// loadFileHashes populates s.fileHashes for the current branch from the sidecar
-// on disk. If the sidecar is absent, the backfill is deferred to a short-lived
-// background goroutine (see migrateFileHashes) so SwitchBranch never pays the
-// embedding cost of enumerating the collection synchronously — that cost used
-// to block the whole service for the duration of one ONNX inference on the
-// upgrade / first-switch path. Caller must hold s.mu (write).
+// loadFileHashes populates the CURRENT state's fileHashes for the active
+// branch from the sidecar on disk. If the sidecar is absent, the backfill is
+// deferred to a short-lived background goroutine (see migrateFileHashes) so
+// SwitchBranch never pays the embedding cost of enumerating the collection
+// synchronously — that cost used to block the whole service for the duration
+// of one ONNX inference on the upgrade / first-switch path. Caller must hold
+// s.mu (write).
 func (s *Service) loadFileHashes() {
+	ps := s.current
+
 	// Cancel any in-flight migration left over from a previous branch and
 	// reset its signal channel.
-	if s.migrationCancel != nil {
-		s.migrationCancel()
-		s.migrationCancel = nil
+	if ps.migrationCancel != nil {
+		ps.migrationCancel()
+		ps.migrationCancel = nil
 	}
 
 	// Fast path: a usable sidecar exists on disk.
-	if path := s.fileHashesPath(); path != "" {
+	if path := ps.fileHashesPath(); path != "" {
 		if data, err := os.ReadFile(path); err == nil {
 			var m map[string]string
 			if jsonErr := json.Unmarshal(data, &m); jsonErr == nil {
-				s.fileHashes = m
-				s.fileHashMigrationPending.Store(false)
-				s.migrationCh = closedChan()
+				ps.fileHashes = m
+				ps.fileHashMigrationPending.Store(false)
+				ps.migrationCh = closedChan()
 				return
 			}
 		}
@@ -519,10 +523,10 @@ func (s *Service) loadFileHashes() {
 
 	// An empty collection has nothing to migrate; IndexFull will populate the
 	// sidecar via upsertFileHashes, so start empty and settled.
-	if s.collection == nil || s.collection.Count() == 0 {
-		s.fileHashes = make(map[string]string)
-		s.fileHashMigrationPending.Store(false)
-		s.migrationCh = closedChan()
+	if ps.collection == nil || ps.collection.Count() == 0 {
+		ps.fileHashes = make(map[string]string)
+		ps.fileHashMigrationPending.Store(false)
+		ps.migrationCh = closedChan()
 		return
 	}
 
@@ -530,52 +534,70 @@ func (s *Service) loadFileHashes() {
 	// upgrade, or a branch whose collection was built elsewhere). Defer the
 	// single-embedding backfill to a background goroutine; IndexIncremental
 	// waits on migrationCh before calling ValidateCollection, so the empty map
-	// never causes a spurious full re-embed.
-	s.fileHashes = make(map[string]string)
-	s.fileHashMigrationPending.Store(true)
+	// never causes a spurious full re-embed. The goroutine is bound to ps
+	// (NOT re-read from s.current): if this state is parked or evicted before
+	// the goroutine runs, it must settle ITS OWN flags rather than a newer
+	// project's.
+	ps.fileHashes = make(map[string]string)
+	ps.fileHashMigrationPending.Store(true)
 	done := make(chan struct{})
-	s.migrationCh = done
-	branch := s.currentBranch
+	ps.migrationCh = done
+	branch := ps.currentBranch
 	mctx, cancel := context.WithCancel(context.Background())
-	s.migrationCancel = cancel
+	ps.migrationCancel = cancel
 	s.migrationWG.Add(1)
-	go s.migrateFileHashes(mctx, branch, done)
+	go s.migrateFileHashes(mctx, ps, branch, done)
 }
 
 // migrateFileHashes is the background sidecar backfill: it enumerates the
 // chromem collection once (a single embedding of the query vector) and adopts
-// the result into s.fileHashes. branch is the branch being migrated; if the
-// branch changes (or the service closes) before completion, the result is
-// discarded. The caller must NOT hold s.mu. Closes done when settled.
-func (s *Service) migrateFileHashes(ctx context.Context, branch string, done chan<- struct{}) {
+// the result into ps.fileHashes. ps is the state that started the migration; if
+// its ctx is cancelled (park / eviction / close) or its branch changes before
+// completion, the result is discarded. Binding the migration to ps — rather
+// than re-reading s.current — lets an orphaned migration settle its own flags
+// without clobbering a newer project. The caller must NOT hold s.mu. Closes
+// done when settled.
+func (s *Service) migrateFileHashes(ctx context.Context, ps *projectState, branch string, done chan struct{}) {
 	defer s.migrationWG.Done()
 	defer close(done)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// The branch may have changed (or the service closed) while we waited for
-	// the write lock; abandon a stale migration rather than overwriting another
-	// branch's sidecar.
-	if ctx.Err() != nil || s.currentBranch != branch || s.collection == nil {
-		s.fileHashMigrationPending.Store(false)
+	// clearIfCurrent clears the pending flag only when THIS migration is still
+	// the one registered on ps. A restore may have re-run loadFileHashes and
+	// installed a replacement migration (ps.migrationCh changed) while we were
+	// blocked on the lock; clearing the flag unconditionally here would then
+	// clobber the replacement's in-flight state and let parkCurrentLocked skip
+	// a legitimate sidecar save.
+	clearIfCurrent := func() {
+		if ps.migrationCh == done {
+			ps.fileHashMigrationPending.Store(false)
+		}
+	}
+
+	// The branch may have changed (or the state been parked/closed) while we
+	// waited for the write lock; abandon a stale migration rather than
+	// overwriting another branch's sidecar.
+	if ctx.Err() != nil || ps.currentBranch != branch || ps.collection == nil {
+		clearIfCurrent()
 		return
 	}
 
-	hashes, qErr := s.queryCollectionFileHashes(ctx)
+	hashes, qErr := ps.queryCollectionFileHashes(ctx)
 	if qErr != nil {
 		s.logger.Warn("failed to migrate file-hash sidecar from collection", "error", qErr)
-		s.fileHashMigrationPending.Store(false)
+		clearIfCurrent()
 		return
 	}
 	// Re-check after the embedding-bearing Query in case we raced a switch.
-	if s.currentBranch != branch || s.collection == nil {
-		s.fileHashMigrationPending.Store(false)
+	if ctx.Err() != nil || ps.currentBranch != branch || ps.collection == nil {
+		clearIfCurrent()
 		return
 	}
-	s.fileHashes = hashes
-	s.fileHashMigrationPending.Store(false)
-	if err := s.saveFileHashes(); err != nil {
+	ps.fileHashes = hashes
+	ps.fileHashMigrationPending.Store(false)
+	if err := ps.saveFileHashes(); err != nil {
 		s.logger.Warn("failed to persist file-hash sidecar after migration", "error", err)
 	}
 	s.logger.Info("file-hash sidecar migrated from collection", "branch", branch, "files", len(hashes))
@@ -589,7 +611,7 @@ func (s *Service) WaitFileHashMigration(ctx context.Context) error {
 	ch := func() chan struct{} {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
-		return s.migrationCh
+		return s.current.migrationCh
 	}()
 	if ch == nil {
 		return nil
@@ -609,14 +631,15 @@ func closedChan() chan struct{} {
 	return c
 }
 
-// saveFileHashes atomically writes the sidecar to disk. Caller must hold s.mu
-// (write). Missing project/branch or a nil map is a no-op.
-func (s *Service) saveFileHashes() error {
-	path := s.fileHashesPath()
-	if path == "" || s.fileHashes == nil {
+// saveFileHashes atomically writes this state's sidecar to disk. Caller must
+// hold the owning Service's mu (write). Missing project/branch or a nil map is
+// a no-op.
+func (ps *projectState) saveFileHashes() error {
+	path := ps.fileHashesPath()
+	if path == "" || ps.fileHashes == nil {
 		return nil
 	}
-	data, err := json.Marshal(s.fileHashes)
+	data, err := json.Marshal(ps.fileHashes)
 	if err != nil {
 		return fmt.Errorf("marshaling file hashes: %w", err)
 	}
@@ -645,12 +668,12 @@ func (s *Service) saveFileHashes() error {
 // sidecar and ValidateCollection reconciles the diff against the persistent
 // chromem collection. Caller must hold s.mu (write).
 func (s *Service) upsertFileHashes(docs []chromem.Document) {
-	if s.fileHashes == nil {
-		s.fileHashes = make(map[string]string)
+	if s.current.fileHashes == nil {
+		s.current.fileHashes = make(map[string]string)
 	}
 	for _, d := range docs {
 		if fp := d.Metadata["file_path"]; fp != "" {
-			s.fileHashes[fp] = fileHashEntryFromMetadata(d.Metadata, s.chunkerFingerprint)
+			s.current.fileHashes[fp] = fileHashEntryFromMetadata(d.Metadata, s.chunkerFingerprint)
 		}
 	}
 }
@@ -659,48 +682,48 @@ func (s *Service) upsertFileHashes(docs []chromem.Document) {
 // upsertFileHashes it does not persist per call; the map is flushed at lifecycle
 // boundaries. Caller must hold s.mu (write).
 func (s *Service) removeFileHashes(paths []string) {
-	if s.fileHashes == nil || len(paths) == 0 {
+	if s.current.fileHashes == nil || len(paths) == 0 {
 		return
 	}
 	for _, p := range paths {
-		delete(s.fileHashes, p)
+		delete(s.current.fileHashes, p)
 	}
 }
 
 // RebuildCollection deletes the current branch collection and creates a fresh one.
 // Caller must hold s.mu (write lock).
 func (s *Service) RebuildCollection(ctx context.Context) error {
-	if s.db == nil {
+	if s.current.db == nil {
 		return errors.New("no database initialized")
 	}
-	if s.currentBranch == "" {
+	if s.current.currentBranch == "" {
 		return errors.New("no branch set")
 	}
 
-	name := collectionName(s.currentBranch)
+	name := collectionName(s.current.currentBranch)
 
-	if err := s.db.DeleteCollection(name); err != nil {
+	if err := s.current.db.DeleteCollection(name); err != nil {
 		s.logger.Warn("failed to delete collection during rebuild", "collection", name, "error", err)
 	}
 
-	col, err := s.db.GetOrCreateCollection(name, nil, s.embeddingFunc)
+	col, err := s.current.db.GetOrCreateCollection(name, nil, s.embeddingFunc)
 	if err != nil {
 		return fmt.Errorf("creating fresh collection %q: %w", name, err)
 	}
-	s.collection = col
+	s.current.collection = col
 	// Reset the sidecar: a rebuilt collection is empty until re-indexed. Also
 	// drop any in-flight migration: there is nothing left to backfill.
-	if s.migrationCancel != nil {
-		s.migrationCancel()
-		s.migrationCancel = nil
+	if s.current.migrationCancel != nil {
+		s.current.migrationCancel()
+		s.current.migrationCancel = nil
 	}
-	s.fileHashes = make(map[string]string)
-	s.fileHashMigrationPending.Store(false)
-	s.migrationCh = closedChan()
-	if err := s.saveFileHashes(); err != nil {
+	s.current.fileHashes = make(map[string]string)
+	s.current.fileHashMigrationPending.Store(false)
+	s.current.migrationCh = closedChan()
+	if err := s.current.saveFileHashes(); err != nil {
 		s.logger.Warn("failed to persist file-hash sidecar after rebuild", "error", err)
 	}
-	s.logger.Info("rebuilt collection", "branch", s.currentBranch, "collection", name)
+	s.logger.Info("rebuilt collection", "branch", s.current.currentBranch, "collection", name)
 	return nil
 }
 
@@ -734,19 +757,19 @@ func (s *Service) commitEmbeddedDocuments(ctx context.Context, vecDocs []chromem
 	}
 
 	commitStarted := time.Now()
-	commitErr := s.collection.AddDocuments(ctx, vecDocs, 1)
+	commitErr := s.current.collection.AddDocuments(ctx, vecDocs, 1)
 	s.telemetry.observe(StageChromemCommit, len(vecDocs), time.Since(commitStarted))
 	if commitErr != nil {
 		return fmt.Errorf("committing %d embedded documents: %w", len(vecDocs), commitErr)
 	}
 
-	if s.lexical != nil && len(lexDocs) > 0 {
+	if s.current.lexical != nil && len(lexDocs) > 0 {
 		upsertStarted := time.Now()
-		upsertErr := s.lexical.Upsert(ctx, lexDocs)
+		upsertErr := s.current.lexical.Upsert(ctx, lexDocs)
 		s.telemetry.observe(StageBleveUpsert, len(lexDocs), time.Since(upsertStarted))
 		if upsertErr != nil {
 			s.logger.Warn("lexical upsert failed; will be repaired via RebuildLexical",
-				"branch", s.currentBranch, "docs", len(lexDocs), "error", upsertErr)
+				"branch", s.current.currentBranch, "docs", len(lexDocs), "error", upsertErr)
 		}
 	}
 	return nil
@@ -772,7 +795,7 @@ func (s *Service) commitEmbeddedDocuments(ctx context.Context, vecDocs []chromem
 // chromem embeds each document individually.
 // Caller must hold s.mu (write lock).
 func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, lexDocs []lexical.Doc) error {
-	if s.collection == nil {
+	if s.current.collection == nil {
 		return errors.New("no collection available")
 	}
 	if len(vecDocs) == 0 && len(lexDocs) == 0 {
@@ -815,7 +838,7 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 			continue
 		}
 		commitStarted := time.Now()
-		commitErr := s.collection.AddDocuments(ctx, sub, 1)
+		commitErr := s.current.collection.AddDocuments(ctx, sub, 1)
 		s.telemetry.observe(StageChromemCommit, len(sub), time.Since(commitStarted))
 		if commitErr != nil {
 			return fmt.Errorf("adding %d documents (offset %d of %d): %w", len(sub), start, len(vecDocs), commitErr)
@@ -833,7 +856,7 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 	// hash; upsert is idempotent.
 	s.upsertFileHashes(vecDocs)
 
-	if s.lexical != nil && len(lexDocs) > 0 {
+	if s.current.lexical != nil && len(lexDocs) > 0 {
 		if len(droppedIDs) > 0 {
 			// Clamp the capacity at zero: today's callers pass lexDocs
 			// mirroring vecDocs 1:1 (same IDs), so droppedIDs can never
@@ -849,11 +872,11 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 			lexDocs = filtered
 		}
 		upsertStarted := time.Now()
-		upsertErr := s.lexical.Upsert(ctx, lexDocs)
+		upsertErr := s.current.lexical.Upsert(ctx, lexDocs)
 		s.telemetry.observe(StageBleveUpsert, len(lexDocs), time.Since(upsertStarted))
 		if upsertErr != nil {
 			s.logger.Warn("lexical upsert failed; will be repaired via RebuildLexical",
-				"branch", s.currentBranch, "docs", len(lexDocs), "error", upsertErr)
+				"branch", s.current.currentBranch, "docs", len(lexDocs), "error", upsertErr)
 		}
 	}
 	return nil
@@ -953,8 +976,8 @@ func (s *Service) resolveEmbeddingChunk(ctx context.Context, texts []string) (ve
 
 	misses := make([]string, 0, len(uniqueTexts))
 	for _, text := range uniqueTexts {
-		if s.embeddingCache != nil {
-			vec, ok := s.embeddingCache.get(text)
+		if s.current.embeddingCache != nil {
+			vec, ok := s.current.embeddingCache.get(text)
 			s.telemetry.observeEmbeddingCache(ok)
 			if ok {
 				for _, pos := range positions[text] {
@@ -1012,12 +1035,12 @@ func (s *Service) resolveEmbeddingChunk(ctx context.Context, texts []string) (ve
 		if s.embeddingDimension > 0 && len(vec) != s.embeddingDimension {
 			return nil, nil, fmt.Errorf("batch embedder returned dimension %d, want %d", len(vec), s.embeddingDimension)
 		}
-		s.embeddingCache.put(text, vec)
+		s.current.embeddingCache.put(text, vec)
 		for _, pos := range positions[text] {
 			vecs[pos] = vec
 		}
 	}
-	s.embeddingCache.prune()
+	s.current.embeddingCache.prune()
 	if len(failed) == 0 {
 		failed = nil
 	}
@@ -1072,21 +1095,21 @@ func (s *Service) embedChunkPerText(ctx context.Context, chunk []string, start, 
 // chromem collection and from the lexical index (best-effort).
 // Caller must hold s.mu (write lock).
 func (s *Service) DeleteDocumentsByIDs(ctx context.Context, ids []string) error {
-	if s.collection == nil {
+	if s.current.collection == nil {
 		return errors.New("no collection available")
 	}
 	if len(ids) == 0 {
 		return nil
 	}
 
-	if err := s.collection.Delete(ctx, nil, nil, ids...); err != nil {
+	if err := s.current.collection.Delete(ctx, nil, nil, ids...); err != nil {
 		return fmt.Errorf("deleting %d documents: %w", len(ids), err)
 	}
 
-	if s.lexical != nil {
-		if err := s.lexical.Delete(ctx, ids); err != nil {
+	if s.current.lexical != nil {
+		if err := s.current.lexical.Delete(ctx, ids); err != nil {
 			s.logger.Warn("lexical delete failed; will be repaired via RebuildLexical",
-				"branch", s.currentBranch, "ids", len(ids), "error", err)
+				"branch", s.current.currentBranch, "ids", len(ids), "error", err)
 		}
 	}
 	return nil
@@ -1104,8 +1127,8 @@ func DocumentID(filePath string, chunkIndex int) string {
 // length directly (no defensive copy) since it stays under the lock; only the
 // rare nil-map case falls back to a query.
 func (s *Service) collectionUniqueFileCount() int {
-	if s.fileHashes != nil {
-		return len(s.fileHashes)
+	if s.current.fileHashes != nil {
+		return len(s.current.fileHashes)
 	}
 	hashes, err := s.getCollectionFileHashes()
 	if err != nil {

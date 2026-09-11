@@ -10,9 +10,14 @@ import { createRoot, type Root } from 'react-dom/client'
 // are surfaced; the clipboard tests don't touch them, so the mock is inert
 // there.
 const gitPanelMock = vi.hoisted(() => ({
+  isGitRepo: false,
+  gitRepoProjectId: null as string | null,
   setActiveTab: vi.fn(),
   setPendingHistoryFilter: vi.fn(),
   setError: vi.fn(),
+}))
+const projectMock = vi.hoisted(() => ({
+  activeProjectId: 'p1' as string | null,
 }))
 const uiMock = vi.hoisted(() => ({
   setWorkspaceTab: vi.fn(),
@@ -22,7 +27,18 @@ const fileViewerMock = vi.hoisted(() => ({
 }))
 
 vi.mock('@/stores/gitPanelStore', () => ({
-  useGitPanelStore: { getState: () => gitPanelMock },
+  // The component both subscribes (selector call) and imperatively reads
+  // (getState) — the mock must be callable AND expose getState.
+  useGitPanelStore: Object.assign(
+    (selector: (s: typeof gitPanelMock) => unknown) => selector(gitPanelMock),
+    { getState: () => gitPanelMock },
+  ),
+}))
+vi.mock('@/stores/projectStore', () => ({
+  useProjectStore: Object.assign(
+    (selector: (s: typeof projectMock) => unknown) => selector(projectMock),
+    { getState: () => projectMock },
+  ),
 }))
 vi.mock('@/stores/uiStore', () => ({
   useUIStore: { getState: () => uiMock },
@@ -160,6 +176,10 @@ describe('FileTreeContextMenu — View History', () => {
       configurable: true,
       value: { ClipboardSetText: vi.fn().mockResolvedValue(true), EventsEmit: vi.fn() },
     })
+    // View History is a git-only action: the tests in this describe run
+    // against a project whose workspace IS a git repository.
+    gitPanelMock.isGitRepo = true
+    gitPanelMock.gitRepoProjectId = 'p1'
     gitPanelMock.setActiveTab.mockClear()
     gitPanelMock.setPendingHistoryFilter.mockClear()
     uiMock.setWorkspaceTab.mockClear()
@@ -218,6 +238,45 @@ describe('FileTreeContextMenu — View History', () => {
 
     expect(gitPanelMock.setPendingHistoryFilter).toHaveBeenCalledTimes(1)
     expect(gitPanelMock.setPendingHistoryFilter).toHaveBeenCalledWith('src/foo.ts')
+  })
+
+  it('switches the workspace to the Git panel on the history action', async () => {
+    renderMenu(fileEntry, '/ws')
+
+    await act(async () => {
+      menuItem('View History').click()
+      await Promise.resolve()
+    })
+
+    expect(uiMock.setWorkspaceTab).toHaveBeenCalledWith('p1', 'git')
+    expect(gitPanelMock.setActiveTab).toHaveBeenCalledWith('p1', 'history')
+  })
+
+  it('hides git-only actions when the workspace is not a git repository', () => {
+    gitPanelMock.isGitRepo = false
+    gitPanelMock.gitRepoProjectId = 'p1'
+
+    renderMenu(fileEntry, '/ws')
+
+    expect(() => menuItem('Add to .gitignore')).toThrow()
+    expect(() => menuItem('View History')).toThrow()
+    // The separator before the git-only group must be gone as well.
+    const items = Array.from(container.querySelectorAll('[role="menuitem"]'))
+    expect(items.map((b) => b.textContent?.trim())).toEqual([
+      'Open in Viewer',
+      'Copy Path',
+      'Copy Relative Path',
+    ])
+  })
+
+  it('hides git-only actions when the repo check belongs to a different project (stale pairing)', () => {
+    gitPanelMock.isGitRepo = true
+    gitPanelMock.gitRepoProjectId = 'other-project'
+
+    renderMenu(fileEntry, '/ws')
+
+    expect(() => menuItem('Add to .gitignore')).toThrow()
+    expect(() => menuItem('View History')).toThrow()
   })
 })
 

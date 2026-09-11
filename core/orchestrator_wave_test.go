@@ -685,10 +685,19 @@ func TestResumeWave_AsyncDelegateSettlesInWave(t *testing.T) {
 		// Run 1: delegate del_1 async (the tool returns immediately with
 		// "running in background").
 		{respond: assistantToolCall("c1", "delegate", `{"tasks":[{"id":"del_1","summary":"s","task":"do background work","mode":"async"}]}`)},
-		// The async subagent's gated tool call; the pause is armed while
-		// blocked here. After the release the subagent trips the pause at its
-		// next boundary and checkpoints through the goroutine's select path.
+		// Two gated "background work" calls. Run 1 is a race between the
+		// parent conductor (which reaches its own next step boundary right
+		// after the async delegate returns) and the just-launched async
+		// subagent (its first step) — whoever calls first consumes the next
+		// script entry, so a SINGLE gated entry could be stolen by the parent.
+		// Providing two gated entries and arming the pause only after BOTH are
+		// reached makes the choreography deterministic: both callers are
+		// blocked mid-call (past their step boundary) when the release fires,
+		// so each observes the armed pause at its NEXT boundary and
+		// checkpoints through the goroutine's select path.
 		{respond: assistantToolCall("g1", "bash_exec", `{"command":"echo bgpart","timeout":"5s"}`),
+			started: make(chan struct{}), gate: make(chan struct{})},
+		{respond: assistantToolCall("g2", "bash_exec", `{"command":"echo bgpart","timeout":"5s"}`),
 			started: make(chan struct{}), gate: make(chan struct{})},
 		// Wave: del_1 continues from its checkpoint and finishes.
 		{respond: executorFinishResponse("del_1 done")},
@@ -720,14 +729,22 @@ func TestResumeWave_AsyncDelegateSettlesInWave(t *testing.T) {
 		_, err := RunConductor(ctx, "delegate in background", bb, availableTools, deps1, plansDir)
 		outCh <- err
 	}()
-	g := caller.script[1]
-	select {
-	case <-g.started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for the async del_1's gated call")
+	// Wait until BOTH the parent's next step and the async subagent's first
+	// step are blocked in their gates, THEN arm the pause and release them.
+	// This removes the run-1 race for the next script entry: both callers have
+	// already passed their current step boundary, so both will see the armed
+	// pause at their next boundary and checkpoint.
+	g1, g2 := caller.script[1], caller.script[2]
+	for i, g := range []pauseScriptStep{g1, g2} {
+		select {
+		case <-g.started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timeout waiting for gated call %d (parent step + async subagent step)", i+1)
+		}
 	}
 	o.PauseSession()
-	close(g.gate)
+	close(g1.gate)
+	close(g2.gate)
 	select {
 	case err := <-outCh:
 		if !errors.Is(err, agent.ErrPaused) {

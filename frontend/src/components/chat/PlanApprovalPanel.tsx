@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Check, X, MessageSquare, ExternalLink, AlertTriangle, FileText } from 'lucide-react'
 import { emit } from '@/api/runtime'
@@ -7,12 +7,19 @@ import { getPlanReviewResolution } from '@/types/messages'
 import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
+import { Markdown } from '@/lib/markdownConfig'
 
 interface PlanApprovalPanelProps {
   item: Extract<DisplayItem, { kind: 'plan_review' }>
 }
 
-export function PlanApprovalPanel({ item }: PlanApprovalPanelProps) {
+// Memoized like its sibling blocks exposed to the assistant-chunk render
+// cadence (ThoughtBlock / ToolCard): ChatArea re-renders on every streaming
+// chunk, and the plan markdown below is expensive to re-parse (remark +
+// rehype-sanitize + ReactMarkdown on a multi-KB plan). `item` identity is
+// stable (displayItems are memoized on messages), so React.memo fully
+// suppresses those re-renders.
+export const PlanApprovalPanel = React.memo(function PlanApprovalPanel({ item }: PlanApprovalPanelProps) {
   const sessionId = useSessionStore((s) => s.activeSessionId)
   const requestId = item.message.metadata?.request_id as string | undefined
   const planPath = item.message.metadata?.plan_path as string | undefined
@@ -139,7 +146,7 @@ export function PlanApprovalPanel({ item }: PlanApprovalPanelProps) {
         )}
         {item.message.content && (
           <div className="max-h-48 overflow-y-auto custom-scrollbar rounded-md border border-border bg-background p-2">
-            <pre className="text-xs whitespace-pre-wrap font-mono">{item.message.content}</pre>
+            <Markdown content={item.message.content} compact />
           </div>
         )}
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -165,4 +172,4 @@ export function PlanApprovalPanel({ item }: PlanApprovalPanelProps) {
       </div>
     </div>
   )
-}
+})

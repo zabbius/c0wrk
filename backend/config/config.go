@@ -38,6 +38,7 @@ type Config struct {
 	VectorIndex   VectorIndexConfig   `yaml:"vector_index"`
 	Proxy         ProxyConfig         `yaml:"proxy"`
 	Terminal      TerminalConfig      `yaml:"terminal"`
+	Git           GitConfig           `yaml:"git"`
 
 	// SmallLLM configures optimizations applied when running on a "small"
 	// (low-capacity / cheaper) LLM. The master toggle is manual only — there
@@ -116,6 +117,29 @@ type TerminalConfig struct {
 	//
 	//	[[ -z "$TMUX" && "$TERM_PROGRAM" != "c0wrk" ]] && tmux attach
 	Env map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+}
+
+// GitConfig controls the automatic git background behaviour of the app
+// (periodic and event-driven background fetches). Manual fetches triggered
+// from the UI are not gated by this section.
+type GitConfig struct {
+	// AutoFetch is the master gate for ALL automatic fetch triggers: app
+	// startup, project switch, window focus, and the periodic ticker. It is
+	// a pointer-bool so callers can distinguish "unset" (defaults to true)
+	// from "explicitly disabled" (false), matching the UpdatesConfig
+	// convention. When false, no automatic fetch ever runs — only manual
+	// fetches from the UI still work.
+	AutoFetch *bool `yaml:"auto_fetch"`
+
+	// AutoFetchInterval is the period of the periodic background fetch
+	// ticker, expressed as a duration string (e.g. "2m"). Defaults to "2m".
+	// The special value "0" disables ONLY the ticker — the event-driven
+	// triggers (startup, project switch, window focus) remain active while
+	// AutoFetch is true. The string is parsed with time.ParseDuration by the
+	// consumer; the config layer only stores the raw value and applies the
+	// default. An unparseable value is treated by the consumer as the
+	// default.
+	AutoFetchInterval string `yaml:"auto_fetch_interval"`
 }
 
 // VectorIndexConfig holds vector / hybrid search runtime settings.
@@ -258,6 +282,20 @@ type VectorIndexConfig struct {
 	// on single-GPU machines. It is ignored by the CPU provider. Negative
 	// values are rejected at load time by validate().
 	DeviceID int `yaml:"device_id"`
+
+	// ParkCapacity is the maximum number of recently-closed projects whose
+	// vector-index state (chromem DB + bleve lexical index + file-hash
+	// sidecar) is kept resident in RAM so that returning to one of them
+	// restores it instantly — skipping the expensive chromem gob-decode of
+	// every branch document, plus the lexical index reopen. It is a
+	// pointer-int so an unset key resolves to the default of 3 while an
+	// explicit 0 is preserved and DISABLES parking (reproducing the
+	// historical behaviour where every project switch reopened the
+	// persistent DB from scratch). Memory/latency tradeoff: each parked
+	// project holds its full vector + lexical index in memory, so raise this
+	// on a RAM-rich machine to make frequent project hopping instant, and
+	// lower it (or set 0) on a constrained one to cap resident memory.
+	ParkCapacity *int `yaml:"park_capacity"`
 }
 
 // Vector index embedding execution provider values

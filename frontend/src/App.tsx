@@ -13,12 +13,15 @@ import { GitConfigRiskToast } from '@/components/GitConfigRiskToast'
 import { ExitConfirmDialog } from '@/components/ExitConfirmDialog'
 import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { useExitGuard } from '@/hooks/useExitGuard'
+import { useGitFocusRefresh } from '@/hooks/useGitFocusRefresh'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useProjectLoader } from '@/hooks/useProjectLoader'
 import { useSessionLoader } from '@/hooks/useSessionLoader'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { useBackgroundSessionWatcher } from '@/hooks/useBackgroundSessionWatcher'
 import { useWindowTitle } from '@/hooks/useWindowTitle'
+import { useActiveSessionsRefresh } from '@/stores/activeSessionsStore'
+import { initSoundUnlock } from '@/lib/sound'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -53,6 +56,17 @@ function App() {
   const activeSessionId = useSessionStore(s => s.activeSessionId)
   const activeProjectId = useProjectStore(s => s.activeProjectId)
 
+  // Register the persistent gesture/visibility audio-unlock listeners ONCE at
+  // app start. This must NOT live in useSoundEvents: that hook only runs when a
+  // session is active, yet the webview can leave the AudioContext suspended
+  // with no active session (e.g. immediately after a reload) and the only way
+  // to wake it is a gesture/visibility event. initSoundUnlock is idempotent
+  // (guarded internally), so a StrictMode double-mount still installs exactly
+  // one set of listeners.
+  useEffect(() => {
+    initSoundUnlock()
+  }, [])
+
   // Clear stale work-directory data on project/session switch so the modal
   // doesn't briefly show entries from a previous context before loadAll runs.
   useEffect(() => {
@@ -64,10 +78,23 @@ function App() {
   useSessionLoader()
   useSessionEvents(activeSessionId)
   useBackgroundSessionWatcher()
+  // Authoritative live-sessions snapshot loader. Mounted at the App root — NOT
+  // in the sidebar header (ActiveSessionsIndicator) — because the header
+  // unmounts when the sidebar is collapsed, which would freeze the snapshot
+  // exactly when it is needed most: announcing completions of sessions the
+  // current chatStore never followed (a webview reload empties the live maps)
+  // or that live in a different project. `activeSessionsStore.sessions` stays
+  // fresh app-wide; the indicator is now a pure consumer of that store.
+  useActiveSessionsRefresh()
   useUpdateChecker()
-  // Native window title (c0wrk - Project - Session) — mounted at the root so
+  // Native window title (c0wrk - Project: Session) — mounted at the root so
   // the title tracks the active context in every app phase.
   useWindowTitle()
+  // Fetch-on-focus (git auto-fetch, window-focus trigger): the hook arms
+  // its listener only after runtime readiness and defers every gate to the
+  // backend (RequestGitRemoteRefresh / autoFetchOnce), so mounting it here
+  // unconditionally is safe in every phase.
+  useGitFocusRefresh()
   // Close-guard subscription — mounted once at the root so app-phase
   // transitions never create an event gap; ExitConfirmDialog (rendered in
   // every phase branch) is a pure view over the store this hook writes.

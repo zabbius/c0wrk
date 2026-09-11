@@ -2,7 +2,8 @@ import { useCallback } from 'react'
 import { GitBranch, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
-import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useGitPanelStore, selectGitPanelTab } from '@/stores/gitPanelStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitStatusEvents } from '@/hooks/useGitStatusEvents'
 import { getFileDiff } from '@/api/workspace'
@@ -13,6 +14,7 @@ import { CommitSection } from './CommitSection'
 import { BranchPicker } from './BranchPicker'
 import { GitHistoryTab } from './GitHistoryTab'
 import { GitPanelFooter } from './GitPanelFooter'
+import { FileTreePanel } from '@/components/layout/FileTreePanel'
 
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -23,10 +25,20 @@ export function GitPanel() {
 
   // Stable individual selectors — each only triggers re-render when its
   // specific slice changes (prevents infinite re-render loops per AGENTS.md).
-  const isGitRepo = useGitPanelStore((s) => s.isGitRepo)
+  // The git-repo flag is PAIRED with gitRepoProjectId per the store contract:
+  // a stale `isGitRepo=true` checked against a previously active project must
+  // never leak into the "Not a git repository" decision during rapid project
+  // switches. The selector returns a primitive (React #185 safe).
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const isGitRepo = useGitPanelStore(
+    (s) => s.isGitRepo && s.gitRepoProjectId === activeProjectId,
+  )
   const isLoading = useGitPanelStore((s) => s.isLoading)
   const error = useGitPanelStore((s) => s.error)
-  const activeTab = useGitPanelStore((s) => s.activeTab)
+  // The active tab is per project: derived from the active project id so a
+  // project switch instantly shows that project's remembered tab (default
+  // 'files' for a first visit) with no transient wrong-section frame.
+  const activeTab = useGitPanelStore((s) => selectGitPanelTab(s, activeProjectId))
   const setActiveTab = useGitPanelStore((s) => s.setActiveTab)
 
   // ── Callbacks ──────────────────────────────────────────────────────────
@@ -89,13 +101,18 @@ export function GitPanel() {
   return (
     <div className="flex flex-col h-full min-h-0">
       <GitPanelToolbar />
-      {/* Changes | History tab switcher (graph merged into History) */}
+      {/* Files | Changes | History tab switcher. "files" hosts the workspace
+          file explorer (filter bar + tree) as the FIRST section — the
+          workspace-level Explorer tab does not exist for git projects, so
+          this is where the explorer lives. Graph was merged into History. */}
       <div className="flex shrink-0 border-b border-border bg-secondary/20">
-        {(['changes', 'history'] as const).map((tab) => (
+        {(['files', 'changes', 'history'] as const).map((tab) => (
           <button
             key={tab}
             type="button"
-            onClick={() => setActiveTab(tab)}
+            onClick={() => {
+              if (activeProjectId !== null) setActiveTab(activeProjectId, tab)
+            }}
             className={cn(
               'px-3 py-1 text-xs capitalize transition-colors',
               activeTab === tab
@@ -113,7 +130,9 @@ export function GitPanel() {
           <span className="truncate">{error}</span>
         </div>
       )}
-      {activeTab === 'changes' ? (
+      {activeTab === 'files' ? (
+        <FileTreePanel />
+      ) : activeTab === 'changes' ? (
         <>
           <ChangesList onToggleFile={onToggleFile} onOpenDiff={onOpenDiff} />
           <CommitSection />

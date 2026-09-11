@@ -215,8 +215,8 @@ func (s *Service) hybridSearch(ctx context.Context, opts SearchOptions, wait boo
 	mustMatch = append(mustMatch, sugarMust...)
 
 	s.mu.RLock()
-	col := s.collection
-	lex := s.lexical
+	col := s.current.collection
+	lex := s.current.lexical
 	s.mu.RUnlock()
 
 	if col == nil {

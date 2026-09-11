@@ -410,6 +410,10 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
       metadata: {
         request_id: p.request_id,
         plan_path: p.plan_path,
+        // Mirror the persisted metadata shape (the Go persister writes the
+        // full payload, including plan_content, as metadata) so a prompt
+        // resurfaced here matches one restored from history.
+        plan_content: p.plan_content,
         resolved: false,
       } as Record<string, unknown>,
       timestamp: Date.now(),

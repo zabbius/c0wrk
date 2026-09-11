@@ -26,7 +26,7 @@ User requirement: every mode and project remembers which session was open in it,
 - Switching modes/projects and restarting the app now reproduce exactly the session/context the user left; the saved pointer is authoritative because it is written when the selection happens, not when it ends.
 - "Latest" fallback is truthful (newest event) and deterministic (explicit tie-breaks); a terminal-only session ranks by its real usage.
 - Session-only selection changes can no longer wipe persisted viewer tabs (previously possible through the full-state upsert).
-- Costs: an extra fire-and-forget RPC per user session pick (negligible, best-effort); effective-activity computation adds two index-backed scalar subqueries per listed session (session counts are modest); `app_state` is a new schema object to reason about (single key today).
+- Costs: an extra fire-and-forget RPC per user session pick (negligible, best-effort); effective-activity computation adds two index-backed scalar subqueries per listed session (session counts are modest); `app_state` is a small key-value store to reason about (not a single key — `last_active_project_id` plus the compaction-forecast keys).
 - Startup is no longer CODE-first by default — users who quit in CHAT land in CHAT. Fresh installs (no `app_state` row, no real projects) keep the original Create Project onboarding.
 
 ## Alternatives Considered

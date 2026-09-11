@@ -463,9 +463,17 @@ func (o *Orchestrator) resumeGoalLoop(
 	// or restored from the DB via convertChatMessagesToLLM), so we extract the
 	// image blocks and rebuild the text block from the blackboard. Without
 	// this, a resumed image-bearing goal task would lose its images.
+	//
+	// The image lookup keys on the ORIGINAL request, not the augmented resume
+	// message: imageBlocksForRequest matches history entries by exact content,
+	// and the history's user message holds only the original request — the
+	// wave summary / fallback note are resume-time additions that never enter
+	// stored history. This mirrors the plain-Conductor resume path in Resume.
+	// The text block is still built from the augmented message so each turn's
+	// conductor sees the factual wave data.
 	resumeContentBlocks := buildContentBlocks(
 		o.augmentWithAttachments(message, bb),
-		imageBlocksForRequest(o.historySnapshot(), message),
+		imageBlocksForRequest(o.historySnapshot(), bb.GetOriginalRequest()),
 	)
 	seed := resumeSteps
 	seeded := false
@@ -502,7 +510,13 @@ func (o *Orchestrator) resumeGoalLoop(
 	gs, paused := o.runGoalTurns(ctx, message, bb, availableTools, plansDir, conversationHistory, gs, wrapped)
 
 	o.persistGoalStateBestEffort(bb, gs)
-	out := message
+	// The output fallback is the clean original request, mirroring runGoalLoop
+	// (whose fallback is the raw user message): `message` here additionally
+	// carries the wave summary / fallback note, which are per-run conductor
+	// context for the turn messages and the verifier — not user-visible task
+	// output. Falling back to the augmented message would surface the wave
+	// digest as the task's result whenever no verdict reason exists.
+	out := bb.GetOriginalRequest()
 	if gs.LastVerdict != nil && gs.LastVerdict.Reason != "" {
 		out = gs.LastVerdict.Reason
 	}
