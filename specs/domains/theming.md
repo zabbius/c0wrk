@@ -18,7 +18,7 @@ c0wrk ships two built-in themes (Default Dark / One Dark, Default Light / One Li
 - `backend/config/paths.go` - `ThemesDir(agentDir)` → `<agentDir>/themes` (theme storage root)
 - `frontend/src/hooks/useXTermTheme.ts` - resolves XTerm ANSI colors from CSS variables at call time (re-resolves on theme change)
 - `frontend/src/lib/cmChatTheme.ts`, `frontend/src/components/fileViewer/CodeMirrorFileViewer.tsx` - CodeMirror themes resolved from CSS variables; re-created via Compartment on theme change
-- `specs/assets/example-theme.css` - full, valid example theme (light) — the authoring starting point
+- `specs/assets/example-theme.css` - fully annotated example theme (light, "Solar Light"): a self-contained authoring tutorial — metadata header, validation rules, every token group explained inline; guarded by `TestValidateThemeCSS_SpecExampleTheme`
 
 ## Core Types
 
@@ -211,7 +211,7 @@ Notes for authors:
 - `--color-shadow` is adaptive per theme (softer on light backgrounds).
 - The embedded terminal maps ANSI colors onto these tokens (see `frontend/src/hooks/useXTermTheme.ts`): background ← `--color-popover`, black ← `--color-background`, red ← `--color-destructive`, green ← `--color-success`, yellow ← `--color-highlight`, blue ← `--color-info`, magenta ← `--color-hljs-keyword`, cyan ← `--color-hljs-literal`, white ← `--color-foreground`, brightBlack ← `--color-hljs-comment`, brightWhite ← `--color-terminal-bright-white`.
 - CodeMirror editor themes are resolved from the same variables and re-created via Compartment on theme change.
-- A complete, valid starter theme: [example-theme.css](../assets/example-theme.css) (type `light`).
+- A complete, annotated starter theme with inline authoring guidance: [example-theme.css](../assets/example-theme.css) (type `light`).
 
 ## UX
 
