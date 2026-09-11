@@ -491,6 +491,19 @@ func TestSwitchProjectDoesNotWaitForInitGoroutine(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Storage roots before the Shutdown-cleanup registration
+			// (t.Cleanup is LIFO): mgr.Shutdown must close the service and
+			// release the lexical zap/bolt handles before the TempDir
+			// RemoveAll runs — an open handle fails the unlink on Windows.
+			ws, viPath := "", ""
+			if tc.projectID != core.NoProjectID {
+				ws = t.TempDir()
+				if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
+					t.Fatalf("write a.go: %v", err)
+				}
+				viPath = filepath.Join(t.TempDir(), "vi")
+			}
+
 			svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
 			if err != nil {
 				t.Fatalf("NewService: %v", err)
@@ -513,15 +526,6 @@ func TestSwitchProjectDoesNotWaitForInitGoroutine(t *testing.T) {
 				mgr.initWG.Done()
 				mgr.Shutdown()
 			})
-
-			ws, viPath := "", ""
-			if tc.projectID != core.NoProjectID {
-				ws = t.TempDir()
-				if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
-					t.Fatalf("write a.go: %v", err)
-				}
-				viPath = filepath.Join(t.TempDir(), "vi")
-			}
 
 			start := time.Now()
 			if err := mgr.SwitchProject(tc.projectID, ws, viPath, ProjectCallbacks{}); err != nil {

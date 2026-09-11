@@ -113,12 +113,18 @@ func TestSwitchProjectSetupVector_NoProjectDropsDeferred(t *testing.T) {
 // path: once the manager is ready, a switch clears any stale deferred setup
 // (so it is applied exactly once) and runs the real setup.
 func TestSwitchProjectSetupVector_ManagerReadyClearsDeferred(t *testing.T) {
+	// Workspace root before newStartupVectorAPI: the helper registers
+	// mgr.Shutdown on t.Cleanup, so LIFO ordering must let Shutdown release
+	// the vector-store handles before this TempDir's RemoveAll runs — an open
+	// bolt/zap handle fails the unlink on Windows.
+	ws := t.TempDir()
+
 	f, mgr := newStartupVectorAPI(t)
 	publishVectorManager(f, mgr)
 
 	f.deferredVectorProject = &project.ProjectInfo{ID: "stale-project"}
 
-	p := &project.ProjectInfo{ID: "proj-a", WorkspacePath: t.TempDir()}
+	p := &project.ProjectInfo{ID: "proj-a", WorkspacePath: ws}
 	if err := f.switchProjectSetupVector(p); err != nil {
 		t.Fatalf("switchProjectSetupVector (ready manager): %v", err)
 	}
@@ -132,12 +138,17 @@ func TestSwitchProjectSetupVector_ManagerReadyClearsDeferred(t *testing.T) {
 // setup deferred while the manager was nil is applied once the manager is
 // wired in and the project is the active one — without a manual project switch.
 func TestInitVectorIndexForActiveProject_AppliesDeferredSetup(t *testing.T) {
-	f, mgr := newStartupVectorAPI(t)
-
+	// Workspace root before newStartupVectorAPI: the helper registers
+	// mgr.Shutdown on t.Cleanup, so LIFO ordering must let Shutdown release
+	// the vector-store handles before this TempDir's RemoveAll runs — an open
+	// bolt/zap handle fails the unlink on Windows.
 	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
+
+	f, mgr := newStartupVectorAPI(t)
+
 	p := &project.ProjectInfo{ID: "proj-a", WorkspacePath: ws}
 
 	// Startup race: the switch runs while the manager is still being built.

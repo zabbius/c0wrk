@@ -77,14 +77,18 @@ func parkAddDocs(t *testing.T, svc *Service, dir, name, hash string) {
 func TestService_ParkRestoreSkipsReopen(t *testing.T) {
 	counter := installPersistentDBOpenCounter(t)
 
+	// Storage roots first, close-cleanup second: t.Cleanup is LIFO, so the
+	// TempDir RemoveAll must be registered BEFORE svc.Close for Close to run
+	// first and release the lexical bolt/zap handles — an open handle fails
+	// the unlink on Windows.
+	dirA := filepath.Join(t.TempDir(), "A")
+	dirB := filepath.Join(t.TempDir(), "B")
+
 	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc(), ParkCapacity: 2})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
 	t.Cleanup(func() { _ = svc.Close() })
-
-	dirA := filepath.Join(t.TempDir(), "A")
-	dirB := filepath.Join(t.TempDir(), "B")
 
 	// Open and populate A.
 	if err := svc.SetProject("A", dirA); err != nil {
@@ -156,14 +160,17 @@ func parkedIDs(svc *Service) []string {
 // TestService_ParkEvictionFlushesSidecar verifies that overflowing the park LRU
 // evicts the oldest state and flushes its file-hash sidecar to disk.
 func TestService_ParkEvictionFlushesSidecar(t *testing.T) {
+	// Storage roots before the Close-cleanup registration (t.Cleanup is
+	// LIFO): svc.Close must release the lexical handles before the TempDir
+	// RemoveAll, or the unlink fails on Windows.
+	base := t.TempDir()
+	dirA, dirB, dirC := filepath.Join(base, "A"), filepath.Join(base, "B"), filepath.Join(base, "C")
+
 	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc(), ParkCapacity: 1})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
 	t.Cleanup(func() { _ = svc.Close() })
-
-	base := t.TempDir()
-	dirA, dirB, dirC := filepath.Join(base, "A"), filepath.Join(base, "B"), filepath.Join(base, "C")
 
 	if err := svc.SetProject("A", dirA); err != nil {
 		t.Fatalf("SetProject A: %v", err)
@@ -217,15 +224,18 @@ func TestService_ParkEvictionFlushesSidecar(t *testing.T) {
 func TestService_ParkDisabledReopens(t *testing.T) {
 	counter := installPersistentDBOpenCounter(t)
 
+	// Storage roots before the Close-cleanup registration (t.Cleanup is
+	// LIFO): svc.Close must release the lexical handles before the TempDir
+	// RemoveAll, or the unlink fails on Windows.
+	dirA := filepath.Join(t.TempDir(), "A")
+	dirB := filepath.Join(t.TempDir(), "B")
+
 	// ParkCapacity left at its zero value → parking disabled.
 	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
 	t.Cleanup(func() { _ = svc.Close() })
-
-	dirA := filepath.Join(t.TempDir(), "A")
-	dirB := filepath.Join(t.TempDir(), "B")
 
 	if err := svc.SetProject("A", dirA); err != nil {
 		t.Fatalf("SetProject A: %v", err)
@@ -264,14 +274,17 @@ func TestService_ParkDisabledReopens(t *testing.T) {
 // data also discards its parked slot (so a later switch back cannot restore a
 // collection rooted at a removed directory).
 func TestService_DeleteProjectDataDropsParked(t *testing.T) {
+	// Storage roots before the Close-cleanup registration (t.Cleanup is
+	// LIFO): svc.Close must release the lexical handles before the TempDir
+	// RemoveAll, or the unlink fails on Windows.
+	dirA := filepath.Join(t.TempDir(), "A")
+	dirB := filepath.Join(t.TempDir(), "B")
+
 	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc(), ParkCapacity: 2})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
 	t.Cleanup(func() { _ = svc.Close() })
-
-	dirA := filepath.Join(t.TempDir(), "A")
-	dirB := filepath.Join(t.TempDir(), "B")
 
 	if err := svc.SetProject("A", dirA); err != nil {
 		t.Fatalf("SetProject A: %v", err)

@@ -39,10 +39,7 @@ func TestAppendLogEntry_UnreadableLogFailsClosed(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte(original), 0o644); err != nil {
 		t.Fatalf("writing log: %v", err)
 	}
-	if err := os.Chmod(logPath, 0o000); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(logPath, 0o644) })
+	restoreLog := makeUnreadable(t, logPath)
 
 	err := AppendLogEntry(root, dir, ResearchLogEntry{
 		Kind:         LogKindNote,
@@ -56,7 +53,9 @@ func TestAppendLogEntry_UnreadableLogFailsClosed(t *testing.T) {
 		t.Errorf("error does not mention the log: %v", err)
 	}
 
-	_ = os.Chmod(logPath, 0o644)
+	// Restore readability (chmod on Unix, handle release on Windows) before
+	// the byte-for-byte comparison re-reads the file.
+	restoreLog()
 	got, readErr := os.ReadFile(logPath)
 	if readErr != nil {
 		t.Fatalf("re-reading log: %v", readErr)
@@ -83,10 +82,7 @@ func TestUpdateHypothesis_UnreadableLogFailsClosed(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte("# Research Log\n\n## note 2025-04-01T10:00:00Z [H-001]\n\nPrior.\n"), 0o644); err != nil {
 		t.Fatalf("writing log: %v", err)
 	}
-	if err := os.Chmod(logPath, 0o000); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(logPath, 0o644) })
+	makeUnreadable(t, logPath)
 
 	status := "in-progress"
 	err := UpdateHypothesis(root, dir, "H-001", HypothesisUpdate{Status: &status})
@@ -122,16 +118,15 @@ func TestSetActiveResearch_UnreadableIndexFailsClosed(t *testing.T) {
 	if err := os.WriteFile(indexPath, []byte(original), 0o644); err != nil {
 		t.Fatalf("writing index: %v", err)
 	}
-	if err := os.Chmod(indexPath, 0o000); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(indexPath, 0o644) })
+	restoreIndex := makeUnreadable(t, indexPath)
 
 	if err := SetActiveResearch(root, "R-001"); err == nil {
 		t.Fatal("SetActiveResearch succeeded against an unreadable index.md")
 	}
 
-	_ = os.Chmod(indexPath, 0o644)
+	// Restore readability (chmod on Unix, handle release on Windows) before
+	// the byte-for-byte comparison re-reads the file.
+	restoreIndex()
 	got, readErr := os.ReadFile(indexPath)
 	if readErr != nil {
 		t.Fatalf("re-reading index: %v", readErr)
