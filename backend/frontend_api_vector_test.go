@@ -57,7 +57,7 @@ func TestGetVectorIndexStatus_NoProjectUnavailable(t *testing.T) {
 	}
 }
 
-// TestGetVectorIndexStatus_EmbedderInfoSurfaced pins the ADR-036
+// TestGetVectorIndexStatus_EmbedderInfoSurfaced pins the ADR-039
 // observability contract on the RPC path: once the desktop background init
 // has recorded the embedder's execution-provider facts, every status —
 // including the unavailable/No-Project variants — carries the effective and
@@ -226,5 +226,53 @@ func TestSearchVectorStore_FailFastReadyIndexProceeds(t *testing.T) {
 	}
 	if elapsed > 100*time.Millisecond {
 		t.Errorf("fail-fast RPC on a ready index took %v; want immediate", elapsed)
+	}
+}
+
+// TestReindexVectorIndex_NoProject verifies that a forced reindex is rejected
+// for the No Project pseudo-project, where vector indexing is disabled.
+func TestReindexVectorIndex_NoProject(t *testing.T) {
+	f := &FrontendAPI{
+		appCtx:          context.Background,
+		activeProjectID: project.NoProjectID,
+	}
+
+	err := f.ReindexVectorIndex()
+	if err == nil {
+		t.Fatal("expected error for No Project")
+	}
+	if !strings.Contains(err.Error(), "No Project") {
+		t.Errorf("expected a No Project error, got %v", err)
+	}
+}
+
+// TestReindexVectorIndex_NilManager verifies that a forced reindex fails
+// cleanly before the vector manager is wired (background init not done yet).
+func TestReindexVectorIndex_NilManager(t *testing.T) {
+	f := &FrontendAPI{
+		appCtx: context.Background,
+	}
+
+	err := f.ReindexVectorIndex()
+	if err == nil {
+		t.Fatal("expected error when vectorManager is nil")
+	}
+	if err.Error() != "vector index not available" {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// TestReindexVectorIndex_NoActiveIndexer verifies that a forced reindex
+// surfaces the manager's "no indexer configured" error when no project has
+// been activated yet (the manager is wired but idle).
+func TestReindexVectorIndex_NoActiveIndexer(t *testing.T) {
+	f := newStuckVectorAPI(t, 0)
+
+	err := f.ReindexVectorIndex()
+	if err == nil {
+		t.Fatal("expected error when no indexer is configured")
+	}
+	if !strings.Contains(err.Error(), "no indexer configured") {
+		t.Errorf("expected a no-indexer error, got %v", err)
 	}
 }

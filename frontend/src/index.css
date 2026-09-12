@@ -164,11 +164,45 @@
 
 html {
     font-size: 14px;
+    /* Full-height chain so the app shell can size itself with percentages
+       instead of viewport units — see the note on #root below. */
+    height: 100%;
+
+    /* UI-scale zoom compensation.
+       The app-wide UI scale is applied as CSS `zoom` on this element, which
+       pre-multiplies the used value of every <length> — including viewport
+       units like 100vh/100vw — while leaving percentages untouched. Any size
+       that must mean "a fraction of the visible viewport" therefore cannot be
+       written as a raw `vh`/`vw` (it would be magnified with the zoom).
+       `--ui-zoom` mirrors the applied factor (written by
+       `uiScaleStore.applyScaleToDocument`, unitless) and `--ui-vh` is the
+       viewport height already divided by it: a `100vh`-equivalent in the
+       zoom-corrected (layout) space, so `calc(var(--ui-vh) * 0.8)` renders as
+       exactly 80% of the visible window at any scale. The fallback keeps
+       `--ui-vh == 100vh` (stock behaviour) before JS runs. Never size
+       viewport-derived regions with raw viewport units. */
+    --ui-zoom: 1;
+    --ui-vh: calc(100vh / var(--ui-zoom, 1));
 }
 
 body {
     background-color: var(--color-background);
     color: var(--color-foreground);
+    height: 100%;
+}
+
+/* The app shell is a fixed, non-scrolling desktop layout; #root just forwards
+   the viewport height down to it.
+
+   It must be sized with percentages, never viewport units (100vh/100vw): the
+   app-wide UI scale is applied as CSS `zoom` on <html>, and `zoom` multiplies
+   <length> used values while leaving auto/<percentage> values untouched. A
+   viewport-unit shell would therefore be magnified past the window and force
+   horizontal + vertical scrollbars at any scale ≠ 100%. Routing the height
+   through 100% keeps the shell exactly one (layout-px) viewport at any scale
+   while still letting its contents reflow when zoomed. */
+#root {
+    height: 100%;
 }
 
 * {
@@ -435,6 +469,45 @@ body {
 /* Compact prose variant for tooltips and tight spaces */
 .prose-xs {
     font-size: 0.75rem;
+}
+
+/* Markdown rendered inside a hover tooltip (e.g. the Small-LLM essential-tools
+   picker, see `lib/smallLlmTools.ts`). Tightens @tailwindcss/typography's
+   generous paragraph/list spacing so a multi-section, list-bearing description
+   stays compact. Doubled class raises specificity above `.prose :where(...)`. */
+.prose.prose-tooltip {
+    font-size: 0.75rem;
+    line-height: 1.4;
+}
+
+.prose.prose-tooltip :where(p, ul, ol, li) {
+    line-height: 1.4;
+}
+
+.prose.prose-tooltip :where(p, ul, ol) {
+    margin-top: 0.375rem;
+    margin-bottom: 0.375rem;
+}
+
+.prose.prose-tooltip :where(p, ul, ol):first-child {
+    margin-top: 0;
+}
+
+.prose.prose-tooltip :where(p, ul, ol):last-child {
+    margin-bottom: 0;
+}
+
+.prose.prose-tooltip :where(ul, ol) {
+    padding-left: 1rem;
+}
+
+.prose.prose-tooltip :where(li) {
+    margin-top: 0.125rem;
+    margin-bottom: 0.125rem;
+}
+
+.prose.prose-tooltip :where(li > p) {
+    margin: 0;
 }
 
 /* Shared input field styling — text, placeholder, background */

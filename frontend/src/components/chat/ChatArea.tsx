@@ -6,6 +6,7 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { usePlanStore } from '@/stores/planStore'
 import { useGoalStore } from '@/stores/goalStore'
 import { getSessionHistory, getSessionRuntimeStatus, getPendingActions, resolveStalePrompt } from '@/api/chat'
+import { useTaskFlagRestore } from '@/hooks/useTaskFlagRestore'
 import { reconcileRuntimeStatus, reconcilePendingActions, stalePromptMatchField } from '@/lib/sessionRuntime'
 import { generateMessageId } from '@/lib/ids'
 import type { ChatMessageUI } from '@/types/messages'
@@ -147,23 +148,10 @@ export function ChatArea() {
   }, [activeSessionId])
 
   // Restore the taskActive flag fast and independently of history loading.
-  // This handles background sessions that complete while not viewed: the
-  // "stop" button must reflect the real state even before the (slower)
-  // history RPC resolves. Only sets taskActive here — full message
-  // reconciliation happens in the history effect above (where the store is
-  // populated), to avoid injecting a synthetic resume banner into an empty
-  // store.
-  useEffect(() => {
-    if (!activeSessionId) return
-    let cancelled = false
-    getSessionRuntimeStatus(activeSessionId).then((status) => {
-      if (cancelled || !status) return
-      useChatStore.getState().setTaskActive(activeSessionId, status.active)
-    }).catch((err) => {
-      logger.error('Failed to get session runtime status:', err)
-    })
-    return () => { cancelled = true }
-  }, [activeSessionId])
+  // Extracted into useTaskFlagRestore (single tested implementation, with the
+  // stale-snapshot guard that keeps a live resume/terminal transition from
+  // being reverted by an older status snapshot).
+  useTaskFlagRestore(activeSessionId)
 
   // Load bookmarks for the active session (bookmarks are isolated per session).
   useEffect(() => {

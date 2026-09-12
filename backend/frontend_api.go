@@ -53,9 +53,56 @@ type FrontendAPI struct {
 	watcherMu      sync.Mutex
 	gitRepoCache   map[string]gitRepoCacheEntry
 	gitRepoCacheMu sync.Mutex
+	// gitStatusCache / gitIgnoredCache memoize the two heavy per-repo git
+	// subprocesses (git status --porcelain -uall; git ls-files --others
+	// --ignored) that dominate GetGitStatus / ListDirectory. See
+	// frontend_api_gitcache.go.
+	gitStatusCache    map[string]gitStatusCacheEntry
+	gitStatusCacheMu  sync.Mutex
+	gitIgnoredCache   map[string]gitIgnoredCacheEntry
+	gitIgnoredCacheMu sync.Mutex
+	// gitStatusFn / gitIgnoredFn are test seams overriding the workspace git
+	// helpers; nil in production, where the real workspace functions run.
+	gitStatusFn  func(root string) (map[string]GitStatusEntry, error)
+	gitIgnoredFn func(root string) (map[string]bool, error)
 	// remoteOpMu serializes remote git operations (pull/push/fetch) so that
 	// only one network operation runs at a time per app instance.
 	remoteOpMu sync.Mutex
+
+	// Auto-fetch funnel state (see frontend_api_git_autofetch.go).
+	// autoFetchMu guards lastAutoFetchAt — the timestamp of the last
+	// automatic fetch ATTEMPT, stamped whenever a trigger gets past the
+	// static gates (config / active project / is-a-repo), whatever the
+	// fetch outcome. All automatic triggers share one
+	// autoFetchMinInterval window through it, so a burst of triggers can
+	// never hammer the remote even when every attempt fails fast.
+	autoFetchMu     sync.Mutex
+	lastAutoFetchAt time.Time
+
+	// Periodic auto-fetch loop state (the git.auto_fetch_interval ticker,
+	// see frontend_api_git_autofetch.go). autoFetchLoopMu guards
+	// autoFetchLoopCancel / autoFetchLoopDone so StartAutoFetch starts at
+	// most one loop and Cleanup can stop it from any goroutine. It is
+	// separate from autoFetchMu above, which guards only the shared
+	// min-interval timestamp of the fetch funnel.
+	autoFetchLoopMu     sync.Mutex
+	autoFetchLoopCancel context.CancelFunc
+	autoFetchLoopDone   chan struct{}
+
+	// autoFetchIntervalOverride, when > 0, replaces the configured
+	// git.auto_fetch_interval in autoFetchInterval. Test-only seam (0 in
+	// production), mirroring switchLockTimeoutOverride.
+	autoFetchIntervalOverride time.Duration
+
+	// autoFetchDisabledRecheckOverride, when > 0, replaces the parked-state
+	// re-check cadence (autoFetchDisabledRecheck) in autoFetchLoop. Test-only
+	// seam (0 in production), mirroring autoFetchIntervalOverride.
+	autoFetchDisabledRecheckOverride time.Duration
+
+	// autoFetchTickFn, when non-nil, replaces the autoFetchOnce call made
+	// by the periodic ticker loop. Test-only seam (nil in production) so
+	// loop tests observe ticks without touching git or the network.
+	autoFetchTickFn func(trigger string)
 
 	// Project
 	projectManager    *project.Manager
@@ -64,8 +111,8 @@ type FrontendAPI struct {
 	activeProjectPath string
 	activeProjectMu   sync.RWMutex
 
-	// switchMu serializes the whole SwitchProject body (teardown → activate →
-	// watcher → vector → event). Wails runs each binding call in its own
+	// switchMu serializes the whole SwitchProject body (teardown → vector →
+	// watcher → activate → event). Wails runs each binding call in its own
 	// goroutine, so two rapid CHAT↔CODE toggles used to interleave inside the
 	// backend: a slower earlier switch could overwrite activeProjectID AFTER a
 	// later switch had completed, leaving the backend on the older project
@@ -73,11 +120,23 @@ type FrontendAPI struct {
 	// one. Every subsequent ListDirectory against the frontend's rootPath then
 	// fails containment ("path outside project workspace") and @-file
 	// completions in the chat input stay empty until an app restart.
+	// Acquisition is bounded by switchLockTimeout (see acquireSwitchLock) so a
+	// wedged in-flight switch yields an error instead of an unbounded wait.
 	switchMu sync.Mutex
+
+	// switchLockTimeoutOverride, when > 0, replaces switchLockTimeout as the
+	// deadline for acquiring switchMu. Test-only seam (0 in production).
+	switchLockTimeoutOverride time.Duration
 
 	// switchInProgressHook is a test-only seam invoked inside SwitchProject
 	// while switchMu is held (i.e. mid-switch). Nil in production.
 	switchInProgressHook func(id string)
+
+	// switchProjectSetupVectorFn, when non-nil, overrides
+	// switchProjectSetupVector from SwitchProject. Test-only seam (nil in
+	// production) letting a test drive the fallible pre-watcher step to
+	// verify the switch stays atomic when it fails.
+	switchProjectSetupVectorFn func(*project.ProjectInfo) error
 
 	// Active research root path (empty when RESEARCH is off). Guarded by
 	// activeProjectMu so it stays in sync with project switches.
@@ -132,6 +191,19 @@ type FrontendAPI struct {
 	// read by every VectorIndexStatus producer; guarded by vectorManagerMu
 	// to avoid a third lock for the same lifecycle.
 	vectorEmbedderInfo VectorEmbedderInfo
+
+	// vectorSetupMu guards deferredVectorProject — the handshake that lets a
+	// project switch whose vector-index setup was skipped (the manager was
+	// still being built by the background ONNX init) be applied later, once the
+	// manager is wired in via SetVectorManager. Acquired OUTSIDE
+	// vectorManagerMu (vectorSetupMu → vectorManagerMu) and OUTSIDE switchMu
+	// (switchMu → vectorSetupMu) to keep one global lock order.
+	vectorSetupMu sync.Mutex
+	// deferredVectorProject is the project whose vector-index setup was
+	// skipped because getVectorManager() was nil (background ONNX init still
+	// in flight). Drained once by InitVectorIndexForActiveProject when the
+	// manager becomes available. Nil when no setup is pending.
+	deferredVectorProject *project.ProjectInfo
 
 	// Self-update state. updateMu guards lastCheckResult and
 	// downloadedArchivePath, which carry data across the stateful
@@ -294,6 +366,12 @@ func (f *FrontendAPI) EmitSessionEvent(evt session.Event) {
 	}
 }
 
+// switchLockTimeout bounds how long SwitchProject waits to acquire switchMu
+// before failing with errSwitchLockTimeout instead of blocking indefinitely
+// behind an in-flight switch. Tests override it via
+// FrontendAPI.switchLockTimeoutOverride.
+const switchLockTimeout = 5 * time.Second
+
 const gitRepoCacheTTL = 30 * time.Second
 
 const gitRepoCacheMaxSize = 100
@@ -364,6 +442,11 @@ func (f *FrontendAPI) isNoProject() bool {
 // Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
 func (l *FrontendAPILifecycle) Cleanup() {
 	f := l.f
+	// Stop the periodic auto-fetch ticker first so no new background fetch
+	// starts while the rest of the backend tears down. Non-blocking: an
+	// in-flight fetch is already bounded by remoteGitCmdTimeout and
+	// cancelled through f.ctx() (see frontend_api_git_autofetch.go).
+	f.stopAutoFetchLoop()
 	if f.terminalManager != nil {
 		f.terminalManager.StopAll()
 	}
@@ -456,4 +539,53 @@ func (f *FrontendAPI) getVectorManager() *vectorindex.Manager {
 	f.vectorManagerMu.RLock()
 	defer f.vectorManagerMu.RUnlock()
 	return f.vectorManager
+}
+
+// InitVectorIndexForActiveProject applies a project-switch vector setup that was
+// skipped because the vector manager was not yet wired in. It is called by the
+// desktop background ONNX goroutine immediately after SetVectorManager.
+//
+// Why it is needed: the frontend issues its first SwitchProject on
+// backend:ready, which almost always arrives BEFORE the background ONNX init
+// finishes (embedder load + manager construction). switchProjectSetupVector then
+// sees getVectorManager() == nil and skips setup, so the startup project's index
+// is never built and semantic search stays unavailable until the user manually
+// switches projects. This drains the setup deferred by that skipped switch.
+//
+// It serializes with SwitchProject via switchMu, so it runs either entirely
+// before the in-flight switch (the deferred slot is then empty and the switch's
+// own setup observes the now-ready manager) or entirely after it (the deferred
+// slot holds the destination project and is applied here). It is a no-op when
+// nothing was deferred (the switch won the race and initialized the index
+// itself), for No Project (CHAT mode), and when no project is active.
+func (l *FrontendAPILifecycle) InitVectorIndexForActiveProject() {
+	f := l.f
+	if f == nil || f.getVectorManager() == nil {
+		return
+	}
+
+	f.switchMu.Lock()
+	defer f.switchMu.Unlock()
+
+	f.vectorSetupMu.Lock()
+	p := f.deferredVectorProject
+	f.deferredVectorProject = nil
+	f.vectorSetupMu.Unlock()
+	if p == nil {
+		return
+	}
+
+	// Only apply when the deferred project is still the active one. A
+	// superseding switch (serialized behind switchMu above) would have already
+	// run its own setup and cleared the deferred slot.
+	f.activeProjectMu.RLock()
+	activeID := f.activeProjectID
+	f.activeProjectMu.RUnlock()
+	if p.ID != activeID {
+		return
+	}
+
+	if err := f.switchProjectSetupVector(p); err != nil {
+		f.log().Warn("deferred vector index setup failed", "project", p.ID, "error", err)
+	}
 }

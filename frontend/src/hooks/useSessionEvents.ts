@@ -24,18 +24,26 @@ export function useSessionEvents(sessionId: string | null): void {
     let cancelled = false
 
     // Clear previous session UI state (batched to avoid cascading re-renders).
-    // taskActive is reset to false here so the send button doesn't render as
-    // a red "stop" immediately on switch — the reconcile effect in ChatArea
-    // will set it back to true if the session is genuinely still running.
+    //
+    // NOTE: taskActive is deliberately NOT reset here. The old blind
+    // `taskActive[sessionId] = false` corrupted the live map on every
+    // switch-TO: the flag is only restored by the async fast-restore RPC
+    // (useTaskFlagRestore), so a user toggling away before it landed left a
+    // genuinely-running background session flagged idle — useBackgroundSessionWatcher
+    // then dropped it from its watched set and the session's completion/HITL
+    // events had no listener (no sound cue, no pending-action card) until an
+    // unrelated live-set change happened to re-trigger the snapshot refresh.
+    // The authoritative corrector in BOTH directions (stale-true from an
+    // unobserved completion, or true for a still-running task) is
+    // useTaskFlagRestore's `status.active` write, which is guarded against
+    // reverting fresher live flag transitions (taskFlagsEventAt).
+    //
     // NOTE: streamingText/activityStatus/stepContextFill are per-session keyed
     // maps, so they are naturally preserved across A->B->A switches and must
     // NOT be reset here — doing so would wipe another (background) session's
     // state or the same session's fills the user returns to. The runtime
     // reconcile (reconcileRuntimeStatus) refreshes or clears the activity
     // label and streaming text from the backend snapshot on every switch.
-    useChatStore.setState({
-      taskActive: { ...useChatStore.getState().taskActive, [sessionId]: false },
-    })
     usePlanStore.setState({ planGroups: [] })
 
     // Load persisted session token totals. On failure the entry keeps its

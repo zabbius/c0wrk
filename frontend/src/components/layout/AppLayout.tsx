@@ -128,7 +128,13 @@ export function AppLayout() {
   }, [floating, setViewerCollapsed])
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
+    // The shell sizes itself with percentages, NOT viewport units
+    // (`h-screen`/`w-screen` = 100vh/100vw). The app-wide UI scale is applied
+    // as CSS `zoom` on <html>, and `zoom` multiplies <length> used values while
+    // leaving auto/<percentage> values untouched — so a viewport-unit shell is
+    // magnified past the window and forces horizontal + vertical scrollbars at
+    // any scale ≠ 100%. The 100% chain lives on html/body/#root in index.css.
+    <div className="flex h-full w-full overflow-hidden bg-background text-foreground">
       {/* Sidebar */}
       <Sidebar
         width={sidebarCollapsed ? COLLAPSED_WIDTH : sidebarWidth}

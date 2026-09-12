@@ -21,10 +21,18 @@ import { MCPSettings } from './MCPSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { UpdateSettings } from './UpdateSettings'
 import { ExperimentalSettings } from './ExperimentalSettings'
-import { Settings, Brain, Search, Shield, Info, Server, AlertTriangle, X, Gauge } from 'lucide-react'
+import { Settings, Palette, Brain, Search, Shield, Info, Server, AlertTriangle, X, Gauge } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { hasDefaultModel } from '@/api/config'
 import { useExperimentalFeatures } from '@/hooks/useExperimentalFeatures'
+
+/**
+ * Shared classes for every tab's scroll container. `pr-2` keeps a small
+ * horizontal gutter between the scrolling content and the app-wide
+ * `.custom-scrollbar` scrollbar, which otherwise sits flush against the
+ * text and visually merges with it.
+ */
+const TAB_CONTENT_CLASS = 'mt-4 overflow-y-auto min-h-0 custom-scrollbar pr-2'
 
 export function SettingsModal() {
   const open = useSettingsStore((s) => s.open)
@@ -116,7 +124,7 @@ export function SettingsModal() {
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="sm:max-w-[600px] max-h-[80vh] flex flex-col overflow-hidden"
+        className="sm:max-w-[600px] max-h-[calc(var(--ui-vh)*0.8)] flex flex-col overflow-hidden"
         showCloseButton={false}
         // No DialogDescription in this panel; opt out explicitly so Radix
         // does not warn about the missing description (and does not point
@@ -152,43 +160,51 @@ export function SettingsModal() {
           className="mt-4 flex-1 flex flex-col overflow-hidden min-h-0"
         >
           <ConfigWarningBanner className="mb-2" refreshKey={bannerRefreshKey} />
-          <TabsList className={`grid w-full ${experimentalEnabled ? 'grid-cols-7' : 'grid-cols-6'}`}>
-            <TabsTrigger value="general" className="gap-1">
+          {/*
+            Content-sized triggers spread edge-to-edge with `justify-between`
+            so the gap between adjacent labels is identical everywhere. An
+            equal-width `grid` instead let the widest label (Appearance)
+            overflow its track and eat into the neighbouring gaps.
+          */}
+          <TabsList className="flex w-full justify-between">
+            <TabsTrigger value="general" className="flex-initial min-w-0 gap-1">
               <Settings className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">General</span>
             </TabsTrigger>
-            <TabsTrigger value="llm" className="gap-1">
+            <TabsTrigger value="appearance" className="flex-initial min-w-0 gap-1">
+              <Palette className="h-4 w-4" />
+              <span className="hidden sm:inline text-xs">Appearance</span>
+            </TabsTrigger>
+            <TabsTrigger value="llm" className="flex-initial min-w-0 gap-1">
               <Brain className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">LLM</span>
             </TabsTrigger>
             {experimentalEnabled && (
-              <TabsTrigger value="small-llm" className="gap-1">
+              <TabsTrigger value="small-llm" className="flex-initial min-w-0 gap-1">
                 <Gauge className="h-4 w-4" />
                 <span className="hidden sm:inline text-xs">Small LLM</span>
               </TabsTrigger>
             )}
-            <TabsTrigger value="search" className="gap-1">
+            <TabsTrigger value="search" className="flex-initial min-w-0 gap-1">
               <Search className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">Search</span>
             </TabsTrigger>
-            <TabsTrigger value="mcp" className="gap-1">
+            <TabsTrigger value="mcp" className="flex-initial min-w-0 gap-1">
               <Server className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">MCP</span>
             </TabsTrigger>
-            <TabsTrigger value="security" className="gap-1">
+            <TabsTrigger value="security" className="flex-initial min-w-0 gap-1">
               <Shield className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">Security</span>
             </TabsTrigger>
-            <TabsTrigger value="about" className="gap-1">
+            <TabsTrigger value="about" className="flex-initial min-w-0 gap-1">
               <Info className="h-4 w-4" />
               <span className="hidden sm:inline text-xs">About</span>
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="general" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
+          <TabsContent value="general" className={TAB_CONTENT_CLASS}>
             <div className="space-y-6">
-              <ThemeSelector />
-              <UIScaleSelector />
               <LogLevelSelector />
               <div className="border-t border-border pt-4">
                 <SoundSettings />
@@ -210,29 +226,38 @@ export function SettingsModal() {
             </div>
           </TabsContent>
 
-          <TabsContent value="llm" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
+          <TabsContent value="appearance" className={TAB_CONTENT_CLASS}>
+            <div className="space-y-6">
+              <ThemeSelector />
+              <div className="border-t border-border pt-4">
+                <UIScaleSelector />
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="llm" className={TAB_CONTENT_CLASS}>
             <LLMSettings onSettingsSaved={handleSettingsSaved} onDefaultModelChange={handleDefaultModelChange} />
           </TabsContent>
 
           {experimentalEnabled && (
-            <TabsContent value="small-llm" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
+            <TabsContent value="small-llm" className={TAB_CONTENT_CLASS}>
               <SmallLLMSettings />
             </TabsContent>
           )}
 
-          <TabsContent value="search" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
+          <TabsContent value="search" className={TAB_CONTENT_CLASS}>
             <SearchSettings />
           </TabsContent>
 
-          <TabsContent value="mcp" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
+          <TabsContent value="mcp" className={TAB_CONTENT_CLASS}>
             <MCPSettings />
           </TabsContent>
 
-          <TabsContent value="security" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
+          <TabsContent value="security" className={TAB_CONTENT_CLASS}>
             <SecuritySettings />
           </TabsContent>
 
-          <TabsContent value="about" className="mt-4 overflow-y-auto min-h-0 custom-scrollbar">
+          <TabsContent value="about" className={TAB_CONTENT_CLASS}>
             <div className="space-y-4">
               <div className="flex items-center gap-3">
                 <div className="h-12 w-12 rounded-lg bg-primary/10 flex items-center justify-center">

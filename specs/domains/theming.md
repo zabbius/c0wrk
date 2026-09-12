@@ -170,7 +170,7 @@ Importing a file whose slug already exists **overwrites** the stored file — re
 
 ## Bundled Themes
 
-Besides the two built-in themes compiled into `index.css`, the repo ships ready-to-import palette themes under `specs/assets/themes/`. They are ordinary custom-theme files: users import them through the same `Settings → Theme → [+]` flow, they land in `~/.c0wrk/themes/<slug>.css`, and they follow every rule of the custom-theme format (header, tokens, validation limits). They exist so users can try known palettes without authoring CSS.
+Besides the two built-in themes compiled into `index.css`, the repo ships ready-to-import palette themes under `specs/assets/themes/`. They are ordinary custom-theme files: users import them through the same `Settings → Appearance → Theme → [+]` flow, they land in `~/.c0wrk/themes/<slug>.css`, and they follow every rule of the custom-theme format (header, tokens, validation limits). They exist so users can try known palettes without authoring CSS.
 
 | File | Theme name | Type | Palette |
 | ---- | ---------- | ---- | ------- |

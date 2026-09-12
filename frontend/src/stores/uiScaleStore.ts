@@ -28,12 +28,29 @@ function normalizeScale(scale: number): number {
 }
 
 /**
+ * CSS custom property mirroring the UI zoom factor on <html>. It lets
+ * pure-CSS layout compensate for zoom's magnification of viewport units:
+ * index.css derives `--ui-vh` (= `100vh` divided by this factor) from it.
+ */
+export const UI_ZOOM_CSS_VAR = '--ui-zoom'
+
+/**
  * Writes the zoom factor onto <html> and is a no-op when the document is
  * unavailable (e.g. during tests). Safe to call repeatedly.
+ *
+ * Besides the `zoom` style it publishes the same factor as the
+ * {@link UI_ZOOM_CSS_VAR} custom property — unitless so it can be used as a
+ * divisor inside `calc()`. `zoom` multiplies every `<length>` used value
+ * (including `100vh`/`100vw`) but not percentages, so CSS that needs a
+ * viewport derived size (a dialog cap, a canvas height) divides those units
+ * by this factor; see the `--ui-vh` note in index.css.
  */
 export function applyScaleToDocument(scale: number): void {
   if (typeof document === 'undefined') return
-  document.documentElement.style.zoom = String(scale / 100)
+  const root = document.documentElement
+  const zoom = scale / 100
+  root.style.zoom = String(zoom)
+  root.style.setProperty(UI_ZOOM_CSS_VAR, String(zoom))
 }
 
 /**

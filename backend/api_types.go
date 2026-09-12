@@ -225,15 +225,52 @@ type SmallLLMConfigResponse struct {
 	Context        SmallLLMContextResp        `json:"context"`
 }
 
+// SmallLLMBuiltinTool describes one pin-able built-in tool for the
+// always-present picker: its registry name plus the description the UI renders
+// in the entry's hover tooltip.
+type SmallLLMBuiltinTool struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// SmallLLMToolGroup describes a functional cluster of built-in tools offered
+// as one atomic picker entry: picking the cluster pins every still-selectable
+// member at once. The UI renders Title and Description in the entry's tooltip
+// and lists Tools alongside them. Members are already restricted to the picker
+// universe reported in BuiltinTools.
+type SmallLLMToolGroup struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Tools       []string `json:"tools"`
+}
+
 // SmallLLMEssentialToolsResp is the always-present tool-subset variant.
-// ProtectedTools is read-only informational: the backend always includes the
-// protected set regardless of any UI selection, so the UI can render those
-// tools as locked. It is ignored on write.
+// ProtectedTools, BuiltinTools and ToolGroups are read-only informational
+// fields:
+//   - ProtectedTools — the backend always includes the protected set
+//     regardless of any UI selection, so the UI can render those tools as
+//     locked.
+//   - BuiltinTools — the picker universe: every registered built-in tool that
+//     is neither MCP-sourced nor goal-mode-only, with its description, sorted
+//     by name. Both excluded classes are already "pin-free" — MCP tools are
+//     always kept, and goal-mode-only tools are stripped before any selection
+//     runs — so offering them would be inert. The field still contains the
+//     always-protected tools (see ProtectedTools), which SelectTools keeps
+//     regardless of the selection; the picker must therefore subtract the
+//     already-allowed set (always_present, into which the backend already
+//     unions the protected set) before offering an entry.
+//   - ToolGroups — the functional clusters (plan, subagents) whose members are
+//     pinned together; the UI offers each as one atomic entry.
+//
+// All three are ignored on write (responseToSmallLLM does not map them back).
 type SmallLLMEssentialToolsResp struct {
-	Enabled             bool     `json:"enabled"`
-	AlwaysPresent       []string `json:"always_present"`
-	CompactDescriptions bool     `json:"compact_descriptions"`
-	ProtectedTools      []string `json:"protected_tools"`
+	Enabled             bool                  `json:"enabled"`
+	AlwaysPresent       []string              `json:"always_present"`
+	CompactDescriptions bool                  `json:"compact_descriptions"`
+	ProtectedTools      []string              `json:"protected_tools"`
+	BuiltinTools        []SmallLLMBuiltinTool `json:"builtin_tools"`
+	ToolGroups          []SmallLLMToolGroup   `json:"tool_groups"`
 }
 
 // SmallLLMSystemPromptResp is the prompt-simplification variant.
@@ -322,6 +359,11 @@ type StashEntry = workspace.StashEntry
 // GitHistoryCommit describes a commit for the unified history+graph view.
 // Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type GitHistoryCommit = workspace.GitHistoryCommit
+
+// GitHistoryPage is a single page of the unified commit history for the
+// frontend's incremental (scroll/load-more) loading. Defined in
+// core/workspace; re-exported here as a type alias for ViewModel convenience.
+type GitHistoryPage = workspace.GitHistoryPage
 
 // HunkDiffInfo describes a single diff hunk with staging status and raw
 // diff text. Defined in core/workspace; re-exported here as a type alias
@@ -468,7 +510,7 @@ type VectorIndexStatus struct {
 	// effectively runs on: "cpu" or "cuda" — never "auto" ("auto" is resolved
 	// once, at embedder creation; the winner is reported here). Empty when no
 	// embedder exists (model files missing or creation failed). Comparing it
-	// with RequestedExecutionProvider classifies the outcome (ADR-036): an
+	// with RequestedExecutionProvider classifies the outcome (ADR-039): an
 	// explicit "cuda" landing on "cpu" is a fallback; an "auto" request always
 	// diverges (it is resolved to a winner), so auto→cuda is a success and
 	// auto→cpu is Auto's expected degradation.
@@ -500,7 +542,7 @@ type VectorIndexStatus struct {
 	// with (vector_index.device_id at embedder-creation time). Surfaced for
 	// restart-pending detection: comparing it with the live config's
 	// device_id shows the running embedder predates a config change (the
-	// embedder and its ONNX session are created once per process — ADR-036).
+	// embedder and its ONNX session are created once per process — ADR-039).
 	// Omitted when 0 (the default "first GPU") — a UI treating 0 as the
 	// default must read absence as 0.
 	DeviceID int `json:"device_id,omitempty"`

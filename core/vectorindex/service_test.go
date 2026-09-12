@@ -60,7 +60,7 @@ func TestSetProject(t *testing.T) {
 		if err := svc.SetProject("test-project", t.TempDir()); err != nil {
 			t.Fatalf("SetProject failed: %v", err)
 		}
-		if svc.db == nil {
+		if svc.current.db == nil {
 			t.Fatal("expected db to be initialized")
 		}
 	})
@@ -113,10 +113,10 @@ func TestSwitchBranch(t *testing.T) {
 		if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
 			t.Fatalf("SwitchBranch failed: %v", err)
 		}
-		if svc.currentBranch != "main" {
-			t.Fatalf("expected branch 'main', got %q", svc.currentBranch)
+		if svc.current.currentBranch != "main" {
+			t.Fatalf("expected branch 'main', got %q", svc.current.currentBranch)
 		}
-		if svc.collection == nil {
+		if svc.current.collection == nil {
 			t.Fatal("expected collection to be set")
 		}
 	})
@@ -125,17 +125,17 @@ func TestSwitchBranch(t *testing.T) {
 		if err := svc.SwitchBranch(context.Background(), "feature/my-feature"); err != nil {
 			t.Fatalf("SwitchBranch failed: %v", err)
 		}
-		if svc.currentBranch != "feature/my-feature" {
-			t.Fatalf("expected branch 'feature/my-feature', got %q", svc.currentBranch)
+		if svc.current.currentBranch != "feature/my-feature" {
+			t.Fatalf("expected branch 'feature/my-feature', got %q", svc.current.currentBranch)
 		}
 	})
 
 	t.Run("no-op for same branch", func(t *testing.T) {
-		prevCol := svc.collection
+		prevCol := svc.current.collection
 		if err := svc.SwitchBranch(context.Background(), "feature/my-feature"); err != nil {
 			t.Fatalf("SwitchBranch failed: %v", err)
 		}
-		if svc.collection != prevCol {
+		if svc.current.collection != prevCol {
 			t.Fatal("expected same collection for same branch")
 		}
 	})
@@ -601,11 +601,11 @@ func TestRebuildCollection(t *testing.T) {
 	}
 	svc.ReleaseWriteLock()
 
-	if svc.collection == nil {
+	if svc.current.collection == nil {
 		t.Fatal("expected collection after rebuild")
 	}
-	if svc.collection.Count() != 0 {
-		t.Errorf("expected empty collection after rebuild, got %d documents", svc.collection.Count())
+	if svc.current.collection.Count() != 0 {
+		t.Errorf("expected empty collection after rebuild, got %d documents", svc.current.collection.Count())
 	}
 }
 
@@ -625,10 +625,10 @@ func TestServiceClose(t *testing.T) {
 	if err := svc.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
 	}
-	if svc.db != nil {
+	if svc.current.db != nil {
 		t.Error("expected db to be nil after close")
 	}
-	if svc.collection != nil {
+	if svc.current.collection != nil {
 		t.Error("expected collection to be nil after close")
 	}
 }
@@ -772,9 +772,9 @@ func TestDeleteDocumentsByIDs(t *testing.T) {
 		t.Fatalf("AddDocuments failed: %v", err)
 	}
 
-	if svc.collection.Count() != 2 {
+	if svc.current.collection.Count() != 2 {
 		svc.ReleaseWriteLock()
-		t.Fatalf("expected 2 documents, got %d", svc.collection.Count())
+		t.Fatalf("expected 2 documents, got %d", svc.current.collection.Count())
 	}
 
 	if err := svc.DeleteDocumentsByIDs(context.Background(), []string{"doc1"}); err != nil {
@@ -783,8 +783,8 @@ func TestDeleteDocumentsByIDs(t *testing.T) {
 	}
 	svc.ReleaseWriteLock()
 
-	if svc.collection.Count() != 1 {
-		t.Fatalf("expected 1 document after deletion, got %d", svc.collection.Count())
+	if svc.current.collection.Count() != 1 {
+		t.Fatalf("expected 1 document after deletion, got %d", svc.current.collection.Count())
 	}
 }
 

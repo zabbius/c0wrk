@@ -12,6 +12,7 @@ import {
   ChevronRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
 import {
   Dialog,
   DialogContent,
@@ -152,7 +153,11 @@ interface GitHistoryContextMenuProps {
   refs: string[]
   /** Name of the currently checked-out branch (for the "Reset" label). */
   currentBranch: string
-  /** Viewport coordinates where the menu appears; null renders nothing. */
+  /**
+   * Viewport coordinates where the menu appears (VISUAL px, as reported by
+   * `MouseEvent.clientX/clientY`); null renders nothing. Unit conversion and
+   * the viewport fit/flip decision live in {@link useCursorMenuPosition}.
+   */
   position: { x: number; y: number } | null
   /** Called when the menu (and any spawned dialog) should close. */
   onClose: () => void
@@ -198,6 +203,8 @@ export function GitHistoryContextMenu({
   onAfterMutation,
 }: GitHistoryContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
+  // Zoom-corrected, viewport-clamped placement (left/top in layout px).
+  const menuPosition = useCursorMenuPosition(position, menuRef)
 
   // Tag-creation dialog state.
   const [tagDialogOpen, setTagDialogOpen] = useState(false)
@@ -413,7 +420,13 @@ export function GitHistoryContextMenu({
           ref={menuRef}
           role="menu"
           aria-label="Commit actions"
-          style={{ position: 'fixed', left: position.x, top: position.y, zIndex: 9999 }}
+          style={{
+            position: 'fixed',
+            left: menuPosition?.left ?? 0,
+            top: menuPosition?.top ?? 0,
+            visibility: menuPosition ? 'visible' : 'hidden',
+            zIndex: 9999,
+          }}
           className={cn(
             'min-w-52 overflow-visible rounded-md border bg-popover p-1 text-popover-foreground shadow-md',
             'animate-in fade-in-0 zoom-in-95',

@@ -1,12 +1,12 @@
 # Embedder GPU inference: investigation and working PoC
 
-> **Ported into the product on 2026-09-10 — see [ADR-036](../specs/decisions/036-gpu-embedding-provider.md).**
+> **Ported into the product on 2026-09-10 — see [ADR-039](../specs/decisions/039-gpu-embedding-provider.md).**
 > This document remains the research journal (measurements, dead ends, reproduction);
 > product decisions — configuration knobs, fallback semantics, packaging, stamps — are described
 > in the ADR and in `specs/domains/workspace.md` (Embedding Execution Provider section).
 
 **Date:** 2026-09-09 (restored 2026-09-10)
-**Status:** PoC works and is built. Ported into the product on 2026-09-10 (see ADR-036).
+**Status:** PoC works and is built. Ported into the product on 2026-09-10 (see ADR-039).
 **Machine:** Zabarch — RTX 5060 Ti 16 GB (Blackwell, sm_120) + RTX 2060 6 GB, CUDA 13.3, driver 610.57.04
 
 ---

@@ -8,6 +8,15 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { FolderOpen } from 'lucide-react'
 
+/**
+ * Final path segment of an OS-native path. The Wails directory picker returns
+ * native separators, so a Windows path arrives as `C:\Users\me\proj` — splitting
+ * on '/' alone would leave the whole path as a single segment.
+ */
+function pathBasename(path: string): string {
+  return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? ''
+}
+
 interface CreateProjectDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -29,7 +38,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
       const path = await pickDirectory()
       if (path) {
         setExternalPath(path)
-        if (!name) setName(path.split('/').pop() ?? '')
+        if (!name) setName(pathBasename(path))
       }
     } catch {
       // user cancelled
@@ -65,7 +74,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           <div className="space-y-2">
             <label className="text-sm font-medium text-foreground">Directory</label>
             <Button variant="outline" size="sm" className="gap-1.5 w-full justify-start" onClick={handlePickDir}>
@@ -73,7 +82,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
               {externalPath ? 'Change directory' : 'Choose directory'}
             </Button>
             {externalPath && (
-              <p className="truncate text-xs text-muted-foreground" title={externalPath}>
+              <p className="truncate font-mono text-xs text-muted-foreground" title={externalPath}>
                 {externalPath}
               </p>
             )}

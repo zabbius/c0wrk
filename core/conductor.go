@@ -3,6 +3,7 @@ package core
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/skills"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
@@ -130,13 +132,21 @@ type compositeTrajectoryStore struct {
 	store  TaskPersistence
 	logger *slog.Logger
 
+	// mu serializes the async-writer lifecycle. It guards the wg Add/Wait
+	// transitions (Flush must never Wait while a Sync Adds — the WaitGroup
+	// reuse rule) and keeps two full-snapshot upserts from interleaving on the
+	// same taskID. It is required because async subagents inherit this store
+	// through the context (see TrajectoryStore's concurrency contract in
+	// sp4rk), so Sync and Flush may run on different goroutines.
+	mu sync.Mutex
+
 	// sem limits concurrent DB writes to at most one. Send (non-blocking) to
 	// acquire a write slot; receive releases it from the writer goroutine.
 	sem chan struct{}
 
 	// wg tracks the in-flight async writer so Flush can drain it before
 	// performing a final synchronous write. Add(1) happens only when Sync
-	// acquires the slot; Done() fires when the write goroutine exits.
+	// acquires the slot while holding mu; Done() fires when the writer exits.
 	wg sync.WaitGroup
 }
 
@@ -193,12 +203,18 @@ func (c *compositeTrajectoryStore) Sync(steps []agent.Step) {
 		return
 	}
 
+	// Serialize the writer lifecycle against Flush: async subagents share this
+	// store, so a concurrent Flush may be draining wg — hold mu so our Add can
+	// never race its Wait.
+	c.mu.Lock()
+
 	// Acquire the single write slot without blocking. If a previous write is
 	// still in flight, skip — the next Sync (or the final Flush) persists a
 	// fresher snapshot.
 	select {
 	case c.sem <- struct{}{}:
 	default:
+		c.mu.Unlock()
 		return
 	}
 
@@ -209,6 +225,7 @@ func (c *compositeTrajectoryStore) Sync(steps []agent.Step) {
 	copy(snapshot, steps)
 
 	c.wg.Add(1)
+	c.mu.Unlock()
 	go func() {
 		defer c.wg.Done()
 		defer func() { <-c.sem }()
@@ -233,9 +250,15 @@ func (c *compositeTrajectoryStore) Flush() {
 		return
 	}
 
-	// Wait for the outstanding async write to finish before doing our own: two
-	// concurrent full-snapshot upserts on the same taskID could interleave and
-	// leave the DB with a stale ordering.
+	// Serialize against concurrent Syncs: async subagents share this store, so
+	// hold mu across the drain + snapshot + final write. This prevents an Add
+	// from racing the Wait (WaitGroup reuse rule) and keeps a second upsert
+	// from interleaving with ours (two full-snapshot writes on the same taskID
+	// could otherwise leave the DB with a stale ordering).
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Wait for the outstanding async write to finish before doing our own.
 	c.wg.Wait()
 
 	steps := c.memory.Steps()
@@ -386,6 +409,16 @@ type conductorDeps struct {
 	// Nil when no agentManager is configured (profiles unavailable) — a
 	// non-empty `agent` field is then rejected by delegate validation.
 	agentResolver tools.AgentResolver
+
+	// skillResolver resolves an Agent Skill name to a *skills.Skill. It is
+	// populated from the Orchestrator's skillManager in buildConductorDeps and
+	// consulted by buildSubAgentTask to activate a Subagent Profile's required
+	// skills (AGENT.md `skills:`) for the subagent. Nil when no skillManager is
+	// configured — a profile with a non-empty skill requirement then fails the
+	// delegation (fail-closed) rather than launching the subagent without the
+	// skills it is mandated to follow. Names are the same shape as skill dir
+	// names (skills.SkillManager.Get). See agents.Agent.RequiredSkills.
+	skillResolver func(name string) (*skills.Skill, bool)
 
 	// pauseChecker is the cooperative pause signal wired into every conductor
 	// run via ConductorConfig.PauseChecker → executor.SetPauseChecker. It
@@ -1348,6 +1381,39 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 
 	modelMeta := l.resolveModelMeta(ctx)
 
+	// Activate the profile's required skills (AGENT.md `skills:`) for this
+	// subagent, merged after any skills already active in the inherited
+	// context (router-matched + user /skill for the parent task): inherited
+	// first, deduped by name. Resolution is fail-closed — an unknown skill
+	// name, or a required list with no skill resolver configured, fails the
+	// delegation rather than launching the subagent without the skills its
+	// profile mandates. The merged set drives both the subagent's system
+	// prompt ("## Active Skills", verbatim bodies) and its read_skill_resource
+	// resolver (see activeSkillsToolExec).
+	var profileSkills []*skills.Skill
+	if profile != nil {
+		required, err := profile.RequiredSkills()
+		if err != nil {
+			return agent.SubAgentTask{}, fmt.Errorf("delegation %q: profile %q: %w", t.ID, t.Agent, err)
+		}
+		if len(required) > 0 {
+			merged, err := l.resolveProfileSkills(ctx, t, required)
+			if err != nil {
+				return agent.SubAgentTask{}, err
+			}
+			ctx = WithActiveSkills(ctx, &ActiveSkills{Skills: merged})
+			profileSkills = merged
+			if l.deps.logger != nil {
+				names := make([]string, len(merged))
+				for i, s := range merged {
+					names[i] = s.Metadata.Name
+				}
+				l.deps.logger.Info("subagent profile skills activated",
+					"delegation", t.ID, "agent", t.Agent, "skills", names)
+			}
+		}
+	}
+
 	// System prompt: a profile's body REPLACES the OrchestratorSystem core
 	// directive while preserving the shared project-context prefix (workspace,
 	// AGENTS.md, env, active skills, ...) via buildSpecializedSystemPrompt.
@@ -1391,7 +1457,17 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	if len(resumeSteps) > 0 {
 		execOpts = append(execOpts, agent.WithResumeSteps(resumeSteps))
 	}
-	executor := agent.NewExecutor(caller, l.deps.toolExec, maxSteps, execOpts...)
+	toolExec := l.deps.toolExec
+	// The merged active skills must reach the subagent's TOOL execution context
+	// too, not just its system prompt: read_skill_resource resolves a skill by
+	// consulting ActiveSkillsFromContext(ctx). buildSubAgentTask cannot mutate
+	// the caller's context (parallel waves share one context across subagents),
+	// so the profile skills travel on a per-subagent ToolExecutor decorator
+	// that injects them into every tool call's context.
+	if len(profileSkills) > 0 && toolExec != nil {
+		toolExec = &activeSkillsToolExec{inner: toolExec, skills: &ActiveSkills{Skills: profileSkills}}
+	}
+	executor := agent.NewExecutor(caller, toolExec, maxSteps, execOpts...)
 	executor.SetPlanContext(t.ID, 0, 0)
 	l.configureExecutor(executor)
 
@@ -1823,6 +1899,86 @@ func (l *conductorLauncher) configureExecutor(executor *agent.Executor) {
 		executor.SetVerifyOnEdit(l.deps.verifyOnEdit, l.deps.verifyOnEditMaxOutputChars)
 	}
 	executor.AddNonCacheableTools(coreNonCacheableToolNames...)
+}
+
+// resolveProfileSkills resolves a Subagent Profile's required skill names
+// (AGENT.md `skills:`, already validated by agents.Agent.RequiredSkills)
+// against the skill catalog and merges the resolved skills with any skills
+// already active in ctx. Inherited skills come first, then the profile's own
+// requirements; duplicates are dropped by name (first occurrence wins), so a
+// skill named by both the parent task and the profile is emitted once.
+//
+// Resolution is fail-closed: a nil skillResolver with a non-empty requirement
+// list, or a required name with no matching skill, returns an error naming both
+// the skill and the profile — the delegation must not proceed without the
+// skills the profile mandates.
+func (l *conductorLauncher) resolveProfileSkills(ctx context.Context, t tools.DelegationTask, required []string) ([]*skills.Skill, error) {
+	resolved := make([]*skills.Skill, 0, len(required))
+	for _, name := range required {
+		if l.deps.skillResolver == nil {
+			return nil, fmt.Errorf("delegation %q: profile %q requires skill %q but no skill resolver is configured", t.ID, t.Agent, name)
+		}
+		s, ok := l.deps.skillResolver(name)
+		if !ok || s == nil {
+			return nil, fmt.Errorf("delegation %q: profile %q requires unknown skill %q — no Agent Skill with that name was found", t.ID, t.Agent, name)
+		}
+		resolved = append(resolved, s)
+	}
+	return mergeActiveSkills(ActiveSkillsFromContext(ctx), resolved), nil
+}
+
+// mergeActiveSkills merges the skills already active in the context (inherited)
+// with a profile's resolved required skills. Inherited skills keep their
+// position and come first; later duplicates (by skill name) are dropped, and
+// nil entries are skipped. The result preserves activation order so the
+// rendered "## Active Skills" section stays stable.
+func mergeActiveSkills(inherited *ActiveSkills, add []*skills.Skill) []*skills.Skill {
+	var out []*skills.Skill
+	seen := make(map[string]struct{})
+	addOne := func(s *skills.Skill) {
+		if s == nil {
+			return
+		}
+		if _, ok := seen[s.Metadata.Name]; ok {
+			return
+		}
+		seen[s.Metadata.Name] = struct{}{}
+		out = append(out, s)
+	}
+	if inherited != nil {
+		for _, s := range inherited.Skills {
+			addOne(s)
+		}
+	}
+	for _, s := range add {
+		addOne(s)
+	}
+	return out
+}
+
+// activeSkillsToolExec decorates an agent.ToolExecutor, injecting a
+// subagent's merged Active Skills into every tool call's context. It is what
+// makes a profile's required skills resolvable inside the subagent:
+// read_skill_resource resolves a skill from the context (core's
+// activeSkillPathResolver reads ActiveSkillsFromContext), and buildSubAgentTask
+// cannot mutate the context a caller passes to agent.RunSubAgent — parallel
+// waves share one context across subagents. A per-subagent decorator keeps the
+// injection correct even when a wave carries several profiles with different
+// skill sets. All other ToolExecutor methods delegate unchanged.
+type activeSkillsToolExec struct {
+	inner  agent.ToolExecutor
+	skills *ActiveSkills
+}
+
+func (a *activeSkillsToolExec) Execute(ctx context.Context, name string, input json.RawMessage) (sdktools.ToolResult, error) {
+	return a.inner.Execute(WithActiveSkills(ctx, a.skills), name, input)
+}
+func (a *activeSkillsToolExec) GetToolSource(name string) string { return a.inner.GetToolSource(name) }
+func (a *activeSkillsToolExec) IsToolUntrusted(name string) bool {
+	return a.inner.IsToolUntrusted(name)
+}
+func (a *activeSkillsToolExec) CacheStrategy(ctx context.Context, name string, input json.RawMessage) sdktools.CacheMode {
+	return a.inner.CacheStrategy(ctx, name, input)
 }
 
 // conductorPublisher implements tools.PlanPublisher.
@@ -2368,6 +2524,17 @@ func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, res
 				return nil, false
 			}
 			return o.agentManager.Get(name)
+		},
+		// skillResolver exposes the discovered Agent Skills to the launcher so
+		// buildSubAgentTask can activate a profile's required skills (AGENT.md
+		// `skills:`). Built from the skillManager; nil-safe when none is
+		// configured (a profile with a non-empty skill requirement then fails
+		// the delegation — fail-closed).
+		skillResolver: func(name string) (*skills.Skill, bool) {
+			if o.skillManager == nil {
+				return nil, false
+			}
+			return o.skillManager.Get(name)
 		},
 		// pauseChecker wires the universal pause signal into every conductor
 		// run (normal path + every goal-loop turn). It reads o.activePause

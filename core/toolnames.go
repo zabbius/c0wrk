@@ -46,10 +46,11 @@ const (
 
 // FileMutatingTools is the set of tool names that can modify files on disk.
 // The PostExecuteHook uses this to decide whether to notify the vector index
-// manager of a potential content change after tool execution. bash_exec is
-// included because it can mutate files in ways the in-process write_file/
-// edit_file tools cannot (e.g. sed, git checkout, build artifacts), and the
-// macOS file watcher alone may miss some of those changes.
+// manager of a potential content change after tool execution. The shell-exec
+// tool (`bash_exec` on Unix, `posh_exec` on Windows — mutually exclusive per
+// host) is included because it can mutate files in ways the in-process
+// write_file/edit_file tools cannot (e.g. sed, git checkout, build artifacts),
+// and the file watcher alone may miss some of those changes.
 //
 // Cost note: the resulting debounced incremental pass is NOT free even when no
 // files changed — ValidateCollection reads and hashes every indexable file in
@@ -63,6 +64,7 @@ var FileMutatingTools = map[string]bool{
 	ToolWriteFile: true,
 	ToolEditFile:  true,
 	ToolBashExec:  true,
+	ToolPoshExec:  true,
 }
 
 // NoProjectDisabledTools is the set of tool names that are blocked from both

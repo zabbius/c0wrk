@@ -159,8 +159,13 @@ export function ChatInputToolbar({ controller }: ChatInputToolbarProps) {
               variant="outline"
               size="icon"
               onClick={handleResume}
+              // Mirror the Send button's in-flight-uploads lock: Resume with
+              // a draft routes through the send flow, whose guard would
+              // otherwise consume the click with only a transient hint —
+              // disabling the button states the lock up front.
+              disabled={attachmentsUploading}
               className="shrink-0 h-8 w-8 rounded-md border-success text-success hover:bg-success/10 active:bg-success/20"
-              title="Resume task"
+              title={attachmentsUploading ? 'Processing attachments — resume unlocks when they finish' : 'Resume task'}
               aria-label="Resume task"
             >
               <Play className="h-3.5 w-3.5 fill-current" />

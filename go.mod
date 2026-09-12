@@ -23,7 +23,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/openai/openai-go v1.12.0
 	github.com/philippgille/chromem-go v0.7.0
-	github.com/v0lka/sp4rk v0.0.0-20260909120503-5e2a0349d02d
+	github.com/v0lka/sp4rk v0.0.0-20260911214018-1548b30bdaf9
 	github.com/wailsapp/wails/v2 v2.15.0
 	golang.org/x/image v0.45.0
 	golang.org/x/mod v0.40.0
@@ -122,4 +122,4 @@ require (
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
-replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk v0.0.0-20260911155609-cb0c429154a4
+replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk v0.0.0-20260911225732-a6a97dbf2999

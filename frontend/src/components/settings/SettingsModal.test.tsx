@@ -212,3 +212,97 @@ describe('SettingsModal General tab: session statistics display toggle', () => {
     expect(useUIStore.getState().showSessionStats).toBe(true)
   })
 })
+
+describe('SettingsModal Appearance tab', () => {
+  /** Tab labels in the settings tab strip, in DOM order. */
+  function tabLabels(): string[] {
+    return Array.from(
+      document.body.querySelectorAll<HTMLElement>('[data-slot="tabs-trigger"]'),
+    ).map((t) => (t.textContent ?? '').trim())
+  }
+
+  it('sits directly after General in the tab strip', async () => {
+    useSettingsStore.setState({ open: true, activeTab: 'general' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    const labels = tabLabels()
+    expect(labels.indexOf('General')).toBe(0)
+    expect(labels.indexOf('Appearance')).toBe(1)
+  })
+
+  it('renders Theme and UI Scale under Appearance, without Log Level', async () => {
+    useSettingsStore.setState({ open: true, activeTab: 'appearance' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    expect(bannerText()).toContain('Theme')
+    expect(bannerText()).toContain('UI Scale')
+    expect(bannerText()).not.toContain('Log Level')
+  })
+
+  it('stacks Theme and UI Scale as separate blocks, Theme first', async () => {
+    useSettingsStore.setState({ open: true, activeTab: 'appearance' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    const spans = Array.from(document.body.querySelectorAll('span'))
+    const themeHeader = spans.find((s) => s.textContent === 'Theme')
+    const scaleHeader = spans.find((s) => s.textContent === 'UI Scale')
+    expect(themeHeader).toBeDefined()
+    expect(scaleHeader).toBeDefined()
+
+    const themeBlock = themeHeader!.closest('div.flex.flex-col')
+    const scaleBlock = scaleHeader!.closest('div.flex.flex-col')
+    expect(themeBlock).not.toBeNull()
+    expect(scaleBlock).not.toBeNull()
+
+    // Theme sits at the top of the Appearance stack; UI Scale follows in its
+    // own section below it. The Theme header must precede the UI Scale header
+    // in DOM order, and the UI Scale section must live inside the same stack.
+    const stack = themeBlock!.parentElement as HTMLElement
+    expect(stack.className).toContain('space-y-6')
+    expect(stack.contains(themeHeader!)).toBe(true)
+    expect(stack.contains(scaleHeader!)).toBe(true)
+    expect(
+      themeHeader!.compareDocumentPosition(scaleHeader!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+
+    // The UI Scale section is separated from Theme by a divider (mirroring
+    // how General separates its sections), not laid out as a column.
+    const scaleSection = scaleBlock!.parentElement as HTMLElement
+    expect(scaleSection.className).toContain('border-t')
+    expect(scaleSection.parentElement).toBe(stack)
+  })
+
+  it('keeps Log Level in General and no longer shows Theme or UI Scale there', async () => {
+    useSettingsStore.setState({ open: true, activeTab: 'general' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    expect(bannerText()).toContain('Log Level')
+    expect(bannerText()).not.toContain('UI Scale')
+    expect(bannerText()).not.toContain('Theme')
+  })
+
+  it('gives the active section a right-side gutter before the scrollbar', async () => {
+    useSettingsStore.setState({ open: true, activeTab: 'general' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    const content = document.body.querySelector<HTMLElement>('[data-slot="tabs-content"]')
+    expect(content).not.toBeNull()
+    expect(content!.className).toContain('custom-scrollbar')
+    expect(content!.className).toContain('pr-2')
+  })
+})

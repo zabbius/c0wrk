@@ -1,4 +1,4 @@
-# ADR-036: GPU Embedding Execution Provider (CUDA, auto with loud fallback)
+# ADR-039: GPU Embedding Execution Provider (CUDA, auto with loud fallback)
 
 ## Status
 

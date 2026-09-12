@@ -10,7 +10,7 @@
 
   HOW TO IMPORT
   -------------
-  Settings → General → Theme → [+] button → pick one or several .css files
+  Settings → Appearance → Theme → [+] button → pick one or several .css files
   (the picker is multi-select). Every valid file is imported; the last one
   activates immediately, and invalid files are skipped with a notice. The
   theme appears in the dropdown. Re-importing an updated file with the same

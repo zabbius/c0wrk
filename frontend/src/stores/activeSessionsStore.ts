@@ -31,6 +31,8 @@ import {
 } from '@/lib/activeSessions'
 import type { SessionInfo } from '@/types/models'
 import { useChatStore } from '@/stores/chatStore'
+import { useSessionStore } from '@/stores/sessionStore'
+import { useProjectStore } from '@/stores/projectStore'
 
 /** Debounce window for refresh() coalescing (mount + dropdown + live-key
  *  transitions all funnel through here; one RPC per burst is plenty for a
@@ -168,14 +170,44 @@ export async function sweepPendingActions(): Promise<void> {
 }
 
 /**
+ * Safety-poll cadence for the cross-project snapshot while the window is
+ * visible. The event-driven triggers below (mount, live-set changes, every
+ * project/session switch) cover the normal flows; this poll is the backstop
+ * that bounds the worst case after a signal path fails — e.g. the switch-time
+ * refresh RPC errored (a stale snapshot beats none, so the old value is kept)
+ * or ListAllSessions answered before the session manager was ready. One local
+ * SQLite list RPC per 30s is negligible; hidden windows poll nothing.
+ */
+const SNAPSHOT_POLL_INTERVAL_MS = 30_000
+
+/**
  * Wire the store's refresh triggers: refresh once on mount, then again
  * whenever the SET of live sessions (taskActive or paused, per chatStore)
  * changes — i.e. on task transitions (start / complete / error / cancel /
  * pause / resume / resumable failure), when the DB snapshot has just become
  * stale. Streaming chunks and message appends do not change the set and do
- * not trigger anything. Mount this once next to the badge/switcher; opening
- * the dropdown should additionally call refreshNow() + sweepPendingActions()
- * for immediate freshness plus the pending-HITL sweep.
+ * not trigger anything.
+ *
+ * Switch-time refresh: EVERY project/session switch (the CHAT↔CODE toggle
+ * included) also triggers a refresh. The live-set trigger is derived from the
+ * same chatStore flags the switch dance can corrupt (a cancelled
+ * task-flag restore leaves a running session flagged idle), so it alone
+ * cannot be trusted to re-arm: after such a dance the live set goes empty and
+ * stays empty, and no refresh would ever fire again. The switch trigger makes
+ * the watched-set recovery independent of the live flags — listAllSessions
+ * re-reads the authoritative unfinished_task_status straight from the DB.
+ *
+ * Safety poll: while the window is visible, refresh every
+ * SNAPSHOT_POLL_INTERVAL_MS as a backstop against refresh-RPC failures and
+ * stale-answer races (see the constant's doc). It rides the same 500ms
+ * debounce funnel, so a poll colliding with an event-driven refresh coalesces
+ * into a single RPC.
+ *
+ * Mount this ONCE at the App root (App.tsx), not in the sidebar header: the
+ * header unmounts when the sidebar is collapsed, which would stop the
+ * snapshot from refreshing app-wide. Opening the dropdown additionally calls
+ * refreshNow() + sweepPendingActions() for immediate freshness plus the
+ * pending-HITL sweep.
  */
 export function useActiveSessionsRefresh(): void {
   // Primitive string → referentially stable under Object.is (React #185 safe).
@@ -183,10 +215,23 @@ export function useActiveSessionsRefresh(): void {
   const refresh = useActiveSessionsStore((s) => s.refresh)
   // Direct store-field reference (stable) → safe as an effect dependency.
   const sessions = useActiveSessionsStore((s) => s.sessions)
+  // Primitives; every switch (project OR session) re-triggers the refresh.
+  const activeSessionId = useSessionStore((s) => s.activeSessionId)
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const swept = useRef(false)
   useEffect(() => {
     void refresh()
-  }, [liveKeys, refresh])
+  }, [liveKeys, refresh, activeSessionId, activeProjectId])
+  // Visible-window safety poll (backstop — see the hook doc). The interval
+  // itself always runs while mounted; a tick only refreshes when the document
+  // is visible so a hidden/minimized window performs no work.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'visible') return
+      useActiveSessionsStore.getState().refresh()
+    }, SNAPSHOT_POLL_INTERVAL_MS)
+    return () => clearInterval(id)
+  }, [])
   // One-time pending-HITL sweep once the snapshot first loads (the restart
   // path): a task blocked on a prompt is yellow at first render instead of
   // waiting for the dropdown to open. Reads the current snapshot directly —

@@ -87,7 +87,7 @@ func BenchmarkEmbeddingCacheWarm(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		seedSvc.embeddingCache = seed
+		seedSvc.current.embeddingCache = seed
 		seedSvc.embeddingDimension = 8
 		if _, _, err := seedSvc.resolveEmbeddingChunk(context.Background(), texts); err != nil {
 			b.Fatal(err)
@@ -104,7 +104,7 @@ func BenchmarkEmbeddingCacheWarm(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		svc.embeddingCache = newEmbeddingCache(root, "benchmark-fingerprint", 8, 1<<30, nil)
+		svc.current.embeddingCache = newEmbeddingCache(root, "benchmark-fingerprint", 8, 1<<30, nil)
 		svc.embeddingDimension = 8
 		b.ReportAllocs()
 		b.ResetTimer()

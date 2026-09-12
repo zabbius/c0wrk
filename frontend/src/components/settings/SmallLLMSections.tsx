@@ -7,6 +7,7 @@ import type {
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible'
 import { Combobox } from '@/components/ui/combobox'
 import { ChevronDown } from 'lucide-react'
+import { essentialToolPickerOptions } from '@/lib/smallLlmTools'
 import { Toggle, NumberField, TagList } from './SmallLLMControls'
 import { OptionalNumberField } from './SmallLLMOptionalNumberField'
 
@@ -55,6 +56,17 @@ export function EssentialToolsSection({ slice, patch, open, onOpenChange }: Sect
   // The backend unions these into always_present and SelectTools always keeps
   // them, so they are rendered as locked (non-removable) chips.
   const locked = new Set(slice.protected_tools)
+  // Picker entries: workflow clusters (offered atomically) plus ungrouped
+  // built-ins, minus everything already allowed — always_present already
+  // carries the protected tools (the backend unions them in) and MCP tools are
+  // never in builtin_tools. Cluster entries add the whole cluster at once and
+  // carry a hover tooltip describing the workflow plus its member list.
+  const options = essentialToolPickerOptions(
+    slice.builtin_tools ?? [],
+    slice.tool_groups ?? [],
+    slice.always_present,
+    slice.protected_tools ?? [],
+  )
   return (
     <VariantSection title="Essential Tools" open={open} onOpenChange={onOpenChange}>
       <Toggle
@@ -69,12 +81,13 @@ export function EssentialToolsSection({ slice, patch, open, onOpenChange }: Sect
             label="Always-present tools"
             values={slice.always_present}
             onChange={(always_present) => patch({ always_present })}
-            placeholder="tool name"
+            options={options}
             lockedValues={locked}
           />
           <p className="text-xs text-muted-foreground">
-            Locked tools are protected and always included. The assigned set is exactly this
-            selection plus every connected MCP server's tools.
+            Locked tools are protected and always included. Pick a built-in tool or a workflow
+            group from the list to add it — a group entry adds the whole cluster at once — and the
+            assigned set is exactly this selection plus every connected MCP server's tools.
           </p>
           <Toggle
             checked={slice.compact_descriptions}

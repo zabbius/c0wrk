@@ -6,7 +6,9 @@ import { emit, clipboardSetText } from '@/api/runtime'
 import { useInputModeStore } from '@/stores/inputModeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
 import { logger } from '@/lib/logger'
 import type { FileEntry } from '@/types/models'
 
@@ -14,7 +16,11 @@ interface FileTreeContextMenuProps {
   entry: FileEntry
   /** Workspace root — when provided, stripped to form the relative path. */
   workspaceRoot: string | null
-  /** Viewport coordinates where the menu appears; null renders nothing. */
+  /**
+   * Viewport coordinates where the menu appears (VISUAL px, as reported by
+   * `MouseEvent.clientX/clientY`); null renders nothing. Unit conversion and
+   * the viewport fit/flip decision live in {@link useCursorMenuPosition}.
+   */
   position: { x: number; y: number } | null
   /** Called when the menu should close. */
   onClose: () => void
@@ -37,7 +43,8 @@ function toRelativePath(path: string, workspaceRoot?: string | null): string {
 /**
  * Contextual menu for a file-tree entry: Open in Viewer (files only),
  * Open in Terminal (directories only), Copy Path, Copy Relative Path,
- * Add to .gitignore, and View History.
+ * Add to .gitignore, and View History. The two git-dependent actions are
+ * shown only when the active project's workspace is a git repository.
  * Self-contained — calls the API and stores directly, so no callback prop
  * threading is required.
  */
@@ -50,6 +57,17 @@ export function FileTreeContextMenu({
   const menuRef = useRef<HTMLDivElement>(null)
   const [isIgnoring, setIsIgnoring] = useState(false)
   const relativePath = toRelativePath(entry.path, workspaceRoot ?? undefined)
+  // Zoom-corrected, viewport-clamped placement (left/top in layout px).
+  const menuPosition = useCursorMenuPosition(position, menuRef)
+
+  // Git-only actions ("Add to .gitignore", "View History") make no sense in
+  // a project whose workspace is not a git repository — the Git panel does
+  // not even exist there. The pairing with the checked project id keeps a
+  // stale answer from a previously active project from showing the items.
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const isGitRepo = useGitPanelStore(
+    (s) => s.isGitRepo && s.gitRepoProjectId === activeProjectId,
+  )
 
   // --- Open in Viewer (files only) ---
   const handleOpenInViewer = useCallback(() => {
@@ -103,7 +121,11 @@ export function FileTreeContextMenu({
       )
       // Switch to the Git panel so the store-level error banner is visible —
       // the user is on the Explorer tab and wouldn't see it otherwise.
-      useUIStore.getState().setWorkspaceTab('git')
+      // Per-project: record the switch against the active project.
+      const projectId = useProjectStore.getState().activeProjectId
+      if (projectId !== null) {
+        useUIStore.getState().setWorkspaceTab(projectId, 'git')
+      }
     } finally {
       setIsIgnoring(false)
       onClose()
@@ -112,8 +134,13 @@ export function FileTreeContextMenu({
 
   // --- View History ---
   const handleViewHistory = useCallback(() => {
-    useUIStore.getState().setWorkspaceTab('git')
-    useGitPanelStore.getState().setActiveTab('history')
+    // Per-project: record the workspace-tab + Git-section switch against the
+    // active project so switching away and back restores this view.
+    const projectId = useProjectStore.getState().activeProjectId
+    if (projectId !== null) {
+      useUIStore.getState().setWorkspaceTab(projectId, 'git')
+      useGitPanelStore.getState().setActiveTab(projectId, 'history')
+    }
     // For a directory, append the OS path separator so the glob filter
     // matches only files *inside* it — not a sibling that shares the same
     // prefix (e.g. "src/components" would otherwise also match
@@ -157,7 +184,13 @@ export function FileTreeContextMenu({
           ref={menuRef}
           role="menu"
           aria-label="File tree actions"
-          style={{ position: 'fixed', left: position.x, top: position.y, zIndex: 9999 }}
+          style={{
+            position: 'fixed',
+            left: menuPosition?.left ?? 0,
+            top: menuPosition?.top ?? 0,
+            visibility: menuPosition ? 'visible' : 'hidden',
+            zIndex: 9999,
+          }}
           className={cn(
             'min-w-[12rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md',
             'animate-in fade-in-0 zoom-in-95',
@@ -201,24 +234,28 @@ export function FileTreeContextMenu({
             <Copy className="size-4" />
             Copy Relative Path
           </button>
-          <MenuSeparator />
-          <button
-            role="menuitem"
-            disabled={isIgnoring}
-            onClick={() => void handleAddToGitignore()}
-            className={menuItemClass}
-          >
-            {isIgnoring ? <Loader2 className="size-4 animate-spin" /> : <EyeOff className="size-4" />}
-            Add to .gitignore
-          </button>
-          <button
-            role="menuitem"
-            onClick={handleViewHistory}
-            className={menuItemClass}
-          >
-            <History className="size-4" />
-            View History
-          </button>
+          {isGitRepo && (
+            <>
+              <MenuSeparator />
+              <button
+                role="menuitem"
+                disabled={isIgnoring}
+                onClick={() => void handleAddToGitignore()}
+                className={menuItemClass}
+              >
+                {isIgnoring ? <Loader2 className="size-4 animate-spin" /> : <EyeOff className="size-4" />}
+                Add to .gitignore
+              </button>
+              <button
+                role="menuitem"
+                onClick={handleViewHistory}
+                className={menuItemClass}
+              >
+                <History className="size-4" />
+                View History
+              </button>
+            </>
+          )}
         </div>
       )}
     </>

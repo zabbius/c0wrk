@@ -1,8 +1,9 @@
-// Theme picker for the settings General tab: a Radix dropdown combobox (the
-// ui/combobox pattern — mandatory inside the modal settings Dialog) listing
-// the two builtin themes plus every imported custom theme, with a native
-// picker import button beside it. Custom rows expose the shared one-click
-// hover-delete overlay (ItemAction pattern from session/project lists).
+// Theme picker for the settings Appearance tab: a Radix dropdown combobox
+// (the ui/combobox pattern — mandatory inside the modal settings Dialog)
+// listing the two builtin themes plus every imported custom theme, with a
+// native picker import button beside it. Custom rows expose the shared
+// one-click hover-delete overlay (ItemAction pattern from session/project
+// lists).
 
 import { useCallback, useState } from 'react'
 import { ChevronDown, Plus } from 'lucide-react'

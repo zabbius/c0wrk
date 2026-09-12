@@ -1,4 +1,4 @@
-# ADR-038: Vector-Index Embedding Optimization Integration Policy
+# ADR-036: Vector-Index Embedding Optimization Integration Policy
 
 ## Status
 

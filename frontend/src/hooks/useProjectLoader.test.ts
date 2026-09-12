@@ -4,7 +4,7 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 // --- Mock the backend boundary so tests never touch the Wails runtime ---
-const { apiMocks, switchMocks } = vi.hoisted(() => ({
+const { apiMocks, switchMocks, subscribeHandlers } = vi.hoisted(() => ({
   apiMocks: {
     listProjects: vi.fn(),
     getLastActiveProjectID: vi.fn(),
@@ -12,10 +12,20 @@ const { apiMocks, switchMocks } = vi.hoisted(() => ({
   switchMocks: {
     switchProjectWithState: vi.fn(),
   },
+  // Captures the callbacks the hook registers so tests can drive lifecycle
+  // events (e.g. project:deleted) directly.
+  subscribeHandlers: new Map<string, (data: unknown) => void>(),
 }))
 
 vi.mock('@/api/projects', () => apiMocks)
-vi.mock('@/api/runtime', () => ({ subscribe: vi.fn(() => () => {}) }))
+vi.mock('@/api/runtime', () => ({
+  subscribe: (event: string, handler: (data: unknown) => void) => {
+    subscribeHandlers.set(event, handler)
+    return () => {
+      subscribeHandlers.delete(event)
+    }
+  },
+}))
 vi.mock('@/hooks/useProjectSwitchState', () => ({
   useProjectSwitchState: () => switchMocks.switchProjectWithState,
 }))
@@ -25,6 +35,8 @@ vi.mock('@/lib/logger', () => ({
 
 import { pickMostRecentRealProject, pickStartupRestoreTarget, useProjectLoader } from './useProjectLoader'
 import { useProjectStore } from '@/stores/projectStore'
+import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useUIStore } from '@/stores/uiStore'
 import type { ProjectInfo } from '@/types/models'
 
 const NO_PROJECT_ID = '__no_project__'
@@ -149,12 +161,16 @@ beforeEach(() => {
   apiMocks.getLastActiveProjectID.mockReset()
   switchMocks.switchProjectWithState.mockReset()
   switchMocks.switchProjectWithState.mockResolvedValue(undefined)
+  subscribeHandlers.clear()
   useProjectStore.setState({
     projects: null,
     activeProjectId: null,
     lastRealProjectId: null,
     createDialogOpen: false,
   })
+  // Clear the per-project tab maps so each test starts from a known state.
+  useGitPanelStore.setState({ activeTabByProject: {} })
+  useUIStore.setState({ workspaceTabByProject: {} })
 })
 
 afterEach(() => {
@@ -311,5 +327,33 @@ describe('useProjectLoader — startup restore', () => {
     await flushMicrotasks()
     expect(apiMocks.getLastActiveProjectID).not.toHaveBeenCalled()
     expect(switchMocks.switchProjectWithState).not.toHaveBeenCalled()
+  })
+})
+
+describe('useProjectLoader — project:deleted cleanup', () => {
+  it("drops the deleted project's entries from both maps, leaving other projects intact", async () => {
+    apiMocks.listProjects.mockResolvedValue([])
+    // Seed both per-project maps for two projects.
+    useGitPanelStore.getState().setActiveTab('p1', 'changes')
+    useGitPanelStore.getState().setActiveTab('p2', 'history')
+    useUIStore.getState().setWorkspaceTab('p1', 'git')
+    useUIStore.getState().setWorkspaceTab('p2', 'semantics')
+
+    renderLoader()
+    await flushMicrotasks()
+
+    const onDeleted = subscribeHandlers.get('project:deleted')
+    expect(onDeleted).toBeTypeOf('function')
+
+    act(() => {
+      onDeleted!('p1')
+    })
+
+    // The deleted project's tab entries are gone from both persisted maps...
+    expect(useGitPanelStore.getState().activeTabByProject['p1']).toBeUndefined()
+    expect(useUIStore.getState().workspaceTabByProject['p1']).toBeUndefined()
+    // ...while every other project's entries are untouched.
+    expect(useGitPanelStore.getState().activeTabByProject['p2']).toBe('history')
+    expect(useUIStore.getState().workspaceTabByProject['p2']).toBe('semantics')
   })
 })

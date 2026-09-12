@@ -34,6 +34,10 @@ export interface SessionItemSummary {
   pinned: boolean
   last_active_at: string
   has_unfinished_task: boolean
+  /** Persisted task status (SessionInfo.unfinished_task_status). Drives the red
+   *  failure dot: 'failed' → a resumable failed task. Optional so callers that
+   *  only need the selection/busy fields may omit it. */
+  unfinished_task_status?: string
 }
 
 export interface SessionItemCallbacks {
@@ -68,6 +72,9 @@ function SessionRowContent({ session, isActive, status, onPin, onFork, onRename,
           <span className="size-1.5 shrink-0 rounded-full bg-warning" title="Awaiting your response" />
         )}
         {status === 'active' && <span className="size-1.5 shrink-0 rounded-full bg-success" title="Task running" />}
+        {status === 'failed' && (
+          <span className="size-1.5 shrink-0 rounded-full bg-destructive" title="Task failed — resume available" />
+        )}
         {status === 'paused' && (
           <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground" title="Task paused" />
         )}
@@ -123,7 +130,7 @@ export function SessionItem({
   onFork,
   onDelete,
 }: SessionItemProps) {
-  const status = useSessionStatusIndicator(session.id)
+  const status = useSessionStatusIndicator(session.id, session.unfinished_task_status ?? '', session.archived)
   const callbacks: SessionItemCallbacks = { onSelect, onRename, onArchive, onPin, onFork, onDelete }
 
   if (variant === 'flat') {

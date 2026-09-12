@@ -96,11 +96,16 @@ func TestEditVerifyRunner_ExitZero(t *testing.T) {
 // exits with status 7, in the platform shell's dialect (bash_exec on Unix,
 // posh_exec — Windows PowerShell — on Windows). Windows PowerShell 5.1 has no
 // bash-style ">&2" stream redirection (it is a parse error there; stream
-// merging arrived only in PowerShell 7), so the Windows dialect targets
-// stderr via the .NET console API instead.
+// merging arrived only in PowerShell 7), so the Windows dialect targets stderr
+// via Write-Error instead. The dialect must also stay clean for the unattended
+// security gate (ExecuteUnattended → symlinkHardReason → extractPoshPaths):
+// any bare "(...)"/"{...}" group, "$var", double quotes, or backtick marks the
+// command unexpandable and fail-closed blocks it — so [Console]::Error.WriteLine('boom')
+// (parenthesized) is unusable here, while Write-Error 'boom' (single-quoted,
+// group-free) assesses clean and still lands on stderr with exit 7.
 func nonZeroExitShellCommand() string {
 	if runtime.GOOS == "windows" {
-		return "[Console]::Error.WriteLine('boom'); exit 7"
+		return "Write-Error 'boom'; exit 7"
 	}
 	return "echo boom >&2; exit 7"
 }

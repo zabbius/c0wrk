@@ -126,6 +126,38 @@ describe('ChatScrollManager bookmark/step navigation under the floating bar', ()
 
     expect(scrollTo).not.toHaveBeenCalled()
   })
+
+  it('navigates to a step id containing selector metacharacters (quotes)', () => {
+    // Plan step ids are LLM-authored declare_plan payloads and can carry
+    // quote characters; the attribute selector must escape them instead of
+    // throwing a SyntaxError DOMException inside the click handler (the
+    // navigation would silently die with the chat not moving).
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const scrollRef: React.RefObject<HTMLDivElement | null> = { current: null }
+    root = createRoot(container)
+    act(() => {
+      root!.render(
+        <ScrollProvider>
+          <Probe />
+          <ChatScrollManager messages={[]} streamingText={undefined} scrollRef={scrollRef}>
+            <div data-step-id={'step-"quoted"-9'} />
+          </ChatScrollManager>
+        </ScrollProvider>,
+      )
+    })
+    const viewport = scrollRef.current!
+    const target = viewport.querySelector('[data-step-id]')!
+    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue(rect({ top: 3000, height: 400 }))
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect({ top: 100, height: 600 }))
+    Object.defineProperty(viewport, 'scrollTop', { value: 500, writable: true, configurable: true })
+    const scrollTo = vi.fn()
+    viewport.scrollTo = scrollTo as unknown as typeof viewport.scrollTo
+
+    expect(() => act(() => navigateStep!('step-"quoted"-9'))).not.toThrow()
+    // No floating bar in this render → plain top alignment: 500 + (3000 - 100).
+    expect(scrollTo).toHaveBeenCalledWith({ top: 3400, behavior: 'smooth' })
+  })
 })
 
 // Finding [27]: an explicit bookmark/step navigation starts a smooth scroll;

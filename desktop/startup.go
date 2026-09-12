@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -427,23 +426,13 @@ func (a *App) Startup(ctx context.Context) {
 	a.wireWailsEventListeners(log, uiEmitFunc)
 
 	// ── Session restoration resolver ─────────────────────────────────
-	// Enable lazy session restoration from the database by wiring a
-	// project resolver that maps project IDs to workspace paths. Without
-	// this, sessions created in previous launches cannot be restored on
-	// demand, and GetSessionWorkspace falls back to the project-level
-	// directory which is incorrect for No Project (per-session isolation).
-	if projectMgr != nil {
-		application.Manager().SetProjectResolver(func(projectID string) (string, error) {
-			p, err := projectMgr.GetProject(projectID)
-			if err != nil {
-				return "", fmt.Errorf("resolving project %s: %w", projectID, err)
-			}
-			if p == nil {
-				return "", fmt.Errorf("project not found: %s", projectID)
-			}
-			return p.WorkspacePath, nil
-		})
-	}
+	// Lazy session restoration (projectID -> workspace path) is wired inside
+	// buildFrontendAPI above with a deadline-bounded store read, so restoring a
+	// session or looking up a terminal's workspace path cannot hang behind a
+	// write storm on the shared SQLite connection. It is deliberately NOT
+	// overridden here: a second resolver built on projectMgr.GetProject (which
+	// reads with context.Background()) would shadow the bounded one and
+	// reintroduce the very hang the bound guards against.
 
 	// ── Ensure No Project (only when LLM is configured) ──────────────
 	// On a clean first run with no config, we must not create projects
@@ -528,6 +517,12 @@ func (a *App) Startup(ctx context.Context) {
 	// operator + user gates, respects the interval, caches the result so a
 	// discovered update is downloadable). Never blocks or breaks startup.
 	a.startUpdateCheckerBackground(log)
+
+	// ── Background: git auto-fetch ticker ───────────────────────────
+	// Starts the periodic background git fetch loop (git.auto_fetch_interval,
+	// default 2m) once the backend is ready. Infrastructure-only; stopped by
+	// FrontendAPILifecycle.Cleanup on shutdown. See startAutoFetchBackground.
+	a.startAutoFetchBackground()
 }
 
 // Shutdown is called when the Wails app is shutting down.

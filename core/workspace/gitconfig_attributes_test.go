@@ -120,6 +120,54 @@ func TestScanGitConfig_WorktreeConfigOverlayMerge(t *testing.T) {
 	}
 }
 
+// TestScanGitConfig_WorktreeOverlayPreservesCommonObjectFormat pins review
+// [c2_core-1]: the config.worktree overlay layers by KEY PRESENCE, so a
+// worktree config that does not set extensions.objectformat must not clobber
+// the common config's sha256 — clobbering would silently downgrade the
+// attr.tree blanket kill to the SHA-1 empty tree, a no-op on a SHA-256 repo.
+func TestScanGitConfig_WorktreeOverlayPreservesCommonObjectFormat(t *testing.T) {
+	repo, wt := worktreeFixture(t)
+	// sha256 + worktreeConfig in the COMMON config, plus an include so the
+	// blanket attr.tree kill is derived at all (includes are the one case
+	// per-name pins cannot cover; see NeutralizingOverrides).
+	repo.AppendConfig(t,
+		"[extensions]\n\tobjectformat = sha256\n\tworktreeConfig = true\n[include]\n\tpath = ./hidden\n")
+	wtGitDir := filepath.Join(evalDir(t, repo.Root), ".git", "worktrees", "wt")
+	if err := os.MkdirAll(wtGitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The overlay omits extensions.objectformat (only a benign key is set).
+	if err := os.WriteFile(filepath.Join(wtGitDir, "config.worktree"),
+		[]byte("[core]\n\tfsmonitor = /tmp/evil-wt-fsmonitor.sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := ScanGitConfig(wt)
+	if err != nil {
+		t.Fatalf("ScanGitConfig(worktree): %v", err)
+	}
+	if info.ObjectFormat != "sha256" {
+		t.Fatalf("ObjectFormat = %q after overlay merge, want sha256 (an overlay omission must not downgrade the common config)", info.ObjectFormat)
+	}
+	if got := info.emptyTreeHash(); got != EmptyTreeSHA256 {
+		t.Errorf("emptyTreeHash = %q, want %q", got, EmptyTreeSHA256)
+	}
+	// The blanket attr.tree override must carry the SHA-256 hash.
+	found := false
+	for _, ov := range overrideArgvs(info) {
+		if ov == attrTreeKey+"="+EmptyTreeSHA256 {
+			found = true
+			continue
+		}
+		if strings.HasPrefix(ov, attrTreeKey+"=") {
+			t.Errorf("attr.tree override = %q, want the SHA-256 empty tree", ov)
+		}
+	}
+	if !found {
+		t.Errorf("attr.tree override missing; overrides = %v", overrideArgvs(info))
+	}
+}
+
 func TestScanGitConfig_WorktreeConfigIgnoredWithoutExtension(t *testing.T) {
 	repo, wt := worktreeFixture(t)
 	wtGitDir := filepath.Join(evalDir(t, repo.Root), ".git", "worktrees", "wt")

@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { Trash2, EyeOff, FileCode, Loader2, Plus, Minus } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useCursorMenuPosition } from '@/lib/cursorMenuPosition'
 import { discardChanges, appendToGitignore, stageFile, unstageFile } from '@/api/git'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
@@ -19,7 +20,11 @@ interface GitFileContextMenuProps {
   entry: GitPanelEntry
   /** Workspace root — when provided, stripped to form the .gitignore pattern. */
   workspaceRoot?: string
-  /** Viewport coordinates where the menu appears; null renders nothing. */
+  /**
+   * Viewport coordinates where the menu appears (VISUAL px, as reported by
+   * `MouseEvent.clientX/clientY`); null renders nothing. Unit conversion and
+   * the viewport fit/flip decision live in {@link useCursorMenuPosition}.
+   */
   position: { x: number; y: number } | null
   /** Called when the menu (and any spawned dialog) should close. */
   onClose: () => void
@@ -53,6 +58,8 @@ export function GitFileContextMenu({
   const [isIgnoring, setIsIgnoring] = useState(false)
   const [isStaging, setIsStaging] = useState(false)
   const relativePath = toRelativePath(entry.path, workspaceRoot)
+  // Zoom-corrected, viewport-clamped placement (left/top in layout px).
+  const menuPosition = useCursorMenuPosition(position, menuRef)
 
   // --- Stage / Unstage ---
   const handleToggleStage = useCallback(async () => {
@@ -142,7 +149,13 @@ export function GitFileContextMenu({
           ref={menuRef}
           role="menu"
           aria-label="Git file actions"
-          style={{ position: 'fixed', left: position.x, top: position.y, zIndex: 9999 }}
+          style={{
+            position: 'fixed',
+            left: menuPosition?.left ?? 0,
+            top: menuPosition?.top ?? 0,
+            visibility: menuPosition ? 'visible' : 'hidden',
+            zIndex: 9999,
+          }}
           className={cn(
             'min-w-48 overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md',
             'animate-in fade-in-0 zoom-in-95',

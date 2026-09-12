@@ -124,6 +124,39 @@ export function dedupThoughtVsAnswer(items: DisplayItem[]): DisplayItem[] {
 
 // -- History reconstruction helpers (used by chatMessageToUI) --
 
+/**
+ * Parse `raw` as a JSON object, or return undefined when it is not one.
+ *
+ * Used to recover a single field from the raw JSON payload the Go persister
+ * writes into `content` for non-assistant roles (see backend/session/
+ * event_persister.go). Returns undefined for non-objects, arrays, and malformed
+ * JSON so each caller can apply its own fallback.
+ */
+function asJsonObject(raw: string): Record<string, unknown> | undefined {
+  if (!raw.startsWith('{')) return undefined
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Extract a string field from a JSON object encoded in `raw`.
+ *
+ * Centralizes the "starts like JSON and carries the field" guard plus the type
+ * check shared by the `thought` and `plan_review` reconstruction branches, so a
+ * missing guard cannot creep into one copy. Returns the field value when `raw`
+ * is a JSON object carrying `field` as a string; otherwise undefined.
+ */
+export function jsonStringField(raw: string, field: string): string | undefined {
+  const value = asJsonObject(raw)?.[field]
+  return typeof value === 'string' ? value : undefined
+}
+
 /** Reconstruct human-readable content from metadata to match live events. */
 export function reconstructContent(role: string, rawContent: string, meta: Record<string, unknown> | undefined): string {
   if (!meta) return rawContent
@@ -135,12 +168,12 @@ export function reconstructContent(role: string, rawContent: string, meta: Recor
     case 'tool_call': { const t = meta.tool as string | undefined; return t ? `${t}(${(meta.args as string) ?? ''})` : rawContent }
     case 'thought': {
       // Older persisted rows may have full JSON metadata as content when the actual content was empty.
-      // Detect and discard so the UI doesn't render raw JSON.
+      // Recover the "content" field so the UI doesn't render raw JSON. A JSON-looking payload with no
+      // usable "content" string collapses to empty; genuinely non-JSON content passes through verbatim.
       if (rawContent.startsWith('{') && rawContent.includes('"content"')) {
-        try {
-          const parsed = JSON.parse(rawContent) as { content?: string }
-          return parsed.content ?? ''
-        } catch { /* not JSON — pass through */ }
+        const content = jsonStringField(rawContent, 'content')
+        if (content !== undefined) return content
+        return asJsonObject(rawContent) !== undefined ? '' : rawContent
       }
       return rawContent
     }
@@ -188,6 +221,21 @@ export function reconstructContent(role: string, rawContent: string, meta: Recor
         return ''
       }
       return (meta.content as string) || rawContent
+    }
+    case 'plan_review': {
+      // plan_review_ready is persisted with the raw JSON payload
+      // ({"request_id","plan_path","plan_content"}) as content and the same
+      // payload as metadata (see backend/session/event_persister.go). The live
+      // handler renders data.plan_content (the SerializePlan Markdown), so
+      // reconstruct that same Markdown here — otherwise the chat card and the
+      // file viewer show raw JSON once the persisted row replaces the live one
+      // on a history load. Fall back to parsing legacy rows whose metadata
+      // predates this fix.
+      const fromMeta = meta.plan_content
+      if (typeof fromMeta === 'string' && fromMeta) return fromMeta
+      const fromJson = jsonStringField(rawContent, 'plan_content')
+      if (fromJson !== undefined) return fromJson
+      return rawContent
     }
     case 'task_resumed': return rawContent
     case 'goal_status':

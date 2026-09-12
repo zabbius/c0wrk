@@ -98,8 +98,33 @@ func TestParseGitHistory(t *testing.T) {
 
 func TestGetGitHistory_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
-	if _, err := f.GetGitHistory(); err == nil {
+	if _, err := f.GetGitHistory(0, 0); err == nil {
 		t.Fatal("GetGitHistory: expected error when no active project")
+	}
+}
+
+// TestNormalizeGitHistoryLimit pins the limit defaulting/capping rules:
+// limit<=0 → 300, limit>1000 → 1000, otherwise passthrough.
+func TestNormalizeGitHistoryLimit(t *testing.T) {
+	cases := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{"zero falls back to default", 0, 300},
+		{"negative falls back to default", -10, 300},
+		{"one is allowed", 1, 1},
+		{"default passthrough", 300, 300},
+		{"max passthrough", 1000, 1000},
+		{"above max is capped", 1001, 1000},
+		{"far above max is capped", 5000, 1000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeGitHistoryLimit(tc.in); got != tc.want {
+				t.Errorf("normalizeGitHistoryLimit(%d): got %d, want %d", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -108,12 +133,20 @@ func TestGetGitHistory_Success(t *testing.T) {
 		// withGitRepo commits committed.txt (1 commit). Add a second.
 		commitFile(t, dir, "b.txt", "b\n")
 
-		history, err := f.GetGitHistory()
+		page, err := f.GetGitHistory(0, 0)
 		if err != nil {
 			t.Fatalf("GetGitHistory: %v", err)
 		}
+		history := page.Commits
 		if len(history) != 2 {
 			t.Fatalf("len: got %d, want 2", len(history))
+		}
+		// Two commits on one page (limit defaults to 300) → no more pages.
+		if page.HasMore {
+			t.Error("page.HasMore: got true, want false (2 commits < default limit)")
+		}
+		if page.NextSkip != 2 {
+			t.Errorf("page.NextSkip: got %d, want 2", page.NextSkip)
 		}
 		// Newest first.
 		if history[0].Message != "add b.txt" {
@@ -141,6 +174,63 @@ func TestGetGitHistory_Success(t *testing.T) {
 		}
 		if len(history[1].Refs) != 0 {
 			t.Errorf("history[1].Refs: got %v, want empty (root has no decoration)", history[1].Refs)
+		}
+	})
+}
+
+// TestGetGitHistory_Pagination verifies limit/skip paging against a real
+// repository with more commits than the page size: the first page is
+// exactly `limit` commits in git-log (newest-first) order with
+// HasMore=true and NextSkip=limit; the second page holds the remainder
+// with HasMore=false. Pages are disjoint and together reconstruct the full
+// history in order.
+func TestGetGitHistory_Pagination(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		// withGitRepo commits committed.txt; add two more for 3 total.
+		commitFile(t, dir, "b.txt", "b\n")
+		commitFile(t, dir, "c.txt", "c\n")
+
+		const limit = 2
+
+		page1, err := f.GetGitHistory(limit, 0)
+		if err != nil {
+			t.Fatalf("GetGitHistory page1: %v", err)
+		}
+		if len(page1.Commits) != limit {
+			t.Fatalf("page1 len: got %d, want %d", len(page1.Commits), limit)
+		}
+		if !page1.HasMore {
+			t.Error("page1.HasMore: got false, want true (saturated page)")
+		}
+		if page1.NextSkip != limit {
+			t.Errorf("page1.NextSkip: got %d, want %d", page1.NextSkip, limit)
+		}
+
+		page2, err := f.GetGitHistory(limit, page1.NextSkip)
+		if err != nil {
+			t.Fatalf("GetGitHistory page2: %v", err)
+		}
+		if len(page2.Commits) != 1 {
+			t.Fatalf("page2 len: got %d, want 1", len(page2.Commits))
+		}
+		if page2.HasMore {
+			t.Error("page2.HasMore: got true, want false (short page)")
+		}
+		if page2.NextSkip != 3 {
+			t.Errorf("page2.NextSkip: got %d, want 3", page2.NextSkip)
+		}
+
+		// The concatenation of the pages must equal the full history.
+		paged := append(append([]GitHistoryCommit{}, page1.Commits...), page2.Commits...)
+		full, err := f.GetGitHistory(0, 0)
+		if err != nil {
+			t.Fatalf("GetGitHistory full: %v", err)
+		}
+		if len(full.Commits) != 3 {
+			t.Fatalf("full len: got %d, want 3", len(full.Commits))
+		}
+		if diff := cmp.Diff(full.Commits, paged); diff != "" {
+			t.Errorf("paged history mismatch (-full +paged):\n%s", diff)
 		}
 	})
 }
