@@ -54,7 +54,7 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
 | `tasks[].mode` | no | `"blocking"` (default): the tool result contains the subagent output. `"async"`: the tool result returns immediately with `delegation_id`; the Conductor reads results later via `read_step_output(id)`. |
 | `tasks[].max_steps` | no | Per-subagent ReAct iteration cap. Empty = derived from routing complexity (`complexity × 30`, same formula as the Conductor via `stepsPerComplexity`). A Subagent Profile's `max_steps` (when > 0) overrides this field and the default. |
 | `tasks[].allow_redelegate` | no | `true` grants the subagent the `delegate` and `cancel_delegation` tools (depth-capped by `OrchestratorConfig.MaxRedelegationDepth`, default 2). A Subagent Profile with `allow-redelegate: true` overrides this field to `true`. Default `false` (flat). |
-| `tasks[].agent` | no | Name of a Subagent Profile (`<workspace>/.agents/agents/<name>/AGENT.md`). When set, the launcher resolves the profile and applies it: the profile body replaces the orchestrator core directive (the shared project-context prefix is preserved via `buildSpecializedSystemPrompt`), the profile's tool preference / `max_steps` / `model` / `allow-redelegate` override the task fields, and the profile's `skills:` frontmatter (when present) is activated for the subagent (see [Profile Required Skills](#profile-required-skills), [ADR-039](../../decisions/039-agent-profile-skills.md)). Unknown name fails fast (delegate validation rejects it before any subagent launches). Empty = no profile (the legacy behavior). |
+| `tasks[].agent` | no | Name of a Subagent Profile (`<workspace>/.agents/agents/<name>/AGENT.md`). When set, the launcher resolves the profile and applies it: the profile body replaces the orchestrator core directive (the shared project-context prefix is preserved via `buildSpecializedSystemPrompt`), the profile's tool preference / `max_steps` / `model` / `allow-redelegate` override the task fields, and the profile's `skills:` frontmatter (when present) is activated for the subagent (see [Profile Required Skills](#profile-required-skills), [ADR-037](../../decisions/037-agent-profile-skills.md)). Unknown name fails fast (delegate validation rejects it before any subagent launches). Empty = no profile (the legacy behavior). |
 
 #### Execution Flow
 
@@ -121,7 +121,7 @@ delegate.Execute(ctx, input)
 
 ### Profile Required Skills
 
-A Subagent Profile may declare an optional `skills:` frontmatter field — a comma-separated list of Agent Skill names (`<workspace>/.agents/skills/<name>/SKILL.md`, activated for the main Conductor with `/skill-name`) that the subagent launched under the profile **must** run with. See [ADR-039](../../decisions/039-agent-profile-skills.md) (extends the profile format defined by [ADR-021](../../decisions/021-subagents.md)).
+A Subagent Profile may declare an optional `skills:` frontmatter field — a comma-separated list of Agent Skill names (`<workspace>/.agents/skills/<name>/SKILL.md`, activated for the main Conductor with `/skill-name`) that the subagent launched under the profile **must** run with. See [ADR-037](../../decisions/037-agent-profile-skills.md) (extends the profile format defined by [ADR-021](../../decisions/021-subagents.md)).
 
 Application at `buildSubAgentTask`:
 
