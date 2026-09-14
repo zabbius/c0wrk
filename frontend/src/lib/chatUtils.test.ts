@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { roleToType, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, groupMessages, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow } from './chatUtils'
+import { roleToType, chatMessageToUI, rebuildPlanFromHistory, rebuildGoalFromHistory, groupMessages, isPersistableHistoryMessage, lastAgentMetricsFromHistory, isAgentMetricsRow, isRoutingRequestRow } from './chatUtils'
 import type { ChatMessage } from '@/types/models'
 import type { ChatMessageUI } from '@/types/messages'
 
@@ -289,7 +289,7 @@ describe('reconstructContent (via chatMessageToUI)', () => {
       finish: 'full', parse_errors: 1, steps: 3, output_tokens: 42, invalid_tool_calls: 1,
       nudges: { repeat: 0, same_tool: 0, fruitless: 0, parse: 1, truncation: 0 },
       aborts: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0, truncation: 0 },
-      slm: { enabled: false, variants: [] },
+      model_profiles: { enabled: false, variants: [] },
     }
     const result = chatMessageToUI(makeMsg({
       role: 'status',
@@ -304,7 +304,7 @@ describe('reconstructContent (via chatMessageToUI)', () => {
       finish: 'full', parse_errors: 1, steps: 3, output_tokens: 42,
       nudges: { repeat: 0, same_tool: 0, fruitless: 0, parse: 1 },
       aborts: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0 },
-      slm: { enabled: false, variants: [] },
+      model_profiles: { enabled: false, variants: [] },
     }
     const result = chatMessageToUI(makeMsg({
       role: 'status',
@@ -351,7 +351,7 @@ describe('lastAgentMetricsFromHistory / isAgentMetricsRow', () => {
     finish: 'partial', parse_errors: 2, steps: 7, output_tokens: 512, invalid_tool_calls: 0,
     nudges: { repeat: 1, same_tool: 0, fruitless: 1, parse: 2, truncation: 1 },
     aborts: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0, truncation: 0 },
-    slm: { enabled: true, variants: ['lite'] },
+    model_profiles: { enabled: true, variants: ['lite'] },
   }
   const metricsMsg = chatMessageToUI(makeMsg({
     id: 9,
@@ -387,7 +387,7 @@ describe('lastAgentMetricsFromHistory / isAgentMetricsRow', () => {
       finish: 'full', parse_errors: 1, steps: 4, output_tokens: 100,
       nudges: { repeat: 0, same_tool: 0, fruitless: 0, parse: 1 },
       aborts: { repeat: 0, same_tool: 0, fruitless: 0, parse: 0 },
-      slm: { enabled: false, variants: [] },
+      model_profiles: { enabled: false, variants: [] },
     }
     const legacyMsg = chatMessageToUI(makeMsg({
       id: 10,
@@ -400,6 +400,48 @@ describe('lastAgentMetricsFromHistory / isAgentMetricsRow', () => {
     expect(got?.invalid_tool_calls).toBe(0)
     expect(got?.nudges.truncation).toBe(0)
     expect(got?.aborts.truncation).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 3b. routing-request activity boilerplate rows
+// ---------------------------------------------------------------------------
+
+describe('isRoutingRequestRow', () => {
+  it('matches a legacy persisted "Routing request..." status row', () => {
+    // The Go persister writes the raw JSON payload as the row content and the
+    // same payload as metadata (role "status"); chatMessageToUI reconstructs
+    // the human-readable text from metadata.content.
+    const meta = JSON.stringify({ content: 'Routing request...', phase: 'orchestration' })
+    const row = chatMessageToUI(makeMsg({ id: 11, role: 'status', content: meta, metadata: meta }))
+    expect(row.content).toBe('Routing request...')
+    expect(isRoutingRequestRow(row)).toBe(true)
+  })
+
+  it('does not match the routing decision row (the results must stay)', () => {
+    const row = chatMessageToUI(makeMsg({
+      id: 12,
+      role: 'routing',
+      content: '',
+      metadata: JSON.stringify({ domain: 'code', complexity: '3' }),
+    }))
+    expect(row.content).toContain('Domain: code')
+    expect(isRoutingRequestRow(row)).toBe(false)
+  })
+
+  it('does not match other status rows (e.g. skills_activated)', () => {
+    const row = chatMessageToUI(makeMsg({ role: 'status', metadata: JSON.stringify({ skills: ['x'] }) }))
+    expect(isRoutingRequestRow(row)).toBe(false)
+  })
+
+  it('does not match a same-text status row without the orchestration phase', () => {
+    // The matcher requires the persisted phase, so a service row that merely
+    // happens to carry the text (e.g. the new "routing" phase notice, which is
+    // never persisted but may exist in odd payloads) is not dropped.
+    const meta = JSON.stringify({ content: 'Routing request...', phase: 'routing' })
+    const row = chatMessageToUI(makeMsg({ id: 13, role: 'status', content: meta, metadata: meta }))
+    expect(row.content).toBe('Routing request...')
+    expect(isRoutingRequestRow(row)).toBe(false)
   })
 })
 

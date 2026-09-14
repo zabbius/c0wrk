@@ -128,7 +128,7 @@ Key points:
 - The active LLM provider is resolved from `llm.default_model` — the Router looks up which provider has the model in its enabled `models` list.
 - MCP servers are configured under `mcp.servers`.
 - Security policy is configured exclusively by capability group under `security.groups`; the legacy `security.default_policy` and `security.tool_policies` keys are inert. The `execute` group alone supports a command blacklist. See [`specs/decisions/024-group-policies.md`](specs/decisions/024-group-policies.md).
-- `experimental.enabled` gates both RESEARCH and the Small-LLM profile. `executor.verify_on_edit` is opt-in and runs only a config-authored command through the unattended hard-safety path.
+- `experimental.enabled` gates both RESEARCH and the Model Profiles feature. `executor.verify_on_edit` is opt-in and runs only a config-authored command through the unattended hard-safety path.
 - Main agent calls use `timeouts.llmRequestTimeout`; one-shot title, commit-message, and prompt-optimization calls use `timeouts.serviceLLMRequestTimeout`.
 - Runtime limits are configurable under `toolLimits`, `timeouts`, `executor`, and `vector_index`; update checks use the `updates` section.
 - The SQLite database is always stored at `~/.c0wrk/database.db` (the `memory.database` config key has been retired).
@@ -318,7 +318,7 @@ Each release publishes five platform archives plus `SHA256SUMS`. Unzip/extract t
 | `c0wrk-desktop-linux-arm64.tar.gz`    | Linux (arm64)                | `c0wrk-desktop` binary + `libonnxruntime.so` + embedding models                   |
 | `c0wrk-desktop-windows-amd64.zip`     | Windows (amd64)              | `c0wrk-desktop.exe` + `onnxruntime.dll` + embedding models                        |
 
-> The ONNX Runtime shared library and the quantized embedding model + tokenizer are bundled so vector search works out of the box — no extra download step is required on the user's machine. The in-app updater verifies the selected archive fail-closed against `SHA256SUMS`; artifacts are still unsigned, so the checksum establishes release-byte integrity but not authorship if the release account and checksum are both compromised. The updater is flavor-aware: a cuda13 install only ever updates from the cuda13 archive and vice versa ([ADR-043](specs/decisions/043-cuda-release-artifact.md)).
+> The ONNX Runtime shared library and the quantized embedding model + tokenizer are bundled so vector search works out of the box — no extra download step is required on the user's machine. The in-app updater verifies the selected archive fail-closed against `SHA256SUMS`; artifacts are still unsigned, so the checksum establishes release-byte integrity but not authorship if the release account and checksum are both compromised. The updater is flavor-aware: a cuda13 install only ever updates from the cuda13 archive and vice versa ([ADR-046](specs/decisions/046-cuda-release-artifact.md)).
 
 End-user installation steps for each platform live in [README.md](README.md).
 
