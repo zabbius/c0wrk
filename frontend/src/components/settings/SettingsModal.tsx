@@ -25,6 +25,11 @@ import { Settings, Palette, Brain, Search, Shield, Info, Server, AlertTriangle, 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { hasDefaultModel } from '@/api/config'
 import { useExperimentalFeatures } from '@/hooks/useExperimentalFeatures'
+// The canonical app mark — the very same SVG Wails derives the bundled
+// appicon.png from, imported by URL so the About artwork can never drift
+// from the real icon. Served by the dev server via server.fs.allow in
+// vite.config.ts; hashed into dist/assets by production builds.
+import appIconUrl from '../../../../build/appicon.svg'
 
 /**
  * Shared classes for every tab's scroll container. `pr-2` keeps a small
@@ -227,16 +232,11 @@ export function SettingsModal() {
           </TabsContent>
 
           <TabsContent value="appearance" className={TAB_CONTENT_CLASS}>
-            {/*
-              Theme and UI Scale sit side by side on a single horizontal step
-              (two equal columns). The columns stretch to the tallest control
-              (the Theme switch group, which is taller than the single-row
-              UI-scale field by its `p-1` wrapper), so UIScaleSelector can
-              vertically center its field against the Theme group.
-            */}
-            <div className="grid grid-cols-2 gap-6 items-stretch">
+            <div className="space-y-6">
               <ThemeSelector />
-              <UIScaleSelector />
+              <div className="border-t border-border pt-4">
+                <UIScaleSelector />
+              </div>
             </div>
           </TabsContent>
 
@@ -265,9 +265,14 @@ export function SettingsModal() {
           <TabsContent value="about" className={TAB_CONTENT_CLASS}>
             <div className="space-y-4">
               <div className="flex items-center gap-3">
-                <div className="h-12 w-12 rounded-lg bg-primary/10 flex items-center justify-center">
-                  <span className="text-xl font-bold text-primary">c0</span>
-                </div>
+                {/* The brand artwork itself, mirroring the real app icon, so
+                    it deliberately bypasses theme tokens. */}
+                <img
+                  src={appIconUrl}
+                  alt=""
+                  aria-hidden="true"
+                  className="size-12 shrink-0"
+                />
                 <div>
                   <h3 className="font-semibold">c0wrk</h3>
                   <p className="text-sm text-muted-foreground">Desktop AI Coding Agent</p>
