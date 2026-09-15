@@ -18,7 +18,7 @@ require (
 	github.com/gorilla/css v1.0.1
 	github.com/openai/openai-go v1.12.0
 	github.com/philippgille/chromem-go v0.7.0
-	github.com/v0lka/sp4rk v0.15.1-0.20260914061756-fc0f02510ede
+	github.com/v0lka/sp4rk v0.15.1-0.20260915051006-13d3f323d148
 	github.com/wailsapp/wails/v2 v2.15.0
 	golang.org/x/image v0.45.0
 	golang.org/x/mod v0.40.0
@@ -118,4 +118,4 @@ require (
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
-replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk v0.0.0-20260914084253-12c863d30a25
+replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk v0.0.0-20260915082531-f0626c4a9002
