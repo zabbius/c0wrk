@@ -223,6 +223,8 @@ export function ListSkills():Promise<Array<backend.SkillDescriptorDTO>>;
 
 export function ListThemes():Promise<Array<backend.ThemeDTO>>;
 
+export function ListVectorIndexGPUs():Promise<Array<backend.GPUDeviceResponse>>;
+
 export function Merge(arg1:string):Promise<void>;
 
 export function OptimizePrompt(arg1:string):Promise<backend.OptimizePromptResponse>;
@@ -375,6 +377,7 @@ export function UpdateSearchSettings(arg1:backend.SearchSettingsRequest):Promise
 
 export function UpdateSecuritySettings(arg1:backend.SecuritySettingsResponse):Promise<void>;
 
+export function UpdateVectorIndexSettings(arg1:backend.VectorIndexSettingsResponse):Promise<void>;
 export function UpdateWorkDirectoryDescription(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function WatchDirectory(arg1:string):Promise<void>;

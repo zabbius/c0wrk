@@ -2,7 +2,7 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import type { SearchRequest, VectorStoreEntry, VectorIndexStatus } from '@/types/models'
+import type { SearchRequest, VectorStoreEntry, VectorIndexStatus, GPUDeviceResponse } from '@/types/models'
 
 export async function searchVectorStore(req: SearchRequest): Promise<VectorStoreEntry[]> {
   try {
@@ -26,6 +26,32 @@ export async function getVectorIndexStatus(): Promise<VectorIndexStatus> {
     return result as VectorIndexStatus
   } catch (err) {
     logger.error('Failed to get vector index status:', err)
+    throw err
+  }
+}
+
+/**
+ * List the NVIDIA GPUs visible on the machine (for the vector-index
+ * settings device picker). The backend shells out to
+ * `nvidia-smi --query-gpu=index,name` under a bounded 2s probe budget:
+ * machines without nvidia-smi yield an empty list (absence of the NVIDIA
+ * userspace means "no GPUs to offer", not a failure); a present-but-failing
+ * driver (down, non-zero exit, timeout) rejects the promise so the UI can
+ * distinguish "no hardware" from "probe failed". The result reflects what
+ * the driver reports right now — the running embedder's facts travel in
+ * VectorIndexStatus, not here.
+ */
+export async function listVectorIndexGPUs(): Promise<GPUDeviceResponse[]> {
+  try {
+    const app = getApp()
+    const result = await app.ListVectorIndexGPUs()
+    if (!Array.isArray(result)) {
+      logger.error('listVectorIndexGPUs: unexpected response shape, returning []', result)
+      return []
+    }
+    return result as GPUDeviceResponse[]
+  } catch (err) {
+    logger.error('Failed to list vector index GPUs:', err)
     throw err
   }
 }
