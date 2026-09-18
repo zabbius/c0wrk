@@ -230,8 +230,6 @@ github.com/tkrajina/go-reflector v0.5.8 h1:yPADHrwmUbMq4RGEyaOUpz2H90sRsETNVpjzo
 github.com/tkrajina/go-reflector v0.5.8/go.mod h1:ECbqLgccecY5kPmPmXg1MrHW585yMcDkVl6IvJe64T4=
 github.com/v0lka/flowsh v0.1.0 h1:eSCid9mcqutBb0drgUz93fR7f8jGIwkeVPHiTSmBNXk=
 github.com/v0lka/flowsh v0.1.0/go.mod h1:D0SkC7Wry2qMiAixq3FYWIl/gdRaC3KhzOfokl/1/Mo=
-github.com/v0lka/sp4rk v0.15.1-0.20260918080724-95047fa65930 h1:+gT0QXQcojlnCGUa6aui1SHmcEZhuleK11r4tKAZ7Cw=
-github.com/v0lka/sp4rk v0.15.1-0.20260918080724-95047fa65930/go.mod h1:6wnJ0gg4Si5/D4YWVsD1eas6uCyvVZsqSyVTP1AxU7k=
 github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
 github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
 github.com/valyala/fasttemplate v1.2.2 h1:lxLXG0uE3Qnshl9QyaK6XJxMXlQZELvChBOCmQD0Loo=
@@ -254,6 +252,8 @@ github.com/yuin/goldmark v1.7.4 h1:BDXOHExt+A7gwPCJgPIIq7ENvceR7we7rOS9TNoLZeg=
 github.com/yuin/goldmark v1.7.4/go.mod h1:uzxRWxtg69N339t3louHJ7+O03ezfj6PlliRlaOzY1E=
 github.com/yusufpapurcu/wmi v1.2.4 h1:zFUKzehAFReQwLys1b/iSMl+JQGSCSjtVqQn9bBrPo0=
 github.com/yusufpapurcu/wmi v1.2.4/go.mod h1:SBZ9tNy3G9/m5Oi98Zks0QjeHVDvuK0qfxQmPyzfmi0=
+github.com/zabbius/sp4rk v0.0.0-20260918080724-95047fa65930 h1:+QoG4GVatfiUfFoeOjBRTWsgV8yGFt7sUdrrBIngv24=
+github.com/zabbius/sp4rk v0.0.0-20260918080724-95047fa65930/go.mod h1:6wnJ0gg4Si5/D4YWVsD1eas6uCyvVZsqSyVTP1AxU7k=
 go.etcd.io/bbolt v1.4.0 h1:TU77id3TnN/zKr7CO/uk+fBCwF2jGcMuw2B/FMAzYIk=
 go.etcd.io/bbolt v1.4.0/go.mod h1:AsD+OCi/qPN1giOX1aiLAha3o1U8rAz65bvN4j0sRuk=
 golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
