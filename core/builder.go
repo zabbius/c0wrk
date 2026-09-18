@@ -2462,10 +2462,9 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	autoApprove := cfg.Security.AutoApproveWorkspaceWrites
 	autonomyMode := cfg.Security.AutonomyMode
 	silentMode := tools.SilentModeState{
-		ToolConfirm:  cfg.Security.SilentMode.ToolConfirm,
-		StepLimit:    cfg.Security.SilentMode.StepLimit,
-		AskUser:      cfg.Security.SilentMode.AskUser,
-		ReviewPrompt: cfg.Security.SilentMode.ReviewPrompt,
+		ToolConfirm: cfg.Security.SilentMode.ToolConfirm,
+		StepLimit:   cfg.Security.SilentMode.StepLimit,
+		AskUser:     cfg.Security.SilentMode.AskUser,
 	}
 
 	// Lock ordering is b.mu → registry mu: registerSessionRegistry clones
@@ -2681,10 +2680,9 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 		SearchTimeout:  time.Duration(cfg.Timeouts.WebSearchTimeout) * time.Second,
 
 		SilentMode: tools.SilentModeState{
-			ToolConfirm:  cfg.Security.SilentMode.ToolConfirm,
-			StepLimit:    cfg.Security.SilentMode.StepLimit,
-			AskUser:      cfg.Security.SilentMode.AskUser,
-			ReviewPrompt: cfg.Security.SilentMode.ReviewPrompt,
+			ToolConfirm: cfg.Security.SilentMode.ToolConfirm,
+			StepLimit:   cfg.Security.SilentMode.StepLimit,
+			AskUser:     cfg.Security.SilentMode.AskUser,
 		},
 		AutonomyMode: cfg.Security.AutonomyMode,
 
