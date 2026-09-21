@@ -103,7 +103,7 @@ require (
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/tkrajina/go-reflector v0.5.8 // indirect
-	github.com/v0lka/flowsh v0.3.1 // indirect
+	github.com/v0lka/flowsh v0.3.2 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
@@ -121,3 +121,5 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 	mvdan.cc/sh/v3 v3.10.0 // indirect
 )
+
+replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk v0.0.0-20260921040413-a552e0dbd54e
