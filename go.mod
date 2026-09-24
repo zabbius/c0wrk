@@ -122,4 +122,4 @@ require (
 	mvdan.cc/sh/v3 v3.10.0 // indirect
 )
 
-replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk v0.0.0-20260922181107-d2b97e2f4b76
+replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk v0.0.0-20260924164036-5987f137695e
