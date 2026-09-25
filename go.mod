@@ -16,7 +16,7 @@ require (
 	github.com/openai/openai-go v1.12.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/shirou/gopsutil/v4 v4.26.8
-	github.com/v0lka/sp4rk v0.15.1-0.20260922181107-d2b97e2f4b76
+	github.com/v0lka/sp4rk v0.15.1-0.20260925122946-6dca108ec97c
 	github.com/wailsapp/wails/v2 v2.15.0
 	golang.org/x/image v0.45.0
 	golang.org/x/mod v0.40.0
@@ -122,4 +122,4 @@ require (
 	mvdan.cc/sh/v3 v3.10.0 // indirect
 )
 
-replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk v0.0.0-20260925095747-7f4f1f87b155
+replace github.com/v0lka/sp4rk => github.com/zabbius/sp4rk v0.0.0-20260925122946-6dca108ec97c
