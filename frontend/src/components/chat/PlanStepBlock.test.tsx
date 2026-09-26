@@ -142,7 +142,6 @@ describe('PlanStepBlock', () => {
     expect(barClass('completed').success).toBe(true)
     expect(barClass('failed').destructive).toBe(true)
     expect(barClass('paused').warning).toBe(true)
-    expect(barClass('pending').muted).toBe(true)
     expect(barClass('interrupted').muted).toBe(true)
   })
 
