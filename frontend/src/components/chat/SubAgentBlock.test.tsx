@@ -116,7 +116,7 @@ describe('SubAgentBlock', () => {
     items: checked.map(c => ({ text: c ? 'done thing' : 'todo thing', checked: c })),
   })
 
-  it('shows the checklist progress (icon, green bar, N/M) before the context fill', () => {
+  it('shows the checklist progress (icon, status-colored bar, N/M) before the context fill', () => {
     useChatStore.setState({ stepContextFill: { 'sess-1': { del_1: 42 } } })
     render(makeSub({ status: 'running', children: [CHILD, checklist([true, true, false])] }))
     const header = container.querySelector('[data-slot="collapsible-trigger"]')!
@@ -130,9 +130,27 @@ describe('SubAgentBlock', () => {
     expect(
       checklistWrap!.compareDocumentPosition(fillWrap!) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
-    // The bar is the success (green) tier regardless of progress.
-    expect(checklistWrap!.querySelector('.bg-success')).not.toBeNull()
-    expect(checklistWrap!.querySelector('.bg-info')).toBeNull()
+    // The bar follows the delegate's current status color (running → info
+    // blue), not a fixed success green.
+    expect(checklistWrap!.querySelector('.bg-info')).not.toBeNull()
+    expect(checklistWrap!.querySelector('.bg-success')).toBeNull()
+  })
+
+  it('tints the checklist indicator with each status accent', () => {
+    const barClass = (status: SubAgentItem['status']) => {
+      render(makeSub({ status, children: [CHILD, checklist([false])] }))
+      const wrap = container.querySelector('[title^="Checklist:"]')!
+      return {
+        success: !!wrap.querySelector('.bg-success'),
+        destructive: !!wrap.querySelector('.bg-destructive'),
+        warning: !!wrap.querySelector('.bg-warning'),
+        muted: !!wrap.querySelector('.bg-muted-foreground'),
+      }
+    }
+    expect(barClass('completed').success).toBe(true)
+    expect(barClass('failed').destructive).toBe(true)
+    expect(barClass('paused').warning).toBe(true)
+    expect(barClass('interrupted').muted).toBe(true)
   })
 
   it('renders the context fill without a checklist (no checklist cluster)', () => {

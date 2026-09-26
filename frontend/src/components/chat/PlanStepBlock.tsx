@@ -51,20 +51,21 @@ export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlock
   useEffect(() => { setUserOverride(null) }, [status])
 
   const statusConfig = {
-    running:   { border: 'border-info',         Icon: Loader2,      iconClass: 'text-info animate-spin' },
-    completed: { border: 'border-success',      Icon: CheckCircle2, iconClass: 'text-success' },
-    failed:    { border: 'border-destructive',  Icon: XCircle,      iconClass: 'text-destructive' },
-    paused:    { border: 'border-warning',      Icon: CirclePause,  iconClass: 'text-warning' },
+    running:   { border: 'border-info',         Icon: Loader2,      iconClass: 'text-info animate-spin', accent: 'info' },
+    completed: { border: 'border-success',      Icon: CheckCircle2, iconClass: 'text-success', accent: 'success' },
+    failed:    { border: 'border-destructive',  Icon: XCircle,      iconClass: 'text-destructive', accent: 'destructive' },
+    paused:    { border: 'border-warning',      Icon: CirclePause,  iconClass: 'text-warning', accent: 'warning' },
     // Abandoned before it settled (crash/app exit) — applied by the session-load
     // work-unit reconciliation, never by a live event.
-    interrupted: { border: 'border-border',     Icon: CircleSlash,  iconClass: 'text-muted-foreground' },
-    pending:   { border: 'border-border',       Icon: Circle,       iconClass: 'text-muted-foreground' },
+    interrupted: { border: 'border-border',     Icon: CircleSlash,  iconClass: 'text-muted-foreground', accent: 'muted' },
+    pending:   { border: 'border-border',       Icon: Circle,       iconClass: 'text-muted-foreground', accent: 'muted' },
   } as const
 
   const cfg = statusConfig[status] ?? statusConfig.pending
   const borderColor = cfg.border
   const StatusIcon = cfg.Icon
   const iconClass = cfg.iconClass
+  const accent = cfg.accent
 
   const fullDesc = description || title
 
@@ -90,7 +91,7 @@ export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlock
         <span className="text-xs text-muted-foreground truncate min-w-0">— interrupted</span>
       )}
       {checklistTotal > 0 && (
-        <StepChecklistProgress total={checklistTotal} completed={checklistDone} />
+        <StepChecklistProgress total={checklistTotal} completed={checklistDone} accent={accent} />
       )}
       {typeof stepContextFill === 'number' && (
         <span className="ml-2 inline-flex shrink-0">
@@ -107,7 +108,7 @@ export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlock
         </span>
       )}
     </>
-  ), [isRetry, status, error, stepContextFill, stepContextTokens, checklistTotal, checklistDone, duration])
+  ), [isRetry, status, error, stepContextFill, stepContextTokens, checklistTotal, checklistDone, accent, duration])
 
   const icon = useMemo(() => (
     <StatusIcon className={cn('h-3.5 w-3.5 shrink-0', iconClass)} />

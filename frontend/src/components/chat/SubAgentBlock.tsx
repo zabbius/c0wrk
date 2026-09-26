@@ -18,13 +18,13 @@ type SubAgentItem = Extract<DisplayItem, { kind: 'subagent' }>
 type ChecklistChild = Extract<DisplayItem, { kind: 'checklist' }>
 
 const statusConfig = {
-  running:   { Icon: Loader2,      iconClass: 'text-info animate-spin' },
-  completed: { Icon: CheckCircle2, iconClass: 'text-success' },
-  failed:    { Icon: XCircle,      iconClass: 'text-destructive' },
-  paused:    { Icon: CirclePause,  iconClass: 'text-warning' },
+  running:   { Icon: Loader2,      iconClass: 'text-info animate-spin', accent: 'info' },
+  completed: { Icon: CheckCircle2, iconClass: 'text-success', accent: 'success' },
+  failed:    { Icon: XCircle,      iconClass: 'text-destructive', accent: 'destructive' },
+  paused:    { Icon: CirclePause,  iconClass: 'text-warning', accent: 'warning' },
   // Abandoned before it settled (crash/app exit) — applied by the session-load
   // work-unit reconciliation, never by a live event.
-  interrupted: { Icon: CircleSlash, iconClass: 'text-muted-foreground' },
+  interrupted: { Icon: CircleSlash, iconClass: 'text-muted-foreground', accent: 'muted' },
 } as const
 
 export const SubAgentBlock = memo(function SubAgentBlock({ item }: { item: SubAgentItem }) {
@@ -55,6 +55,7 @@ export const SubAgentBlock = memo(function SubAgentBlock({ item }: { item: SubAg
   const cfg = statusConfig[status] ?? statusConfig.running
   const StatusIcon = cfg.Icon
   const iconClass = cfg.iconClass
+  const accent = cfg.accent
 
   const statusIcon = useMemo(() => (
     <StatusIcon className={cn('h-3.5 w-3.5 shrink-0', iconClass)} />
@@ -94,7 +95,7 @@ export const SubAgentBlock = memo(function SubAgentBlock({ item }: { item: SubAg
         <span className="text-xs text-muted-foreground truncate min-w-0">— interrupted</span>
       )}
       {checklistTotal > 0 && (
-        <StepChecklistProgress total={checklistTotal} completed={checklistDone} />
+        <StepChecklistProgress total={checklistTotal} completed={checklistDone} accent={accent} />
       )}
       {typeof stepContextFill === 'number' && (
         <span className="ml-2 inline-flex shrink-0">
@@ -111,7 +112,7 @@ export const SubAgentBlock = memo(function SubAgentBlock({ item }: { item: SubAg
         </span>
       )}
     </>
-  ), [status, error, stepContextFill, stepContextTokens, checklistTotal, checklistDone, duration])
+  ), [status, error, stepContextFill, stepContextTokens, checklistTotal, checklistDone, accent, duration])
 
   return (
     <CollapsibleBlock
