@@ -17,10 +17,13 @@ package embeddedllm
 
 import (
 	"context"
+	"debug/elf"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -83,6 +86,26 @@ func (b Backend) gpuAccelerated() bool {
 	}
 }
 
+// CUDA12Userland is the tri-state verdict on the CUDA 12.x USERLAND the
+// runtime's launcher dynamically links against (libcudart.so.12 +
+// libcublas.so.12). It is deliberately separate from Backend: the backend
+// ladder answers "what build should I download", while this answers "would a
+// CUDA 12.x build find its libraries at load time".
+type CUDA12Userland string
+
+const (
+	// CUDA12Present — both libcudart.so.12 and libcublas.so.12 were found AND
+	// each ELF's embedded DT_SONAME is its own ".so.12" name.
+	CUDA12Present CUDA12Userland = "present"
+	// CUDA12Absent — no candidate for at least one library, or a candidate's
+	// SONAME names another series (the ".so.12" symlink pointing at a 13 ELF).
+	CUDA12Absent CUDA12Userland = "absent"
+	// CUDA12Unknown — a probe could not decide: ldconfig itself is missing, or
+	// a candidate was found but could not be inspected (unreadable, truncated,
+	// a stripped ELF without DT_SONAME).
+	CUDA12Unknown CUDA12Userland = "unknown"
+)
+
 // Hardware is the probe result: everything resolution may depend on.
 //
 // It answers "which archive do I download, and how big a context can this
@@ -106,6 +129,15 @@ type Hardware struct {
 	// CUDATag is the driver-derived CUDA asset tag ("12.4" | "12.8" |
 	// "13.3"), empty when the backend is not CUDA.
 	CUDATag string
+	// CUDA12Userland is the tri-state verdict on the CUDA 12.x userland
+	// (libcudart.so.12 + libcublas.so.12 with matching DT_SONAMEs). present
+	// requires BOTH libraries to be genuine .12 ELFs; absent covers both "no
+	// candidate found" and "found but it is really a .13 ELF" — the two cases
+	// a CUDA 12.x build treats identically (dlopen fails either way). unknown
+	// covers the cases the probe refuses to guess about: ldconfig itself
+	// missing, or a candidate that could not be inspected (unreadable file,
+	// ELF without a DT_SONAME, unparsable ELF).
+	CUDA12Userland CUDA12Userland
 }
 
 // probeCommandTimeout bounds a single external accelerator-probe invocation.
@@ -154,10 +186,15 @@ var errProbeToolAbsent = errors.New("probe tool not found in PATH")
 // deviceUnreadable in plan.go.
 var ErrRAMUnknown = errors.New("cannot determine total system RAM")
 
-// cudaVersionRE matches the "CUDA Version: 12.4" field of the nvidia-smi
-// header table. nvidia-smi prints "N/A" there when the driver reports no CUDA
-// support, which simply does not match.
-var cudaVersionRE = regexp.MustCompile(`CUDA Version:\s*(\d+)\.(\d+)`)
+// cudaVersionRE matches the CUDA-version field of the nvidia-smi header table.
+// Two spellings exist and BOTH must be accepted: drivers up to the 5xx series
+// print "CUDA Version: 12.4", while newer drivers (610.x) renamed the column to
+// "CUDA UMD Version: 13.3" and no longer emit the legacy field at all. Matching
+// only the legacy spelling is what silently dropped a CUDA-capable machine to
+// the Vulkan rung of the detection ladder (and thus to the PTQ1_0 packing).
+// nvidia-smi prints "N/A" or "[Not Supported]" there when the driver reports no
+// CUDA support, which simply does not match.
+var cudaVersionRE = regexp.MustCompile(`CUDA (?:UMD )?Version:\s*(\d+)\.(\d+)`)
 
 // nvccReleaseRE matches "Cuda compilation tools, release 12.4, V12.4.131".
 var nvccReleaseRE = regexp.MustCompile(`release\s+(\d+)\.(\d+)`)
@@ -198,11 +235,12 @@ func ProbeHardware(ctx context.Context, logger *slog.Logger) (Hardware, error) {
 	backend, cudaTag := probeBackend(ctx, logger)
 
 	return Hardware{
-		Platform: runtime.GOOS + "-" + runtime.GOARCH,
-		Arch:     runtime.GOARCH,
-		RAMGiB:   ramGiB,
-		Backend:  backend,
-		CUDATag:  cudaTag,
+		Platform:       runtime.GOOS + "-" + runtime.GOARCH,
+		Arch:           runtime.GOARCH,
+		RAMGiB:         ramGiB,
+		Backend:        backend,
+		CUDATag:        cudaTag,
+		CUDA12Userland: probeCUDA12Userland(ctx, logger),
 	}, nil
 }
 
@@ -271,6 +309,9 @@ func probeCUDA(ctx context.Context, logger *slog.Logger) (Backend, string, bool)
 		logger.Debug("embedded LLM CUDA probe", "backend", backend, "cuda_tag", tag, "via", "nvidia-smi")
 		return backend, tag, true
 	}
+	if smiErr == nil && strings.TrimSpace(smiOut) != "" {
+		logCUDAProbeMiss(logger, "nvidia-smi", smiOut)
+	}
 
 	// Toolkit fallback: a container or a toolkit-only install can have nvcc
 	// without the driver userspace.
@@ -304,6 +345,259 @@ func backendFromCUDAOutput(nvidiaSMI, nvcc string) (Backend, string, bool) {
 	return "", "", false
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CUDA 12 userland probe: would a CUDA 12.x build find its libraries?
+
+// CUDA 12.x runtime archives are published for linux/amd64 only (see
+// x64Only), which is the only platform this probe classifies. darwin loads no
+// libcudart at all and Windows names its import libraries *.lib, so a verdict
+// there would be fiction; the probe reports unknown rather than pretend.
+var cuda12UserlandProbeSupported = runtime.GOOS == "linux" && runtime.GOARCH == "amd64"
+
+// The libraries checked are libcudart.so.12 and libcublas.so.12 — the shared
+// objects a CUDA 12.x build's launcher dynamically links and therefore must
+// find at load time. The soname — not the path — is the ground truth: a
+// "libcudart.so.12" path can be a symlink whose target is a 13-series ELF (a
+// packaging accident that leaves ldconfig listing only ".so.13" entries while
+// ".so.12" paths still resolve), and dlopen would then fail. Reading the
+// soname settles what the loader would actually register.
+
+// cuda12UserlandFallbackGlobs are fixed fallback locations checked in addition
+// to ldconfig's cache. The cache can under-report exactly the files this probe
+// exists to arbitrate: where a mis-packaged ".so.12" symlink points at a
+// ".so.13" ELF, the cache carries only ".so.13" entries and the ".so.12"
+// candidates would be missed entirely. The fallbacks merge with — never
+// replace — ldconfig's answers. cuda*/ and the multiarch directory cover the
+// common distro layouts; anything exotic is expected to be in ldconfig's
+// cache anyway.
+var cuda12UserlandFallbackGlobs = []string{
+	"/usr/lib/x86_64-linux-gnu/libcudart.so.12*",
+	"/usr/lib/x86_64-linux-gnu/libcublas.so.12*",
+	"/usr/lib/libcudart.so.12*",
+	"/usr/lib/libcublas.so.12*",
+	"/usr/lib64/libcudart.so.12*",
+	"/usr/lib64/libcublas.so.12*",
+	"/usr/local/cuda*/lib64/libcudart.so.12*",
+	"/usr/local/cuda*/lib64/libcublas.so.12*",
+	"/opt/cuda*/lib64/libcudart.so.12*",
+	"/opt/cuda*/lib64/libcublas.so.12*",
+}
+
+// cuda12LibVerdict is the per-library outcome of inspecting every candidate
+// found for one shared object.
+type cuda12LibVerdict int
+
+const (
+	// cuda12LibGenuine — at least one candidate carries the library's own
+	// ".so.12" DT_SONAME: the loader would register it under the wanted name.
+	cuda12LibGenuine cuda12LibVerdict = iota
+	// cuda12LibMismatch — candidates exist but every inspectable one embeds a
+	// DIFFERENT series' soname: the ".so.12"-named symlink pointing at a
+	// ".so.13" ELF. dlopen under the ".so.12" name would fail.
+	cuda12LibMismatch
+	// cuda12LibMissing — no candidate found anywhere discovery looked.
+	cuda12LibMissing
+	// cuda12LibIndeterminate — candidates exist but none could be inspected
+	// (unreadable, non-ELF, truncated, stripped of DT_SONAME): not present,
+	// but not confidently absent either.
+	cuda12LibIndeterminate
+)
+
+// String renders the verdict for probe logging.
+func (v cuda12LibVerdict) String() string {
+	switch v {
+	case cuda12LibGenuine:
+		return "genuine"
+	case cuda12LibMismatch:
+		return "mismatch"
+	case cuda12LibMissing:
+		return "missing"
+	default:
+		return "indeterminate"
+	}
+}
+
+// probeCUDA12Userland classifies the CUDA 12.x userland as present / absent /
+// unknown. It is the I/O half: ldconfig is spawned once, candidates are
+// inspected on disk, and the verdict logic is the pure
+// classifyCUDA12Userland. "unknown" is reserved for the cases the probe
+// refuses to guess about: a platform the CUDA archives do not target,
+// ldconfig itself missing, or candidates that could not be inspected.
+func probeCUDA12Userland(ctx context.Context, logger *slog.Logger) CUDA12Userland {
+	if !cuda12UserlandProbeSupported {
+		return CUDA12Unknown
+	}
+
+	ldconfigOut, haveLdconfig := runLdconfigCache(ctx, logger)
+	ldcache := parseLdconfigEntries(ldconfigOut)
+
+	cudart := inspectCUDA12Lib("libcudart.so.12",
+		cuda12UserlandCandidates("libcudart.so.12", ldcache, filepath.Glob))
+	cublas := inspectCUDA12Lib("libcublas.so.12",
+		cuda12UserlandCandidates("libcublas.so.12", ldcache, filepath.Glob))
+
+	verdict := classifyCUDA12Userland(cudart, cublas, haveLdconfig)
+	logger.Debug("embedded LLM CUDA 12 userland probe",
+		"verdict", string(verdict),
+		"cudart", cudart.String(),
+		"cublas", cublas.String(),
+		"ldconfig", haveLdconfig)
+	return verdict
+}
+
+// inspectCUDA12Lib maps one library's candidate paths onto a per-library
+// verdict. Best evidence wins: one genuine ".so.12" ELF settles the library
+// regardless of any mismatched siblings; otherwise a mismatch (the
+// symlink-to-13 trap) beats an indeterminate inspection, which in turn beats
+// having found nothing.
+func inspectCUDA12Lib(lib string, candidates []string) cuda12LibVerdict {
+	if len(candidates) == 0 {
+		return cuda12LibMissing
+	}
+	verdict := cuda12LibIndeterminate
+	for _, path := range candidates {
+		soname, ok := elfSONAME(path)
+		if !ok {
+			continue
+		}
+		if soname == lib {
+			return cuda12LibGenuine
+		}
+		verdict = cuda12LibMismatch
+	}
+	return verdict
+}
+
+// classifyCUDA12Userland is the pure verdict over the two per-library results.
+//
+//	any library indeterminate            -> unknown (never guess)
+//	any library mismatched               -> absent  (the trap: dlopen would fail)
+//	both genuine                         -> present
+//	both missing, ldconfig answered      -> absent  (discovery was complete)
+//	both missing, ldconfig absent        -> unknown (discovery was not)
+//
+// A genuine finding does not depend on ldconfig: the fixed fallback globs are
+// checked on every run, so present stands even where the cache is unreadable.
+func classifyCUDA12Userland(cudart, cublas cuda12LibVerdict, haveLdconfig bool) CUDA12Userland {
+	if cudart == cuda12LibIndeterminate || cublas == cuda12LibIndeterminate {
+		return CUDA12Unknown
+	}
+	if cudart == cuda12LibMismatch || cublas == cuda12LibMismatch {
+		return CUDA12Absent
+	}
+	if cudart == cuda12LibGenuine && cublas == cuda12LibGenuine {
+		return CUDA12Present
+	}
+	if haveLdconfig {
+		return CUDA12Absent
+	}
+	return CUDA12Unknown
+}
+
+// runLdconfigCache runs `ldconfig -p` and returns its raw stdout. The bool is
+// false when ldconfig itself is missing or failed — the machine may still have
+// the libraries, so this downgrades a later "no candidate found" to unknown
+// rather than absent. It reuses the shared probe budget: a wedged ldconfig is
+// exactly the "driver tool that cannot answer" case probeCommandTimeout
+// exists for.
+func runLdconfigCache(ctx context.Context, logger *slog.Logger) (string, bool) {
+	out, err := runProbeCommand(ctx, "ldconfig", "-p")
+	if err != nil {
+		logProbeFailure(logger, "ldconfig", err)
+		return "", false
+	}
+	return out, true
+}
+
+// parseLdconfigEntries is the pure half of cache discovery: `ldconfig -p`
+// lines of the shape
+//
+//	libcudart.so.13 (libc6,x86-64) => /opt/cuda/lib64/libcudart.so.13
+//
+// are folded into soname → paths, first-seen order preserved. A malformed or
+// unrelated line (the "N caches found" prologue, locales) is skipped rather
+// than guessed at; the same soname may legitimately appear several times.
+func parseLdconfigEntries(out string) map[string][]string {
+	entries := map[string][]string{}
+	for line := range strings.SplitSeq(out, "\n") {
+		_, path, found := strings.Cut(line, " => ")
+		if !found || path == "" {
+			continue
+		}
+		// A CR from a CRLF-emitting ldconfig is output noise, not part of
+		// the path: a "\r"-suffixed path would fail to open and downgrade a
+		// working CUDA 12 userland to an unsupported unknown.
+		path = strings.TrimRight(path, "\r")
+		name, rest, _ := strings.Cut(strings.TrimSpace(line), " ")
+		// A cache entry is "<soname> (<cache-brief>) => <path>"; the
+		// parenthesized brief is what distinguishes it from prose that merely
+		// contains an arrow.
+		if name == "" || !strings.HasPrefix(rest, "(") {
+			continue
+		}
+		entries[name] = append(entries[name], path)
+	}
+	return entries
+}
+
+// cuda12UserlandCandidates merges the discovery sources for one library into
+// a de-duplicated candidate list: ldconfig's cache first (the loader's own
+// view, and first-seen there wins at load time), then the fixed fallback
+// globs. globFn is filepath.Glob in production; tests inject a resolver over
+// fixture directories instead. A failing glob is skipped — discovery is
+// best-effort across independent sources, and one bad pattern must not
+// discard the others.
+func cuda12UserlandCandidates(lib string, ldcache map[string][]string, globFn func(string) ([]string, error)) []string {
+	seen := map[string]bool{}
+	var candidates []string
+	add := func(path string) {
+		if path != "" && !seen[path] {
+			seen[path] = true
+			candidates = append(candidates, path)
+		}
+	}
+	for _, path := range ldcache[lib] {
+		add(path)
+	}
+	for _, pattern := range cuda12UserlandFallbackGlobs {
+		matches, err := globFn(pattern)
+		if err != nil {
+			continue
+		}
+		for _, path := range matches {
+			add(path)
+		}
+	}
+	return candidates
+}
+
+// elfSONAME reads the DT_SONAME of the shared object at path. ok is false for
+// every case the verdict must not guess about: an unreadable file, a non-ELF,
+// a truncated or otherwise unparsable object, and a stripped object with no
+// DT_SONAME at all. The library is parsed through the open descriptor
+// (os.File is an io.ReaderAt), so the kernel faults in only the ELF header,
+// section table and .dynamic/.dynstr pages instead of reading a potentially
+// very large library into memory.
+func elfSONAME(path string) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = f.Close() }()
+
+	ef, err := elf.NewFile(f)
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = ef.Close() }()
+
+	names, err := ef.DynString(elf.DT_SONAME)
+	if err != nil || len(names) == 0 {
+		return "", false
+	}
+	return names[0], true
+}
+
 // logProbeFailure records a probe that was installed but could not answer. An
 // absent tool is the normal case on a machine without that accelerator and is
 // deliberately not logged: it would drown the useful diagnostics.
@@ -311,6 +605,34 @@ func logProbeFailure(logger *slog.Logger, tool string, err error) {
 	if err != nil && !errors.Is(err, errProbeToolAbsent) {
 		logger.Debug("embedded LLM accelerator probe failed", "tool", tool, "error", err)
 	}
+}
+
+// logCUDAProbeMiss records a probe that ran but yielded no usable CUDA version,
+// together with a bounded excerpt of its output. The nvidia-smi header is the
+// exact field this package parses, and a driver release can rename that column
+// (610.x prints "CUDA UMD Version" where older drivers print "CUDA Version"),
+// so without the raw header a future rename is indistinguishable from "this is
+// not a CUDA machine" — which is precisely how a CUDA-capable host silently
+// fell through to the Vulkan rung. Debug-only, and bounded by
+// cudaProbeExcerptLines so a support bundle stays readable.
+func logCUDAProbeMiss(logger *slog.Logger, tool, out string) {
+	logger.Debug("embedded LLM CUDA probe found no usable version",
+		"tool", tool, "output", excerptLines(out, cudaProbeExcerptLines))
+}
+
+// cudaProbeExcerptLines bounds how many leading lines of a probe's output are
+// logged on a miss. The nvidia-smi version field sits in the first few lines of
+// the header table, so a handful is ample.
+const cudaProbeExcerptLines = 5
+
+// excerptLines returns the first n lines of s, normalizing CRLF so the excerpt
+// reads the same on every platform.
+func excerptLines(s string, n int) string {
+	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // cudaBackendFor maps a detected CUDA version onto the pinned asset tag:

@@ -346,10 +346,15 @@ type Orchestrator struct {
 	config           OrchestratorConfig
 	contextFactory   ContextManagerFactory
 	logger           *slog.Logger
-	emitter          Emitter
-	modelRegistry    *llm.ModelRegistry
-	localModelProbe  LocalModelProbe // lazily probes OpenAI-compatible endpoints (LM Studio/vLLM/…) for the runtime context window
-	bbFactory        BlackboardFactory
+	// serviceMetrics is the builder-owned per-kind collector for the auxiliary
+	// one-shot service calls (issue #64), shared in via OrchestratorDeps so the
+	// manual-compaction summarization call records its telemetry into the same
+	// aggregate as the other service calls. Nil-safe.
+	serviceMetrics  *ServiceMetrics
+	emitter         Emitter
+	modelRegistry   *llm.ModelRegistry
+	localModelProbe LocalModelProbe // lazily probes OpenAI-compatible endpoints (LM Studio/vLLM/…) for the runtime context window
+	bbFactory       BlackboardFactory
 	// modelMu guards the per-request LLM identity fields config.Model and
 	// config.ReasoningEffort against cross-goroutine access. Writers run on
 	// the request goroutine (ApplyRequestOverrides / SetReasoningEffort,
@@ -851,16 +856,20 @@ type LocalModelProbe func(model string)
 // Grouping them into a single struct improves readability when the constructor
 // is called (one struct literal instead of 19 positional arguments).
 type OrchestratorDeps struct {
-	Router           *router.Router
-	LLM              agent.LLMCaller
-	ToolExec         agent.ToolExecutor
-	ToolRegistry     *sdktools.ToolRegistry
-	TokenCounter     llm.TokenCounter
-	ContextFactory   ContextManagerFactory
-	Reflector        *reflector.Reflector // optional, nil-safe
-	Logger           *slog.Logger         // optional, nil-safe
-	Emitter          Emitter              // optional, uses noopEmitter if nil
-	ModelRegistry    *llm.ModelRegistry   // optional, nil-safe
+	Router         *router.Router
+	LLM            agent.LLMCaller
+	ToolExec       agent.ToolExecutor
+	ToolRegistry   *sdktools.ToolRegistry
+	TokenCounter   llm.TokenCounter
+	ContextFactory ContextManagerFactory
+	Reflector      *reflector.Reflector // optional, nil-safe
+	Logger         *slog.Logger         // optional, nil-safe
+	Emitter        Emitter              // optional, uses noopEmitter if nil
+	// ServiceMetrics is the builder-owned per-kind collector for the auxiliary
+	// one-shot service calls (issue #64); the orchestrator's manual-compaction
+	// summarization records into it. Optional, nil-safe.
+	ServiceMetrics   *ServiceMetrics
+	ModelRegistry    *llm.ModelRegistry // optional, nil-safe
 	ToolResultBudget agent.ToolResultBudget
 	CircuitBreaker   agent.CircuitBreakerConfig
 	BBFactory        BlackboardFactory         // optional, nil = default MapBlackboard
@@ -976,6 +985,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		config:                     cfg,
 		contextFactory:             deps.ContextFactory,
 		logger:                     deps.Logger,
+		serviceMetrics:             deps.ServiceMetrics,
 		emitter:                    emitter,
 		modelRegistry:              deps.ModelRegistry,
 		localModelProbe:            deps.LocalModelProbe,
@@ -1631,6 +1641,13 @@ func (o *Orchestrator) resumePausedWork(ctx context.Context, bb orchestration.Bl
 	deps := o.buildConductorDeps(nil, nil)
 	planState := newPlanRunState(true)
 	inlineLifecycle := newInlineStepLifecycle(deps.emitter, bb)
+	// Issue #99: steps whose successful StepResult was restored from the
+	// paused run are settled BEFORE the wave — the fresh lifecycle must
+	// already treat them as completed (a late checklist update must not
+	// re-Start them, the launcher's skip branch and the finish fallback must
+	// not re-announce them). Seeding is silent: their terminal events were
+	// emitted by the run that executed them.
+	inlineLifecycle.seedCompletedFromBlackboard()
 	inlineLifecycle.planState = planState
 	deps.lifecycle = inlineLifecycle
 	launcher := &conductorLauncher{deps: deps, bb: bb, planState: planState}
