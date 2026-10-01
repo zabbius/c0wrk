@@ -13,6 +13,29 @@
    ========================================================================== */
 
 @theme {
+    /* Typography — font families (single source of truth for the TS mirror
+       in frontend/src/lib/fonts.ts; keep both in sync) */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    /* Icon font ONLY — Nerd Font glyphs for file/tree/completion icons.
+       Never use for text; text mono is --font-mono. */
+    --font-icon: "SauceCodePro NF", monospace;
+
+    /* Typography — type scale ("standard": xs=12, sm=14, base=16, lg=18).
+       Overrides the Tailwind defaults so text-* utilities resolve from this
+       single source of truth. Line-heights are unitless multipliers that
+       mirror the default Tailwind ratios. px values are deliberately NOT rem:
+       the html root stays at 14px (see below) so rem-based spacing/radii are
+       unaffected; the text scale is decoupled from the rem base. */
+    --text-xs: 12px;
+    --text-xs--line-height: 1.33;
+    --text-sm: 14px;
+    --text-sm--line-height: 1.43;
+    --text-base: 16px;
+    --text-base--line-height: 1.5;
+    --text-lg: 18px;
+    --text-lg--line-height: 1.56;
+
     /* Core palette */
     --color-background: #282c34;
     --color-foreground: #abb2bf;
@@ -163,6 +186,11 @@
    ========================================================================== */
 
 html {
+    /* NOTE: deliberately 14px, not the default 16px — rem-based spacing and
+       radii across the app are tuned for this base. Font sizes are decoupled
+       from this base: the text-* utilities resolve from the px-valued
+       --text-* tokens in @theme above, so changing the type scale never
+       shifts rem-based layout. */
     font-size: 14px;
     /* Full-height chain so the app shell can size itself with percentages
        instead of viewport units — see the note on #root below. */
@@ -210,7 +238,7 @@ body {
 }
 
 .nerd-font-icon {
-    font-family: "SauceCodePro NF", monospace;
+    font-family: var(--font-icon);
 }
 
 /* ==========================================================================
@@ -515,7 +543,16 @@ body {
 
 /* Compact prose variant for tooltips and tight spaces */
 .prose-xs {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
+}
+
+/* Body text size override for `prose-sm` usages: the typography plugin's own
+   prose-sm scale (0.875rem body) is rem-based and stays behind the 14px html
+   root, while the app's text-sm utility is now 14px. Align chat/preview
+   markdown body text with the app's text-sm token. Doubled class raises
+   specificity above `.prose :where(...)`. */
+.prose.prose-sm {
+    font-size: var(--text-sm);
 }
 
 /* Markdown rendered inside a hover tooltip (e.g. the Model Profiles essential-tools
@@ -523,7 +560,7 @@ body {
    generous paragraph/list spacing so a multi-section, list-bearing description
    stays compact. Doubled class raises specificity above `.prose :where(...)`. */
 .prose.prose-tooltip {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.4;
 }
 
@@ -654,12 +691,12 @@ body {
 
 .cm-viewer-container .cm-editor {
     background: transparent;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     height: 100%;
 }
 
 .cm-viewer-container .cm-scroller {
-    font-family: "SauceCodePro NF", Menlo, Monaco, "Courier New", monospace;
+    font-family: var(--font-mono);
     overflow: auto;
 }
 
@@ -751,7 +788,7 @@ body {
     min-height: 1.25rem;
     background-color: rgba(var(--color-destructive-rgb), 0.15);
     color: var(--color-destructive);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.25rem;
     white-space: pre;
 }
@@ -835,13 +872,8 @@ body {
 
 .cm-chat-container .cm-scroller {
     overflow: auto;
-    font-family:
-        ui-sans-serif,
-        system-ui,
-        -apple-system,
-        BlinkMacSystemFont,
-        sans-serif;
-    font-size: 0.875rem;
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
     line-height: 1.5;
 }
 
@@ -909,8 +941,8 @@ body {
 
 .cm-tooltip-autocomplete ul {
     max-height: 240px;
-    font-family: "SauceCodePro NF", Menlo, Monaco, "Courier New", monospace;
-    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
 }
 
 .cm-tooltip-autocomplete li {
@@ -948,7 +980,7 @@ body {
 
 /* File items: nerd font icon */
 .cm-completion-nerd-icon {
-    font-family: "SauceCodePro NF", monospace;
+    font-family: var(--font-icon);
     display: inline-block;
     width: 1em;
     text-align: center;

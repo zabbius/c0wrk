@@ -2,6 +2,7 @@ import { EditorView } from '@codemirror/view'
 import { syntaxHighlighting } from '@codemirror/language'
 import type { Extension } from '@codemirror/state'
 import { getCSSVar, createOneDarkHighlightStyle } from './cmTheme'
+import { FONT_SANS_STACK } from './fonts'
 
 /**
  * Editable One Dark theme for the chat input editor.
@@ -24,7 +25,7 @@ export function createChatEditorTheme(isDark: boolean = true): Extension {
     },
     '.cm-content': {
       caretColor: 'transparent',
-      fontSize: '0.875rem',
+      fontSize: 'var(--text-sm)',
       lineHeight: '1.5',
       padding: '0.25rem 0',
     },
@@ -43,7 +44,7 @@ export function createChatEditorTheme(isDark: boolean = true): Extension {
     },
     '.cm-scroller': {
       overflow: 'auto',
-      fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+      fontFamily: FONT_SANS_STACK,
     },
     '&.cm-focused': {
       outline: 'none',

@@ -220,13 +220,13 @@ export function ProviderAccordion({
                     />
                     <span className="flex-1">{model}</span>
                     {isDefault && (
-                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
                         default
                       </span>
                     )}
                     {notReported && (
                       <span
-                        className="rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+                        className="rounded bg-warning/10 px-1.5 py-0.5 text-xs font-medium text-warning"
                         title="Enabled in the config, but the last successful fetch did not report this model. It may have been removed from the endpoint."
                       >
                         not reported by endpoint

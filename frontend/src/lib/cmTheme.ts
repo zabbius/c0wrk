@@ -2,6 +2,7 @@ import { EditorView } from '@codemirror/view'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
 import type { Extension } from '@codemirror/state'
+import { FONT_MONO_STACK } from './fonts'
 
 export function getCSSVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
@@ -75,8 +76,9 @@ export function createOneDarkCMTheme(
       // Editable fields must show a caret — an invisible one makes the field
       // read as readonly even though typing works.
       caretColor: editable ? fg : 'transparent',
-      fontFamily: "'SauceCodePro NF', Menlo, Monaco, 'Courier New', monospace",
-      lineHeight: '1.25rem',
+      fontFamily: FONT_MONO_STACK,
+      fontSize: 'var(--text-xs)',
+      lineHeight: '1.4',
     },
     ...(editable
       ? { '.cm-cursor': { borderLeftColor: fg } }

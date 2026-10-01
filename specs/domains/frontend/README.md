@@ -134,7 +134,38 @@ One Dark theme. All colors as Tailwind v4 `@theme` custom properties:
 | `--color-info`        | #61afef | Information    |
 | `--color-highlight`   | #e5c07b | Highlights     |
 
-Base font: 14px. Dark color-scheme. Focus outlines globally suppressed. Custom scrollbar (8px, semi-transparent thumb).
+### Typography
+
+Font families and text sizes are Tailwind v4 `@theme` tokens in `frontend/src/index.css` — the single source of truth. The `text-*` utilities resolve from these px-valued tokens; the `html` root stays at 14px so rem-based spacing/radii are unaffected by the type scale (px tokens decouple the two).
+
+Type scale (overrides the Tailwind defaults):
+
+| Token            | Value | Line-height | Utility      |
+| ---------------- | ----- | ----------- | ------------ |
+| `--text-xs`      | 12px  | 1.33        | `text-xs`    |
+| `--text-sm`      | 14px  | 1.43        | `text-sm`    |
+| `--text-base`    | 16px  | 1.5         | `text-base`  |
+| `--text-lg`      | 18px  | 1.56        | `text-lg`    |
+
+Font families:
+
+| Token          | Stack                                                                                                        | Usage                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| `--font-sans`  | `ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif`                                    | Default UI text, chat input editor              |
+| `--font-mono`  | `ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace`         | Code viewer, paths, SHAs, diffs, terminal       |
+| `--font-icon`  | `"SauceCodePro NF", monospace`                                                                               | Nerd Font icons ONLY (file tree, completions)   |
+
+`lib/fonts.ts` mirrors `FONT_MONO_STACK`/`FONT_SANS_STACK` for non-CSS consumers (CodeMirror 6 themes, the xterm constructor) that need a literal stack string; CSS is the source of truth, keep both in sync.
+
+Invariants:
+
+- Text sizes come from the named scale only; arbitrary `text-[Npx]`/`text-[Nrem]` font sizes are forbidden (enforced by `frontend/src/test/typeScaleInvariant.test.ts`, which also forbids hardcoded font-family stacks outside `@theme`/`lib/fonts.ts` and accepts only `var(--font-*)` in CSS).
+- The SauceCodePro Nerd Font face renders icons only; text mono is always `--font-mono`.
+- Changing a font stack is a two-place edit (`@theme` in `index.css` + `lib/fonts.ts`).
+
+Deliberate exceptions outside the scale: SVG labels on the research DAG canvas (`ResearchDagCanvas.tsx`, fontSize 9/11 bound to canvas geometry) and the completion nerd-icon glyph size (0.8125rem).
+
+Base root size: `html { font-size: 14px }` (deliberately not 16px — rem-based spacing and radii are tuned for it). Dark color-scheme. Focus outlines globally suppressed. Custom scrollbar (8px, semi-transparent thumb).
 
 ## Communication Pattern
 
@@ -173,6 +204,7 @@ Project switching is orchestrated by `useProjectSwitchState`: it saves source-pr
 - Persisted desktop window dimensions are accepted only at or above the minimum usable size; invalid state falls back to defaults
 - The frontend is **zoom-safe** under the app-wide UI Scale (`zoom` on `<html>`, see [ui-scale.md](ui-scale.md)): the shell and full-height containers size with percentages, viewport-derived sizes use the `--ui-vh` primitive, and pointer-anchored floating panels open at the cursor and fully inside the visible window at any scale — enforced by `frontend/src/test/zoomViewportInvariant.test.ts` plus the per-primitive guards
 - Every enabled interactive element shows the pointer cursor and every disabled one shows `not-allowed` — a base-layer cursor policy in `frontend/src/index.css` covers native `button`/`input[type=…]`/`select`/`label`/`summary` and ARIA widget roles (`button`, `menuitem*`, `option`, `tab`, `checkbox`, `radio`, `switch`, `combobox`, `link`, `treeitem`); utility classes (e.g. `cursor-grab` on drag canvases) still override it for intentional exceptions, and `cursor-default` on clickable elements is forbidden outside the allowlist in `frontend/src/test/clickableCursorInvariant.test.ts` (Radix disabled menu items keep `pointer-events-none`, so their cursor stays the UA default)
+- Typography is token-governed: text sizes resolve from the `--text-*` scale and font families from `--font-sans`/`--font-mono`/`--font-icon` in `@theme` (`frontend/src/index.css`, see Design System); arbitrary `text-[Npx]` sizes and hardcoded font-family stacks outside `@theme`/`lib/fonts.ts` fail the source-scan guard in `frontend/src/test/typeScaleInvariant.test.ts`, and the Nerd Font face is icon-only
 
 ## Configuration
 

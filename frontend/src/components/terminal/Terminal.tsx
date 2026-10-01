@@ -8,6 +8,7 @@ import { useInputModeStore } from '@/stores/inputModeStore'
 import { useThemeStore, selectActiveThemeId, selectActiveThemeType } from '@/stores/themeStore'
 import { useUiScaleStore } from '@/stores/uiScaleStore'
 import { logger } from '@/lib/logger'
+import { FONT_MONO_STACK } from '@/lib/fonts'
 
 interface TerminalProps {
     sessionId: string
@@ -101,8 +102,8 @@ export function Terminal({ sessionId, visible, isActive, onReady }: TerminalProp
 
         const term = new XTerm({
             cursorBlink: true,
-            fontSize: 10,
-            fontFamily: 'SauceCodePro NF, Menlo, Monaco, "Courier New", monospace',
+            fontSize: 12,
+            fontFamily: FONT_MONO_STACK,
             theme: paletteRef.current,
             scrollback: 10000,
         })

@@ -149,7 +149,7 @@ export function ProviderConfigForm({
               ariaLabel="Auto-retry interval"
             />
           </div>
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             0 = auto-resend off (retry only inside the engine)
           </span>
         </div>
@@ -226,7 +226,7 @@ export function ProviderConfigForm({
                 </Button>
               </div>
               {proxyDials ? (
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-xs text-muted-foreground">
                   Not available while an HTTP proxy is enabled and this host is not
                   on its bypass list — the fingerprint pin does not apply to
                   proxied connections. Disable the proxy (Settings → General → HTTP
@@ -235,7 +235,7 @@ export function ProviderConfigForm({
                   once the proxy stops dialing for this host.
                 </span>
               ) : (
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-xs text-muted-foreground">
                   Empty = standard certificate verification. A pinned fingerprint
                   accepts only this key and survives certificate renewal. Get reads
                   whatever the server presents right now.
