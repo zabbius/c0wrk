@@ -4,6 +4,7 @@ import { getSecuritySettings, updateSecuritySettings } from "@/api/config";
 import { getToolList } from "@/api/mcp";
 import { logger } from "@/lib/logger";
 import { Button } from "@/components/ui/button";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { SecurityGroupCard } from "./SecurityGroupCard";
 import { ShellExecutionCard } from "./ShellExecutionCard";
 import { TrustedReposDialog } from "./TrustedReposDialog";
@@ -330,32 +331,18 @@ export function SecuritySettings() {
         data-testid="autonomy-mode-card"
       >
         <span className="text-sm font-medium">Autonomy mode</span>
-        <div
-          role="radiogroup"
-          aria-label="Autonomy mode"
+        <SegmentedControl
+          semantic="radio"
+          ariaLabel="Autonomy mode"
           data-testid="autonomy-mode-control"
-          className="flex gap-1 p-1 rounded-lg bg-muted/50 w-fit"
-        >
-          {AUTONOMY_MODES.map((m) => (
-            <label
-              key={m.value}
-              data-testid={`autonomy-mode-${m.value}`}
-              className="cursor-pointer"
-            >
-              <input
-                type="radio"
-                name="autonomy-mode"
-                value={m.value}
-                checked={settings.autonomy_mode === m.value}
-                onChange={() => handleAutonomyMode(m.value)}
-                className="sr-only peer"
-              />
-              <span className="flex items-center px-3 py-1.5 rounded-md text-xs font-medium text-muted-foreground transition-colors peer-checked:bg-primary peer-checked:text-primary-foreground">
-                {m.label}
-              </span>
-            </label>
-          ))}
-        </div>
+          items={AUTONOMY_MODES.map((m) => ({
+            value: m.value,
+            label: m.label,
+            testId: `autonomy-mode-${m.value}`,
+          }))}
+          value={settings.autonomy_mode}
+          onValueChange={handleAutonomyMode}
+        />
         <p data-testid="autonomy-mode-description" className="text-xs text-muted-foreground">
           {autonomyModeMeta(settings.autonomy_mode).description}
         </p>

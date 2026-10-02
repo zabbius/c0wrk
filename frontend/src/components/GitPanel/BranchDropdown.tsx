@@ -107,7 +107,7 @@ export function BranchDropdown() {
             className="h-7 w-full min-w-0 justify-start gap-1.5 px-2 text-sm text-muted-foreground"
           >
             <GitBranch className="size-4 shrink-0" />
-            <span className="truncate text-xs">
+            <span className="truncate text-sm font-medium">
               {branch.name || <span className="italic opacity-50">no branch</span>}
             </span>
             {(branch.ahead > 0 || branch.behind > 0) && (

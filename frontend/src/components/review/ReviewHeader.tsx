@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Check, Send, Loader2, MessageSquare, X, GitCommit, ChevronUp, ChevronDown, Columns2, Rows3 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { cn } from '@/lib/utils'
 import { logger } from '@/lib/logger'
 import { useReviewStore, totalCommentCount } from '@/stores/reviewStore'
@@ -266,9 +267,8 @@ interface DiffViewModeToggleProps {
 /**
  * Unified / split diff view-mode toggle. A global preference (no session
  * affinity): lives in the review store and is shared across the interactive
- * and read-only commit-review headers. Mirrors the `ChangesToolbar`
- * view-mode pattern — a bordered container with two `icon-xs` ghost buttons;
- * the active button gets `text-primary bg-muted/50`.
+ * and read-only commit-review headers. Now the shared app-wide segmented
+ * control (ARIA tabs, icon-only items with tooltips).
  */
 function DiffViewModeToggle({
   diffViewMode,
@@ -276,33 +276,25 @@ function DiffViewModeToggle({
   className,
 }: DiffViewModeToggleProps) {
   return (
-    <div className={cn('flex items-center rounded-md border border-border/50 overflow-hidden', className)}>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        className={cn(
-          'rounded-none text-muted-foreground hover:text-foreground',
-          diffViewMode === 'unified' && 'text-primary bg-muted/50',
-        )}
-        onClick={() => setDiffViewMode('unified')}
-        title="Unified view"
-        aria-label="Switch to unified view"
-      >
-        <Rows3 className="size-3.5" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        className={cn(
-          'rounded-none text-muted-foreground hover:text-foreground',
-          diffViewMode === 'split' && 'text-primary bg-muted/50',
-        )}
-        onClick={() => setDiffViewMode('split')}
-        title="Split view"
-        aria-label="Switch to split view"
-      >
-        <Columns2 className="size-3.5" />
-      </Button>
-    </div>
+    <SegmentedControl
+      className={className}
+      items={[
+        {
+          value: 'unified',
+          icon: <Rows3 className="size-3.5" />,
+          title: 'Unified view',
+          testId: 'diff-view-unified',
+        },
+        {
+          value: 'split',
+          icon: <Columns2 className="size-3.5" />,
+          title: 'Split view',
+          testId: 'diff-view-split',
+        },
+      ]}
+      value={diffViewMode}
+      onValueChange={setDiffViewMode}
+      ariaLabel="Diff view mode"
+    />
   )
 }

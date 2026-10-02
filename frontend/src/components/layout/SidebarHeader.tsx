@@ -1,9 +1,9 @@
 import { useCallback } from 'react'
 import { Button } from '@/components/ui/button'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useProjectSwitchState } from '@/hooks/useProjectSwitchState'
-import { cn } from '@/lib/utils'
 import { PanelLeftClose, PanelLeftOpen, Settings, MessageCircle, Code2 } from 'lucide-react'
 import { ActiveSessionsIndicator } from './ActiveSessionsIndicator'
 
@@ -59,32 +59,29 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
       <div className="flex-1" />
       <ActiveSessionsIndicator />
       {projects && (
-        <div className="flex items-center rounded bg-muted/60 p-0.5">
-          <button
-            type="button"
-            onClick={() => handleToggleMode('chat')}
-            title="Assistant mode"
-            className={cn(
-              'flex items-center gap-1 rounded px-2 py-1 text-sm font-medium transition-colors',
-              isChatMode ? 'bg-background text-muted-foreground shadow-sm' : 'text-foreground/60 hover:text-foreground'
-            )}
-          >
-            <MessageCircle className="size-3.5" />
-            CHAT
-          </button>
-          <button
-            type="button"
-            onClick={() => handleToggleMode('code')}
-            title="Coding agent mode"
-            className={cn(
-              'flex items-center gap-1 rounded px-2 py-1 text-sm font-medium transition-colors',
-              !isChatMode ? 'bg-background text-muted-foreground shadow-sm' : 'text-foreground/60 hover:text-foreground'
-            )}
-          >
-            <Code2 className="size-3.5" />
-            CODE
-          </button>
-        </div>
+        <SegmentedControl
+          items={[
+            {
+              value: 'chat',
+              icon: <MessageCircle className="size-3.5" />,
+              label: 'CHAT',
+              title: 'Assistant mode',
+            },
+            {
+              value: 'code',
+              icon: <Code2 className="size-3.5" />,
+              label: 'CODE',
+              title: 'Coding agent mode',
+            },
+          ]}
+          value={isChatMode ? 'chat' : 'code'}
+          onValueChange={(mode) => {
+            void handleToggleMode(mode)
+          }}
+          size="md"
+          ariaLabel="App mode"
+          data-testid="mode-toggle"
+        />
       )}
       <div className="flex-1" />
       <Button variant="ghost" size="icon-sm" onClick={() => openSettings()} aria-label="Settings">

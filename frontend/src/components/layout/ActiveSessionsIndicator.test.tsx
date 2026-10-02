@@ -329,7 +329,9 @@ describe('SidebarHeader placement', () => {
     expect(radar.className).toContain('@min-[280px]:inline-flex')
 
     const toggle = radar.nextElementSibling as HTMLElement
-    expect(toggle.classList.contains('bg-muted/60')).toBe(true)
+    // Track chrome: no background fill — the active pill carries the contrast.
+    expect(toggle.classList.contains('bg-muted/60')).toBe(false)
+    expect(toggle.getAttribute('role')).toBe('tablist')
     expect(toggle.textContent).toContain('CHAT')
     expect(toggle.textContent).toContain('CODE')
   })
@@ -339,7 +341,8 @@ describe('SidebarHeader placement', () => {
     const container = render(<SidebarHeader onToggleCollapse={vi.fn()} />)
     const radar = radarButton(container)
     const toggle = radar.nextElementSibling as HTMLElement
-    expect(toggle.classList.contains('bg-muted/60')).toBe(true)
+    expect(toggle.classList.contains('bg-muted/60')).toBe(false)
+    expect(toggle.getAttribute('role')).toBe('tablist')
     expect(toggle.textContent).toContain('CODE')
   })
 
