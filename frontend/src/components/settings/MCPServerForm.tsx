@@ -125,9 +125,11 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
               semantic="radio"
               fullWidth
               ariaLabel="Transport type"
+              size="md"
+              itemClassName="flex-1 h-9"
               items={[
-                { value: 'stdio', label: 'stdio', icon: <Terminal className="size-3.5" /> },
-                { value: 'http', label: 'http', icon: <Globe className="size-3.5" /> },
+                { value: 'stdio', label: 'stdio', icon: <Terminal className="size-4" /> },
+                { value: 'http', label: 'http', icon: <Globe className="size-4" /> },
               ]}
               value={formData.transport}
               onValueChange={(t) => setFormData({ ...formData, transport: t })}
