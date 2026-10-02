@@ -34,6 +34,14 @@ The guard applies the exemption before the title check: `hasMenuitemRole` in `fr
 
 A `title` on a menu entry remains accepted (harmless redundancy), but it is not required, and the convention is to omit it.
 
+### The selector-trigger rule (the title names the action, not the value)
+
+A picker trigger — the `DropdownMenuTrigger`/`PopoverTrigger` button of a selector — shows the **currently-selected value as its visible label**, and the same values are listed inside the open menu. Its `title` must **add information the on-screen label does not carry**, never echo the selection verbatim: `Switch project`, `Switch session`, `Select model profile`, `Switch theme` name the action the control performs; `Embedded: Bonsai 2 27B` over the bare label `Bonsai 2 27B` adds the provider. A value-echoing tooltip (`title={activeProject?.name}`, a restatement of the truncated display label) adds nothing over the on-screen text — on a long label clipped by a narrow sidebar it merely repeats the same string — and is the anti-pattern this rule bans.
+
+State-dependent title branches on a picker trigger stay allowed when each branch either names an action, adds information, or gives a real hover hint (`isLoading ? 'Loading models…' : disabled ? 'Locked while the session is running' : effectiveEntry ? \`${providerLabel}: ${model}\` : displayLabel` in `ModelPickerMenu`) — the rule bans echoing the *value*, not conditionality.
+
+This is a content rule, beyond the AST guard's reach: the guard verifies that a title exists, not what it says. Compliance is enforced at review time; the pinned example is the `ModelPickerMenu` test asserting the trigger title is exactly `Embedded: Bonsai 2 27B` for the embedded selection whose visible label is the bare `Bonsai 2 27B` — the enrich case, not an echo.
+
 ### Why a button may carry both channels
 
 The native `title` tooltip is rendered by the OS/webview on any element — but **not on a disabled button** in most engines. The Radix tooltip does not have that limitation. A button that can render disabled while hover-explaining itself may therefore carry both channels. `ItemAction` solves the disabled case without Radix: the `disabledReason` is mirrored onto the focusable wrapper span's `title`, so hovering the (inert) button area still shows the reason — see [row-actions.md](row-actions.md). When in doubt about disabled states, either shape works; for a plain enabled button, a `title=` alone is enough.
@@ -102,6 +110,7 @@ The guard is a test-time gate, not runtime code: it fails `npm test` (and theref
 
 - Every `<button>` / `<Button>` in non-test frontend sources has a `title` attribute or a `<TooltipTrigger>` ancestor — enforced by `frontend/src/test/buttonTitleInvariant.test.ts` on every test run.
 - Context-menu entries are the single exception to that invariant: a button with `role="menuitem"` carries no `title` — its visible label is the explanation — and the guard exempts it before the title check.
+- A picker trigger's `title` adds information the visible label does not carry — an action name (`Switch project`) or an enrichment (`Provider: Model` over the bare model label) — and never echoes the label verbatim (`title={activeProject?.name}` is the anti-pattern). The guard cannot verify wording — this rule is enforced at review time, with `ModelPickerMenu`'s "the title is exactly `Embedded: Bonsai 2 27B` over the bare `Bonsai 2 27B` label" test as the pinned enrich example.
 - The `role="menuitem"` exemption keys off the exact string literal in the element's own attribute list: `role="menu"`, a non-literal `role={…}` and `data-role="menuitem"` still flag, and a `title` on a menu entry stays accepted — all pinned by the guard's self-tests.
 - The app mounts exactly one `TooltipProvider`, at the root in `frontend/src/App.tsx`; tooltip open delay is the single constant `TOOLTIP_DELAY_MS` (1000 ms) exported from `frontend/src/components/ui/tooltip.tsx`.
 - The guard's comment/string immunity is structural (AST-based), so prose mentioning `<button` never produces false positives.

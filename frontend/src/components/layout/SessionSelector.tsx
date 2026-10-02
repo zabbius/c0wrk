@@ -124,7 +124,7 @@ export function SessionSelector() {
           }}
         >
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" title={activeSession?.name ?? 'Select session'} className="h-7 flex-1 min-w-0 justify-between gap-1 px-2 text-sm">
+            <Button variant="ghost" title="Switch session" className="h-7 flex-1 min-w-0 justify-between gap-1 px-2 text-sm">
               <span className="truncate text-muted-foreground">{activeSession?.name ?? "Select session"}</span>
               <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
             </Button>

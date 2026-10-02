@@ -132,7 +132,7 @@ export function Combobox({
           type="button"
           disabled={disabled}
           aria-label={ariaLabel}
-          title={displayLabel}
+          title={ariaLabel}
           className={cn(
             'flex h-9 w-full items-center gap-1 rounded-md border border-input bg-background px-3 text-sm',
             'text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors truncate',

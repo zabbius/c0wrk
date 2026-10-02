@@ -61,7 +61,7 @@ export function ModelProfileSelector({ profiles, activeId, onSelect, disabled }:
           type="button"
           disabled={disabled}
           aria-label="Select Model Profiles profile"
-          title={displayLabel}
+          title="Select model profile"
           className={cn(
             'flex h-9 min-w-0 max-w-full items-center gap-1 rounded-md border border-input bg-background px-3 text-sm',
             'text-foreground hover:bg-muted/50 transition-colors truncate',

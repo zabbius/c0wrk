@@ -165,7 +165,7 @@ export function ProjectSelector() {
         <div className="flex items-center gap-1">
           <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" title={activeProject?.name ?? 'Select project'} className="h-7 flex-1 min-w-0 justify-between gap-1 px-2 text-sm">
+              <Button variant="ghost" title="Switch project" className="h-7 flex-1 min-w-0 justify-between gap-1 px-2 text-sm">
                 <span className="truncate  text-muted-foreground">{activeProject?.name ?? "Select project"}</span>
                 <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
               </Button>
