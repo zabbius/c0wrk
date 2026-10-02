@@ -61,9 +61,9 @@ export function RemoteBranchRow({
         !disabled && 'cursor-pointer',
       )}
     >
-      <Server className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="flex-1 truncate font-mono">{branch.name}</span>
-      {inFlight === 'checkoutRemote' && <Loader2 className="size-3.5 shrink-0 animate-spin" />}
+      <Server className="size-4 shrink-0 text-muted-foreground" />
+      <span className="flex-1 truncate">{branch.name}</span>
+      {inFlight === 'checkoutRemote' && <Loader2 className="size-4 shrink-0 animate-spin" />}
 
       {/* Hover action overlay — delete remote branch. */}
       <ItemActions>
@@ -73,9 +73,9 @@ export function RemoteBranchRow({
           disabled={blocked}
         >
           {inFlight === 'deleteRemote' ? (
-            <Loader2 className="size-3 animate-spin text-destructive" />
+            <Loader2 className="size-3.5 animate-spin text-destructive" />
           ) : (
-            <Trash2 className="size-3 text-destructive" />
+            <Trash2 className="size-3.5 text-destructive" />
           )}
         </ItemAction>
       </ItemActions>

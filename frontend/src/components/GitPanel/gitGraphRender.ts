@@ -14,9 +14,9 @@ export const ROW_SPACING = 32
  * Vertical offset from the top of a row to the center of the first (commit
  * message) line. The SVG lane node is drawn here so it aligns with the
  * message line, not the geometric center of the taller two-line row.
- * pt-1 (4px) + half of text-sm leading-none (14px / 2 = 7px) = 11px.
+ * pt-1 (4px) + half of text-xs leading-none (12px / 2 = 6px) = 10px.
  */
-export const NODE_OFFSET = 11
+export const NODE_OFFSET = 10
 /** Horizontal pitch between lanes. */
 export const LANE_SPACING = 22
 /** Left padding before the first lane. */

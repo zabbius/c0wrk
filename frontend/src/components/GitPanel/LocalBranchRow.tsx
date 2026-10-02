@@ -66,29 +66,29 @@ export function LocalBranchRow({
         !disabled && !isCurrent && 'cursor-pointer',
       )}
     >
-      <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="flex-1 truncate font-mono">{branch.name}</span>
-      {isCurrent && <Check className="size-3.5 shrink-0" />}
+      <GitBranch className="size-4 shrink-0 text-muted-foreground" />
+      <span className="flex-1 truncate">{branch.name}</span>
+      {isCurrent && <Check className="size-4 shrink-0" />}
       {inFlight === 'checkout' && (
-        <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+        <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
       )}
 
       {/* Hover action overlay — push/merge/rebase/rename/delete. */}
       <ItemActions>
         <ItemAction label={`Push ${branch.name}`} onClick={() => onPush(branch.name)} disabled={blocked}>
           {inFlight === 'push' ? (
-            <Loader2 className="size-3 animate-spin text-foreground" />
+            <Loader2 className="size-3.5 animate-spin text-foreground" />
           ) : (
-            <Upload className="size-3 text-primary" />
+            <Upload className="size-3.5 text-primary" />
           )}
         </ItemAction>
 
         {!isCurrent && (
           <ItemAction label={`Merge ${branch.name} into current`} onClick={() => onMerge(branch.name)} disabled={blocked}>
             {inFlight === 'merge' ? (
-              <Loader2 className="size-3 animate-spin text-info" />
+              <Loader2 className="size-3.5 animate-spin text-info" />
             ) : (
-              <GitMerge className="size-3 text-info" />
+              <GitMerge className="size-3.5 text-info" />
             )}
           </ItemAction>
         )}
@@ -96,18 +96,18 @@ export function LocalBranchRow({
         {!isCurrent && (
           <ItemAction label={`Rebase current onto ${branch.name}`} onClick={() => onRebase(branch.name)} disabled={blocked}>
             {inFlight === 'rebase' ? (
-              <Loader2 className="size-3 animate-spin text-warning" />
+              <Loader2 className="size-3.5 animate-spin text-warning" />
             ) : (
-              <GitFork className="size-3 text-warning" />
+              <GitFork className="size-3.5 text-warning" />
             )}
           </ItemAction>
         )}
 
         <ItemAction label="Rename" onClick={() => onRename(branch.name)} disabled={blocked}>
           {inFlight === 'rename' ? (
-            <Loader2 className="size-3 animate-spin text-info" />
+            <Loader2 className="size-3.5 animate-spin text-info" />
           ) : (
-            <Pencil className="size-3 text-info" />
+            <Pencil className="size-3.5 text-info" />
           )}
         </ItemAction>
 
@@ -118,9 +118,9 @@ export function LocalBranchRow({
           disabledReason={isCurrent ? 'Cannot delete the current branch' : undefined}
         >
           {inFlight === 'delete' ? (
-            <Loader2 className="size-3 animate-spin text-destructive" />
+            <Loader2 className="size-3.5 animate-spin text-destructive" />
           ) : (
-            <Trash2 className="size-3 text-destructive" />
+            <Trash2 className="size-3.5 text-destructive" />
           )}
         </ItemAction>
       </ItemActions>

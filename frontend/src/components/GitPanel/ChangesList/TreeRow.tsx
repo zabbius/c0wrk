@@ -47,7 +47,7 @@ export function TreeRow({
             <ChevronRight className="size-3.5 shrink-0" />
           )}
           <Folder className="size-3.5 shrink-0" />
-          <span className="min-w-0 truncate text-sm leading-none">
+          <span className="min-w-0 truncate text-xs leading-none">
             {node.name}
           </span>
         </div>

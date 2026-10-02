@@ -53,7 +53,7 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
     // where the row actually fits it (see LAYOUT_FIT_CLASSES there) — the
     // header must stay intact at the 180px sidebar minimum.
     <div className="@container flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
-      <Button variant="ghost" size="icon-xs" onClick={onToggleCollapse} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+      <Button variant="ghost" size="icon-sm" onClick={onToggleCollapse} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
         {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
       </Button>
       <div className="flex-1" />
@@ -65,11 +65,11 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
             onClick={() => handleToggleMode('chat')}
             title="Assistant mode"
             className={cn(
-              'flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium transition-colors',
+              'flex items-center gap-1 rounded px-2 py-1 text-sm font-medium transition-colors',
               isChatMode ? 'bg-background text-muted-foreground shadow-sm' : 'text-foreground/60 hover:text-foreground'
             )}
           >
-            <MessageCircle className="size-3" />
+            <MessageCircle className="size-3.5" />
             CHAT
           </button>
           <button
@@ -77,17 +77,17 @@ export function SidebarHeader({ onToggleCollapse, collapsed }: SidebarHeaderProp
             onClick={() => handleToggleMode('code')}
             title="Coding agent mode"
             className={cn(
-              'flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium transition-colors',
+              'flex items-center gap-1 rounded px-2 py-1 text-sm font-medium transition-colors',
               !isChatMode ? 'bg-background text-muted-foreground shadow-sm' : 'text-foreground/60 hover:text-foreground'
             )}
           >
-            <Code2 className="size-3" />
+            <Code2 className="size-3.5" />
             CODE
           </button>
         </div>
       )}
       <div className="flex-1" />
-      <Button variant="ghost" size="icon-xs" onClick={() => openSettings()} aria-label="Settings">
+      <Button variant="ghost" size="icon-sm" onClick={() => openSettings()} aria-label="Settings">
         <Settings className="size-4" />
       </Button>
     </div>

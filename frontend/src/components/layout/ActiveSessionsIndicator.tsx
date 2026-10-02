@@ -45,15 +45,17 @@ import { ActiveSessionsBadge } from './ActiveSessionsBadge'
 
 /**
  * Layout-space guard. The sidebar clamps to 180px (uiStore.SIDEBAR_MIN) and
- * the CHAT/CODE toggle already fills nearly all of that row — a permanently
- * visible extra icon button would push Settings out of the header at the
- * minimum width. SidebarHeader marks its row as a size container
- * (`@container`): the button leaves layout below 228px and renders
- * inline-flex from 228px (native Tailwind v4 container queries), leaving
- * slack over the worst-case row (≈214px). Below 228px the header renders
- * exactly as it did before this component existed.
+ * the header row is dense: collapse + settings buttons (icon-sm, 32px each),
+ * the CHAT/CODE toggle (text-sm pills) and this button must all fit. The row
+ * marks itself a size container (`@container`): below 280px of header width
+ * the button leaves layout (`hidden`); from 280px it renders inline-flex.
+ * Worst-case row width was measured in headless Chromium at ≈277px (toggle
+ * 145px + 3×32px buttons + gaps + padding), so 280px keeps ~3px slack: the
+ * Radar stays visible at the 288px default width and only hides where the
+ * row genuinely cannot fit it (the guard keeps the header intact at the
+ * 180px sidebar minimum).
  */
-const LAYOUT_FIT_CLASSES = 'hidden @min-[228px]:inline-flex'
+const LAYOUT_FIT_CLASSES = 'hidden @min-[280px]:inline-flex'
 
 /** Global live-sessions indicator: Radar icon button + badge, store-wired.
  *  Click opens the live-sessions dropdown. */
@@ -142,7 +144,7 @@ export function ActiveSessionsIndicator() {
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          size="icon-xs"
+          size="icon-sm"
           disabled={!flags.anyLive}
           aria-label="Active sessions"
           title="Active sessions"

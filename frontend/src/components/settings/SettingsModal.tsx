@@ -50,7 +50,7 @@ const TAB_CONTENT_CLASS = 'overflow-y-auto min-h-0 min-w-0 custom-scrollbar pr-2
  * the dialog surface.
  */
 const TAB_LIST_CLASS =
-  'h-fit w-40 shrink-0 flex-col items-stretch justify-start gap-3 bg-transparent p-0'
+  'h-fit w-44 shrink-0 flex-col items-stretch justify-start gap-3 bg-transparent p-0'
 
 /**
  * One entry in the left section nav. Beyond dropping the pill chrome, the
@@ -58,7 +58,7 @@ const TAB_LIST_CLASS =
  * full-contrast foreground (the former active color) and the active entry
  * recedes to a muted tone (the former inactive color), distinguished by its
  * bold weight (`data-[state=active]:font-bold`) rather than by color. Labels
- * are uppercased at the trigger level so the `text-xs` span inherits it.
+ * are uppercased at the trigger level so the `text-sm` span inherits it.
  *
  * `border-0` removes the shared trigger's 1px frame. The base trigger already
  * requests `border-transparent`, but that color utility cannot win here:
@@ -159,7 +159,7 @@ export function SettingsModal() {
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="sm:max-w-[600px] h-[calc(var(--ui-vh)*0.8)] flex flex-col overflow-hidden"
+        className="sm:max-w-[800px] h-[calc(var(--ui-vh)*0.8)] flex flex-col overflow-hidden"
         showCloseButton={false}
         // No DialogDescription in this panel; opt out explicitly so Radix
         // does not warn about the missing description (and does not point
@@ -203,37 +203,37 @@ export function SettingsModal() {
           <TabsList className={TAB_LIST_CLASS}>
             <TabsTrigger value="general" className={TAB_TRIGGER_CLASS}>
               <Settings className="h-4 w-4" />
-              <span className="text-xs">General</span>
+              <span className="text-sm">General</span>
             </TabsTrigger>
             <TabsTrigger value="appearance" className={TAB_TRIGGER_CLASS}>
               <Palette className="h-4 w-4" />
-              <span className="text-xs">Appearance</span>
+              <span className="text-sm">Appearance</span>
             </TabsTrigger>
             <TabsTrigger value="llm" className={TAB_TRIGGER_CLASS}>
               <Brain className="h-4 w-4" />
-              <span className="text-xs">LLM</span>
+              <span className="text-sm">LLM</span>
             </TabsTrigger>
             {/* Model Profiles is a first-class settings tab, independent of the
                 experimental-features switch (that gate covers only E2S). */}
             <TabsTrigger value="model-profiles" className={TAB_TRIGGER_CLASS}>
               <Gauge className="h-4 w-4" />
-              <span className="text-xs">Model Profiles</span>
+              <span className="text-sm">Model Profiles</span>
             </TabsTrigger>
             <TabsTrigger value="search" className={TAB_TRIGGER_CLASS}>
               <Search className="h-4 w-4" />
-              <span className="text-xs">Search</span>
+              <span className="text-sm">Search</span>
             </TabsTrigger>
             <TabsTrigger value="mcp" className={TAB_TRIGGER_CLASS}>
               <Server className="h-4 w-4" />
-              <span className="text-xs">MCP</span>
+              <span className="text-sm">MCP</span>
             </TabsTrigger>
             <TabsTrigger value="security" className={TAB_TRIGGER_CLASS}>
               <Shield className="h-4 w-4" />
-              <span className="text-xs">Security</span>
+              <span className="text-sm">Security</span>
             </TabsTrigger>
             <TabsTrigger value="about" className={TAB_TRIGGER_CLASS}>
               <Info className="h-4 w-4" />
-              <span className="text-xs">About</span>
+              <span className="text-sm">About</span>
             </TabsTrigger>
           </TabsList>
 

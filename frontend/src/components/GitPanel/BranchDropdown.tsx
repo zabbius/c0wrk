@@ -106,8 +106,8 @@ export function BranchDropdown() {
             variant="ghost"
             className="h-7 w-full min-w-0 justify-start gap-1.5 px-2 text-sm text-muted-foreground"
           >
-            <GitBranch className="size-3.5 shrink-0" />
-            <span className="truncate font-mono text-xs">
+            <GitBranch className="size-4 shrink-0" />
+            <span className="truncate text-xs">
               {branch.name || <span className="italic opacity-50">no branch</span>}
             </span>
             {(branch.ahead > 0 || branch.behind > 0) && (
@@ -115,7 +115,7 @@ export function BranchDropdown() {
                 ↑{branch.ahead} ↓{branch.behind}
               </span>
             )}
-            <ChevronDown className="ml-auto size-3 shrink-0 opacity-60" />
+            <ChevronDown className="ml-auto size-3.5 shrink-0 opacity-60" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-80">
@@ -192,11 +192,11 @@ export function BranchDropdown() {
 
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => openBranchPicker()}>
-            <Plus className="size-3.5" />
+            <Plus className="size-4" />
             New branch...
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => openBranchPicker()}>
-            <GitGraph className="size-3.5" />
+            <GitGraph className="size-4" />
             Manage branches...
           </DropdownMenuItem>
         </DropdownMenuContent>

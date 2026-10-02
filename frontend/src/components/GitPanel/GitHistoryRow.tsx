@@ -71,7 +71,7 @@ export function GitHistoryRow({
             className="flex w-full flex-col justify-start gap-0.5 px-2 pt-1 text-left"
             style={{ height: ROW_SPACING }}
           >
-            <div className="flex items-center gap-2 text-sm leading-none">
+            <div className="flex items-center gap-2 text-xs leading-none">
               {expanded ? (
                 <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
               ) : (

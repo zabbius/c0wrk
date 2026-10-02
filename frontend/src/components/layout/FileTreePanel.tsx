@@ -201,7 +201,7 @@ function TreeNode({ entry, depth, gitStatus, propagatedPaths, onContextMenu }: T
       <div
         ref={rowRef}
         className={cn(
-          "flex cursor-pointer items-center gap-0.5 py-0.5 pr-4 text-sm hover:bg-muted/40",
+          "flex cursor-pointer items-center gap-0.5 py-0.5 pr-4 text-xs hover:bg-muted/40",
           isSelected && "bg-primary/10 hover:bg-primary/10",
         )}
         style={{ paddingLeft: `${depth * 16 + 4}px` }}

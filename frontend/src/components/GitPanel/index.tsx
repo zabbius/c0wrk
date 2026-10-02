@@ -119,7 +119,7 @@ export function GitPanel() {
               if (activeProjectId !== null) setActiveTab(activeProjectId, tab)
             }}
             className={cn(
-              'px-3 py-1 text-xs capitalize transition-colors',
+              'px-3 py-1 text-sm capitalize transition-colors',
               activeTab === tab
                 ? 'text-primary border-b border-primary -mb-px'
                 : 'text-muted-foreground hover:text-foreground',

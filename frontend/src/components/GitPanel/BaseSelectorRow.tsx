@@ -56,7 +56,14 @@ export function BaseSelectorRow({
         {typeLabel[base.type] ?? base.type}
       </span>
       <span className="flex min-w-0 flex-1 items-center gap-1">
-        <span className="shrink-0 max-w-[40%] truncate font-mono">
+        <span
+        className={cn(
+          'shrink-0 max-w-[40%] truncate',
+          // Commit SHAs stay monospaced (hex hashes align); branch, remote and
+          // tag labels render in the proportional UI font per the mono policy.
+          base.type === 'commit' && 'font-mono',
+        )}
+      >
           {base.label}
           {isCurrent && (
             <span className="ml-1 text-muted-foreground">(current)</span>
@@ -81,7 +88,7 @@ export function BaseSelectorRow({
           </Tooltip>
         )}
       </span>
-      {selected && <Check className="size-3.5 shrink-0" />}
+      {selected && <Check className="size-4 shrink-0" />}
     </button>
   )
 }

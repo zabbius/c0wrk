@@ -212,7 +212,7 @@ export function GitFileEntry({ entry, side, workspaceRoot, onToggle, onOpenDiff 
           status badge are pushed to the right edge of the row. The native
           title exposes the untruncated path when the name overflows. */}
       <span
-        className="min-w-0 flex-1 truncate text-sm leading-none"
+        className="min-w-0 flex-1 truncate text-xs leading-none"
         title={displayPath}
       >
         {dir && (
