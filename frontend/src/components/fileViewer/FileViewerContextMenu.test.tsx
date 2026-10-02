@@ -134,13 +134,14 @@ describe('FileViewerContextMenu', () => {
     expect(onClose).toHaveBeenCalled()
   })
 
-  it('Find similar is disabled with an index-state hint while the index is not ready', async () => {
+  it('Find similar is disabled without a title hint while the index is not ready', async () => {
     vectorMock.status = { state: 'indexing' }
     renderMenu('@foo.go#L1', 'func foo() {}')
     const item = menuItem('Find similar')
     expect(item.getAttribute('aria-disabled')).toBe('true')
-    // The hint title explains the current index state.
-    expect(item.title).toContain('indexing')
+    // Menu entries are exempt from the title invariant — the visible label
+    // explains the item, so no title attribute is set even when disabled.
+    expect(item.hasAttribute('title')).toBe(false)
     await act(async () => {
       item.click()
       await Promise.resolve()
@@ -151,10 +152,10 @@ describe('FileViewerContextMenu', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('Find similar carries no aria-disabled and no hint when the index is ready', () => {
+  it('Find similar carries no aria-disabled and no title when the index is ready', () => {
     renderMenu('@foo.go#L1', 'code')
     const item = menuItem('Find similar')
     expect(item.hasAttribute('aria-disabled')).toBe(false)
-    expect(item.title).toBe('')
+    expect(item.hasAttribute('title')).toBe(false)
   })
 })

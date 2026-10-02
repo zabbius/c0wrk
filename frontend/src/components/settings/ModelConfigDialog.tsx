@@ -248,10 +248,10 @@ export function ModelConfigDialog({ model, open, onOpenChange, onSaved }: ModelC
         )}
 
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>
+          <Button variant="ghost" title="Cancel" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={loading || saving}>
+          <Button title={saving ? 'Saving...' : 'Save'} onClick={handleSave} disabled={loading || saving}>
             {saving ? 'Saving...' : 'Save'}
           </Button>
         </DialogFooter>
@@ -383,6 +383,7 @@ function ResetButton({ onClick, disabled }: { onClick: () => void; disabled?: bo
   return (
     <button
       type="button"
+      title="Reset to default"
       onClick={onClick}
       disabled={disabled}
       className="text-xs text-muted-foreground underline-offset-2 hover:underline disabled:opacity-50"

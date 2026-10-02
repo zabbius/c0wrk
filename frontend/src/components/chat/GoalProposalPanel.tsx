@@ -315,10 +315,10 @@ export function GoalProposalPanel({ item }: GoalProposalPanelProps) {
         />
 
         <div className="flex gap-2 pt-0.5">
-          <Button variant="default" size="sm" onClick={onApprove} disabled={submitting || condition.trim() === ''}>
+          <Button variant="default" size="sm" onClick={onApprove} disabled={submitting || condition.trim() === ''} title="Accept the goal and start tracking it">
             <Check className="size-3.5 mr-1" /> Approve
           </Button>
-          <Button variant="ghost" size="sm" onClick={onCancel} disabled={submitting}>
+          <Button variant="ghost" size="sm" onClick={onCancel} disabled={submitting} title="Reject the goal proposal">
             <X className="size-3.5 mr-1" /> Cancel
           </Button>
         </div>

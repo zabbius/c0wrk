@@ -330,6 +330,7 @@ export function ModelProfilesSettings() {
                 onClick={() => openDialog('duplicate')}
                 disabled={busy}
                 aria-label="Duplicate profile"
+                title="Duplicate"
               >
                 <Copy className="h-3.5 w-3.5" />
                 Duplicate
@@ -342,6 +343,7 @@ export function ModelProfilesSettings() {
                   onClick={() => openDialog('rename')}
                   disabled={busy}
                   aria-label="Rename profile"
+                  title="Rename"
                 >
                   <Pencil className="h-3.5 w-3.5" />
                   Rename
@@ -352,6 +354,7 @@ export function ModelProfilesSettings() {
                   onClick={() => openDialog('delete')}
                   disabled={busy}
                   aria-label="Delete profile"
+                  title="Delete"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                   Delete
@@ -383,6 +386,7 @@ export function ModelProfilesSettings() {
                 onClick={() => suggestedId && handleSelect(suggestedId)}
                 disabled={busy}
                 aria-label="Apply suggested profile"
+                title="Apply"
               >
                 Apply
               </Button>
@@ -392,6 +396,7 @@ export function ModelProfilesSettings() {
                 onClick={() => suggestedId && setDismissedSuggestion(suggestedId)}
                 disabled={busy}
                 aria-label="Dismiss suggested profile"
+                title="Hide"
               >
                 Hide
               </Button>

@@ -190,6 +190,7 @@ export function GitConfigRiskToast() {
               <Button
                 size="sm"
                 variant="outline"
+                title={trustPending ? 'Trusting…' : 'Trust this repo'}
                 onClick={() => void handleTrust()}
                 disabled={busy}
                 data-testid="git-config-risk-trust"
@@ -200,6 +201,7 @@ export function GitConfigRiskToast() {
               <Button
                 size="sm"
                 variant="default"
+                title={hardenPending ? 'Hardening…' : 'Harden'}
                 onClick={() => void handleHarden()}
                 disabled={busy}
                 data-testid="git-config-risk-harden"
@@ -210,6 +212,7 @@ export function GitConfigRiskToast() {
             </div>
           </div>
           <button
+            title="Dismiss"
             onClick={dismiss}
             disabled={busy}
             className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 disabled:pointer-events-none"

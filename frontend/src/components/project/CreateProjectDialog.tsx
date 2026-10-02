@@ -77,7 +77,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
         <div className="min-w-0 space-y-4">
           <div className="space-y-2">
             <label className="text-sm font-medium text-foreground">Directory</label>
-            <Button variant="outline" size="sm" className="gap-1.5 w-full justify-start" onClick={handlePickDir}>
+            <Button variant="outline" size="sm" className="gap-1.5 w-full justify-start" title={externalPath ? 'Change directory' : 'Choose directory'} onClick={handlePickDir}>
               <FolderOpen className="size-4" />
               {externalPath ? 'Change directory' : 'Choose directory'}
             </Button>
@@ -101,10 +101,11 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" title="Cancel" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button
+            title={submitting ? 'Creating...' : 'Create'}
             onClick={handleSubmit}
             disabled={!name.trim() || !externalPath || submitting}
           >

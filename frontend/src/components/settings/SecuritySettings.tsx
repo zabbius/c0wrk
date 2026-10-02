@@ -238,6 +238,7 @@ export function SecuritySettings() {
         </p>
         <button
           type="button"
+          title="Retry"
           onClick={() => void load()}
           className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-border text-sm hover:bg-accent transition-colors"
         >
@@ -269,6 +270,7 @@ export function SecuritySettings() {
           variant="outline"
           size="sm"
           className="shrink-0"
+          title="Trusted repos"
           onClick={() => setTrustedOpen(true)}
           data-testid="trusted-repos-open"
         >
@@ -291,6 +293,7 @@ export function SecuritySettings() {
           variant="outline"
           size="sm"
           className="shrink-0"
+          title="Hardened repos"
           onClick={() => setHardenOpen(true)}
           data-testid="harden-repos-open"
         >

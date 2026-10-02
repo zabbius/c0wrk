@@ -80,6 +80,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
         <Button
           variant="default"
           size="sm"
+          title="Search"
           onClick={onSearch}
           disabled={isLoading || searchDisabled}
           className="h-7 px-2"
@@ -90,6 +91,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
           <Button
             variant="ghost"
             size="sm"
+            title="Clear"
             onClick={onClear}
             className="h-7 px-2"
           >

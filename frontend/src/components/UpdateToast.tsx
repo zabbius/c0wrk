@@ -58,6 +58,7 @@ function ToastShell({
         <div className="min-w-0 flex-1">{children}</div>
         {onClose && (
           <button
+            title="Close"
             onClick={onClose}
             className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             aria-label="Close"
@@ -95,14 +96,14 @@ function AvailableSurface() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button size="xs" onClick={handleUpdate} disabled={isDownloading}>
+          <Button size="xs" title="Update" onClick={handleUpdate} disabled={isDownloading}>
             <Download className="size-3" />
             Update
           </Button>
-          <Button size="xs" variant="ghost" onClick={handleSkip}>
+          <Button size="xs" variant="ghost" title="Skip" onClick={handleSkip}>
             Skip
           </Button>
-          <Button size="xs" variant="ghost" onClick={handleDismiss}>
+          <Button size="xs" variant="ghost" title="Later" onClick={handleDismiss}>
             Later
           </Button>
         </div>
@@ -137,11 +138,11 @@ function DownloadedSurface() {
           <p className="text-xs text-muted-foreground">Restart to install?</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button size="xs" onClick={handleRestart}>
+          <Button size="xs" title="Restart" onClick={handleRestart}>
             <RefreshCw className="size-3" />
             Restart
           </Button>
-          <Button size="xs" variant="ghost" onClick={handleDismiss}>
+          <Button size="xs" variant="ghost" title="Later" onClick={handleDismiss}>
             Later
           </Button>
         </div>

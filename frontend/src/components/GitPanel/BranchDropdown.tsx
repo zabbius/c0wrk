@@ -105,6 +105,7 @@ export function BranchDropdown() {
           <Button
             variant="ghost"
             className="h-7 w-full min-w-0 justify-start gap-1.5 px-2 text-sm text-muted-foreground"
+            title="Switch branch"
           >
             <GitBranch className="size-4 shrink-0" />
             <span className="truncate text-sm font-medium">

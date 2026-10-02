@@ -51,6 +51,8 @@
 | Auxiliary work directories               | [architecture/security-model.md](architecture/security-model.md), [contracts/desktop-frontend.md](contracts/desktop-frontend.md) (Work Directories section), [domains/frontend/stores.md](domains/frontend/stores.md) (`workDirsStore`) |
 | Frontend stores, state management        | [domains/frontend/stores.md](domains/frontend/stores.md)                 |
 | UI scale / zoom-safe sizing & popover placement | [domains/frontend/ui-scale.md](domains/frontend/ui-scale.md)       |
+| Button tooltips (`title=` / TooltipTrigger convention, the project-wide guard) | [domains/frontend/button-tooltips.md](domains/frontend/button-tooltips.md)       |
+| Row-action hover overlay (`ItemAction`/`ItemActions`: sidebar/git/theme/bookmark/research rows, native-title tooltips) | [domains/frontend/row-actions.md](domains/frontend/row-actions.md)       |
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
 | Message rendering, display items         | [domains/frontend/rendering.md](domains/frontend/rendering.md)           |
 | Sound notifications, audio reliability   | [domains/frontend/sound-notifications.md](domains/frontend/sound-notifications.md) |
@@ -149,6 +151,7 @@ See [META.md](META.md) for document templates, naming rules, and update protocol
 - [ui-scale.md](domains/frontend/ui-scale.md) - UI scale feature and the zoom-safety invariant: coordinate spaces (visual vs layout px), percentage/`--ui-vh` sizing, pointer-anchored panel placement, floating-ui compensation, guard tests
 - [stores.md](domains/frontend/stores.md) - Zustand store catalog
 - [git-operation-console.md](domains/frontend/git-operation-console.md) - Git operation console: the footer log button + anchored popover for the last git mutation result (button tint, popover contents, per-project scope, which operations feed it, acknowledge semantics, zoom-safe sizing)
+- [button-tooltips.md](domains/frontend/button-tooltips.md) - Button tooltip convention: every `<button>`/`<Button>` carries a native `title=` or a Radix `TooltipTrigger` wrapper, enforced by the AST source-scan guard `frontend/src/test/buttonTitleInvariant.test.ts`; combined channels for disabled buttons (`ItemAction`), `TOOLTIP_DELAY_MS`, root-level `TooltipProvider`
 - [events.md](domains/frontend/events.md) - Event subscription and handling
 - [rendering.md](domains/frontend/rendering.md) - Message grouping and display pipeline
 - [sound-notifications.md](domains/frontend/sound-notifications.md) - Web Audio notification cues: event→tone pipeline, AudioContext lifecycle, recovery/replacement guarantees

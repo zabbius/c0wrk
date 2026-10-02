@@ -51,6 +51,7 @@ export function LogLevelSelector() {
             key={option.value}
             variant={logLevel === option.value ? 'secondary' : 'ghost'}
             size="sm"
+            title={option.label}
             className={`flex-1 gap-2 justify-center transition-all duration-200 ${
               logLevel === option.value
                 ? 'bg-background shadow-sm text-foreground'

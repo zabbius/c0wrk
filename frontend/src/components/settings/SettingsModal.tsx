@@ -169,6 +169,7 @@ export function SettingsModal() {
         <DialogHeader className="flex flex-row items-center justify-between">
           <DialogTitle>Settings</DialogTitle>
           <button
+            title="Close"
             onClick={() => handleOpenChange(false)}
             disabled={checkingClose}
             className="rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:outline-none disabled:opacity-50"

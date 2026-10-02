@@ -123,6 +123,7 @@ export function UpdateSettings() {
             <Button
               size="sm"
               variant="outline"
+              title="Check for updates"
               onClick={handleCheck}
               disabled={isChecking || operatorDisabled}
             >
@@ -228,14 +229,14 @@ function InlineAvailableSurface() {
         </p>
       </div>
       <div className="flex items-center gap-2">
-        <Button size="sm" onClick={handleUpdate} disabled={isDownloading}>
+        <Button size="sm" title="Update" onClick={handleUpdate} disabled={isDownloading}>
           <Download className="size-4" />
           Update
         </Button>
-        <Button size="sm" variant="ghost" onClick={handleSkip}>
+        <Button size="sm" variant="ghost" title="Skip" onClick={handleSkip}>
           Skip
         </Button>
-        <Button size="sm" variant="ghost" onClick={handleDismiss}>
+        <Button size="sm" variant="ghost" title="Later" onClick={handleDismiss}>
           Later
         </Button>
       </div>
@@ -262,11 +263,11 @@ function InlineDownloadedSurface() {
         <p className="text-xs text-muted-foreground">Restart to install?</p>
       </div>
       <div className="flex items-center gap-2">
-        <Button size="sm" onClick={handleRestart}>
+        <Button size="sm" title="Restart" onClick={handleRestart}>
           <RefreshCw className="size-4" />
           Restart
         </Button>
-        <Button size="sm" variant="ghost" onClick={handleDismiss}>
+        <Button size="sm" variant="ghost" title="Later" onClick={handleDismiss}>
           Later
         </Button>
       </div>
@@ -283,7 +284,7 @@ function InlineErrorSurface() {
       <p className="text-sm font-medium text-foreground">Update failed</p>
       <p className="text-xs text-muted-foreground">{errorMessage ?? 'An error occurred'}</p>
       <div className="flex items-center gap-2">
-        <Button size="sm" variant="ghost" onClick={handleDismiss}>
+        <Button size="sm" variant="ghost" title="Dismiss" onClick={handleDismiss}>
           Dismiss
         </Button>
       </div>

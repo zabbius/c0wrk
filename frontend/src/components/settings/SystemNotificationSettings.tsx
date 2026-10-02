@@ -173,6 +173,7 @@ export function SystemNotificationSettings() {
         enabled && (
           <button
             type="button"
+            title="Send test notification"
             data-testid="send-test-notification"
             onClick={handleTest}
             className="self-start rounded border border-input px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/50 active:bg-muted/30 focus-visible:outline-none"

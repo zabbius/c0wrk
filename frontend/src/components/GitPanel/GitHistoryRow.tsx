@@ -68,6 +68,7 @@ export function GitHistoryRow({
           <button
             type="button"
             onClick={onClick}
+            title={node.message}
             className="flex w-full flex-col justify-start gap-0.5 px-2 pt-1 text-left"
             style={{ height: ROW_SPACING }}
           >

@@ -133,32 +133,27 @@ export function FileViewerContextMenu({ reference, selectedText, position, onClo
         role="menuitem"
         onClick={handleAddToChat}
         className={cn(
-          'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
+          'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-xs outline-none',
           'hover:bg-muted/50 focus:bg-muted/50',
-          '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
+          '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-3.5 [&_svg]:text-muted-foreground',
         )}
       >
-        <MessageSquarePlus className="size-4" />
+        <MessageSquarePlus className="size-3.5" />
         Add to chat
       </button>
       <div className="my-1 h-px bg-border" />
       <button
         role="menuitem"
         aria-disabled={findSimilarReady ? undefined : true}
-        title={
-          findSimilarReady
-            ? undefined
-            : `Find similar is unavailable — the vector index is ${indexState}. It becomes available once indexing completes.`
-        }
         onClick={findSimilarReady ? handleFindSimilar : undefined}
         className={cn(
-          'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none',
+          'relative flex w-full select-none items-center gap-2 rounded-sm px-2 py-1.5 text-xs outline-none',
           findSimilarReady && 'hover:bg-muted/50 focus:bg-muted/50',
           !findSimilarReady && 'cursor-not-allowed opacity-50',
-          '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-4 [&_svg]:text-muted-foreground',
+          '[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:size-3.5 [&_svg]:text-muted-foreground',
         )}
       >
-        <Telescope className="size-4" />
+        <Telescope className="size-3.5" />
         Find similar
       </button>
     </div>

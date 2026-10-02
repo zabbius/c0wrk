@@ -141,6 +141,7 @@ export function ReviewHeader({
           <Button
             variant="ghost"
             size="xs"
+            title="Comment on the whole review"
             onClick={() => (showGeneral ? setShowGeneral(false) : openGeneral())}
             disabled={isBusy}
           >
@@ -150,6 +151,7 @@ export function ReviewHeader({
           {hasComments ? (
             <Button
               size="xs"
+              title="Submit review comments"
               onClick={() => void handleSubmit()}
               disabled={isBusy}
             >
@@ -163,6 +165,7 @@ export function ReviewHeader({
           ) : (
             <Button
               size="xs"
+              title="Approve review"
               onClick={() => void handleApprove()}
               disabled={isBusy}
             >
@@ -189,6 +192,7 @@ export function ReviewHeader({
           />
           <Button
             size="xs"
+            title="Save comment"
             onClick={handleGeneralSave}
             className="shrink-0"
           >

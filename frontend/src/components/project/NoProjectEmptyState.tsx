@@ -17,7 +17,7 @@ export function NoProjectEmptyState({ onCreateProject }: NoProjectEmptyStateProp
           Create a project to get started with your coding tasks.
         </p>
       </div>
-      <Button onClick={onCreateProject} size="sm">
+      <Button onClick={onCreateProject} size="sm" title="Create Project">
         <FolderPlus className="size-4" />
         Create Project
       </Button>

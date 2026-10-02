@@ -36,8 +36,8 @@ export function SessionActionConfirmDialog({ pending, onConfirm, onCancel }: Ses
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" onClick={onCancel}>Cancel</Button>
-          <Button variant={isArchive ? 'default' : 'destructive'} onClick={onConfirm}>
+          <Button variant="outline" title="Cancel" onClick={onCancel}>Cancel</Button>
+          <Button variant={isArchive ? 'default' : 'destructive'} title={isArchive ? 'Archive' : 'Delete'} onClick={onConfirm}>
             {isArchive ? 'Archive' : 'Delete'}
           </Button>
         </DialogFooter>

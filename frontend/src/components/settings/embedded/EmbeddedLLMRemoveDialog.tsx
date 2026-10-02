@@ -99,11 +99,12 @@ export function EmbeddedLLMRemoveDialog({
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" onClick={onCancel} disabled={busy}>
+          <Button variant="outline" title="Cancel" onClick={onCancel} disabled={busy}>
             Cancel
           </Button>
           <Button
             variant="destructive"
+            title={busy ? 'Removing…' : 'Remove'}
             onClick={onConfirm}
             disabled={busy}
             data-testid="embedded-llm-remove-confirm"

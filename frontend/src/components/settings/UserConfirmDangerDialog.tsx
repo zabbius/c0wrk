@@ -71,6 +71,7 @@ export function UserConfirmDangerDialog({ open, onOpenChange, onConfirm }: UserC
         <DialogFooter>
           <Button
             variant="outline"
+            title="Cancel"
             onClick={() => onOpenChange(false)}
             data-testid="user-confirm-danger-cancel"
           >
@@ -78,6 +79,7 @@ export function UserConfirmDangerDialog({ open, onOpenChange, onConfirm }: UserC
           </Button>
           <Button
             variant="destructive"
+            title="Enable unattended"
             onClick={onConfirm}
             data-testid="user-confirm-danger-confirm"
           >

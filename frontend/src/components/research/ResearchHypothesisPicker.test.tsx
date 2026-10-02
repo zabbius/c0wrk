@@ -12,7 +12,6 @@ import { createRoot, type Root } from 'react-dom/client'
 
 import { ResearchHypothesisPicker } from './ResearchHypothesisPicker'
 import { useResearchProjectActions } from './useResearchProjectActions'
-import { TooltipProvider } from '@/components/ui/tooltip'
 import {
   applyGraphOrRefresh,
   refreshNextStep,
@@ -81,9 +80,7 @@ async function render(el: React.ReactNode): Promise<HTMLElement> {
   const root = createRoot(container)
   activeRoot = root
   await act(async () => {
-    // ItemActions rows embed a Tooltip, which requires a provider ancestor
-    // (the app mounts one at the root — tests mirror that here).
-    root.render(<TooltipProvider>{el}</TooltipProvider>)
+    root.render(el)
   })
   return container
 }

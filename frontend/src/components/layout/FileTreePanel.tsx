@@ -408,6 +408,7 @@ export function FileTreePanel() {
           <Button
             variant="outline"
             size="sm"
+            title="Retry"
             onClick={() => { void reloadWorkspaceTree() }}
           >
             <RotateCw className="size-3.5" />

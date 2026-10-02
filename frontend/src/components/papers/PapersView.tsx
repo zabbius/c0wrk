@@ -511,6 +511,7 @@ export function PapersView() {
               <button
                 type="button"
                 data-testid="papers-selection-clear"
+                title="Clear selection"
                 onClick={clearSelection}
                 className="rounded px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               >

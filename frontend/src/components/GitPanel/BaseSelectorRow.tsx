@@ -39,6 +39,7 @@ export function BaseSelectorRow({
     <button
       type="button"
       onClick={() => onSelect(base.ref)}
+      title={base.label}
       className={cn(
         'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors',
         'focus:outline-none focus:ring-1 focus:ring-ring',

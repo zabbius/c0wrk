@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { Plus, X, AlertCircle } from 'lucide-react'
+import { Plus, X, AlertCircle, Terminal, Globe } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   Dialog,
   DialogContent,
@@ -120,11 +121,17 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
           </Field>
 
           <Field label="Transport Type">
-            <div className="flex gap-2 p-1 bg-muted rounded-lg">
-              {(['stdio', 'http'] as const).map((t) => (
-                <Button key={t} variant={formData.transport === t ? 'secondary' : 'ghost'} size="sm" className="flex-1" onClick={() => setFormData({ ...formData, transport: t })}>{t}</Button>
-              ))}
-            </div>
+            <SegmentedControl<'stdio' | 'http'>
+              semantic="radio"
+              fullWidth
+              ariaLabel="Transport type"
+              items={[
+                { value: 'stdio', label: 'stdio', icon: <Terminal className="size-3.5" /> },
+                { value: 'http', label: 'http', icon: <Globe className="size-3.5" /> },
+              ]}
+              value={formData.transport}
+              onValueChange={(t) => setFormData({ ...formData, transport: t })}
+            />
           </Field>
 
           {formData.transport === 'stdio' ? (
@@ -152,8 +159,8 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleSave} disabled={isSaving}>{isSaving ? 'Saving...' : 'Save'}</Button>
+          <Button variant="outline" title="Cancel" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={handleSave} disabled={isSaving} title={isSaving ? 'Saving...' : 'Save'}>{isSaving ? 'Saving...' : 'Save'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -175,10 +182,12 @@ function KeyValueList({ label, entries, setEntries, keyPlaceholder, valuePlaceho
         <div key={entry.id} className="flex gap-2">
           <Input placeholder={keyPlaceholder} value={entry.key} onChange={(e) => setEntries((prev) => prev.map((en, idx) => idx === i ? { ...en, key: e.target.value } : en))} className="h-8 font-mono text-xs flex-1" />
           <Input placeholder={valuePlaceholder} value={entry.value} onChange={(e) => setEntries((prev) => prev.map((en, idx) => idx === i ? { ...en, value: e.target.value } : en))} className="h-8 font-mono text-xs flex-1" />
-          <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={() => setEntries((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-3 w-3" /></Button>
+          <Button variant="ghost" size="sm" className="h-8 w-8 p-0" title="Remove entry" onClick={() => setEntries((prev) => prev.filter((_, idx) => idx !== i))}><X className="h-3 w-3" /></Button>
         </div>
       ))}
-      <Button variant="outline" size="sm" onClick={() => setEntries((prev) => [...prev, makeEntry()])}><Plus className="h-3 w-3 mr-1" />{addLabel}</Button>
+      <div className="flex justify-end">
+        <Button variant="outline" size="sm" className="h-7 px-2 text-xs" title={addLabel} onClick={() => setEntries((prev) => [...prev, makeEntry()])}><Plus className="h-3 w-3 mr-1" />{addLabel}</Button>
+      </div>
     </div>
   )
 }

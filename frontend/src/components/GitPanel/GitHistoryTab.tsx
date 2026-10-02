@@ -344,6 +344,7 @@ export function GitHistoryTab() {
               type="button"
               onClick={() => void loadMore()}
               disabled={isLoadingMore}
+              title="Load more commits"
               className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
             >
               {isLoadingMore && <Loader2 className="size-3.5 animate-spin" />}

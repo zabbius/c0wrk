@@ -471,6 +471,12 @@ body {
 .prose pre {
     background-color: var(--tw-prose-pre-bg);
     border: 1px solid var(--color-border);
+    /* Monospace inserts (ASCII frames, diagrams, code) render at the app's
+       14px body size instead of the typography plugin's ~0.857em (≈12px), so
+       box-drawing art stays legible; the tighter line-height keeps ASCII
+       frames connected (plugin default 1.71 gaps them apart). */
+    font-size: var(--text-sm);
+    line-height: 1.45;
 }
 
 .prose pre code {
