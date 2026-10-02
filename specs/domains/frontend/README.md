@@ -240,6 +240,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 - [button-tooltips.md](button-tooltips.md) — the button tooltip convention: native `title=` or a Radix `TooltipTrigger` wrapper on every button, enforced by the project-wide AST guard `frontend/src/test/buttonTitleInvariant.test.ts`
 - [stores.md](stores.md) — Zustand store catalog
 - [git-operation-console.md](git-operation-console.md) — the footer log of the last git mutation result (button tint, anchored popover, per-project scope, acknowledge semantics)
+- [git-changes-list.md](git-changes-list.md) — the Changes tab file list: porcelain-axis sections, flat name-first rows, tree basename rows, full-path tooltips
 - [events.md](events.md) — event handling architecture
 - [rendering.md](rendering.md) — message display pipeline
 - [../../contracts/desktop-frontend.md](../../contracts/desktop-frontend.md) — RPC surface

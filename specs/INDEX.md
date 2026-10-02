@@ -53,6 +53,7 @@
 | UI scale / zoom-safe sizing & popover placement | [domains/frontend/ui-scale.md](domains/frontend/ui-scale.md)       |
 | Button tooltips (`title=` / TooltipTrigger convention, the project-wide guard) | [domains/frontend/button-tooltips.md](domains/frontend/button-tooltips.md)       |
 | Row-action hover overlay (`ItemAction`/`ItemActions`: sidebar/git/theme/bookmark/research rows, native-title tooltips) | [domains/frontend/row-actions.md](domains/frontend/row-actions.md)       |
+| Git Changes tab file list (sections, flat name-first rows, tree basename rows, path tooltips) | [domains/frontend/git-changes-list.md](domains/frontend/git-changes-list.md)       |
 | Frontend events, streaming               | [domains/frontend/events.md](domains/frontend/events.md)                 |
 | Message rendering, display items         | [domains/frontend/rendering.md](domains/frontend/rendering.md)           |
 | Sound notifications, audio reliability   | [domains/frontend/sound-notifications.md](domains/frontend/sound-notifications.md) |
