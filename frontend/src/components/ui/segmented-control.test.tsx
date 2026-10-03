@@ -203,9 +203,11 @@ describe('SegmentedControl — tabs semantic', () => {
     expect(groups[0]!.className).not.toContain('w-full')
     expect(groups[1]!.className).not.toContain('w-full')
     expect(item('a').className).toContain('text-xs')
+    expect(item('a').className).toContain('h-5')
     const mdItem = groups[1]!.querySelector('[data-segment-value="a"]')!
     expect(mdItem.className).toContain('text-sm')
     expect(mdItem.className).toContain('font-medium')
+    expect(mdItem.className).toContain('h-7')
     expect(groups[2]!.className).toContain('w-full')
   })
   it('disabled disables every item and blocks clicks', () => {

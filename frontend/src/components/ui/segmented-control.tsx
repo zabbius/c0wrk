@@ -20,7 +20,11 @@ import { cn } from '@/lib/utils'
  *   Same arrow-key model.
  *
  * Sizing: `sm` (compact, text-xs — panel tabs, toolbars, settings cards) and
- * `md` (text-sm font-medium — the sidebar CHAT/CODE header toggle).
+ * `md` (text-sm font-medium — the sidebar CHAT/CODE header toggle). Items
+ * carry FIXED heights (`h-5`/`h-7`) so a segment's height never depends on
+ * its content: responsively hidden labels (`labelClassName="hidden …:inline"`,
+ * e.g. the sidebar workspace/git switchers) collapse the button to its icon
+ * without the 28→24px height jump a content-derived height would cause.
  */
 export type SegmentedSemantic = 'tabs' | 'radio'
 export type SegmentedSize = 'sm' | 'md'
@@ -73,8 +77,8 @@ export interface SegmentedControlProps<V extends string | number> {
 const TRACK_CLASS = 'inline-flex items-center gap-0.5 rounded-md p-0.5'
 
 const SIZE_ITEM_CLASS: Record<SegmentedSize, string> = {
-  sm: 'px-2 py-0.5 text-xs gap-1',
-  md: 'px-2 py-1 text-sm font-medium gap-1',
+  sm: 'h-5 px-2 py-0.5 text-xs gap-1',
+  md: 'h-7 px-2 py-1 text-sm font-medium gap-1',
 }
 
 const SELECTED_CLASS = 'bg-primary text-primary-foreground font-medium'
