@@ -157,11 +157,16 @@ Font families:
 
 `lib/fonts.ts` mirrors `FONT_MONO_STACK`/`FONT_SANS_STACK` for non-CSS consumers (CodeMirror 6 themes, the xterm constructor) that need a literal stack string; CSS is the source of truth, keep both in sync.
 
+The terminal renders in `--font-mono`, deliberately WITHOUT the Nerd Font face. The terminal is the one surface whose glyphs come from untrusted external output — a user's shell prompt (starship, powerline) may emit Nerd codepoints — and the icon-only rule wins there too: such codepoints render as tofu boxes rather than pulling the icon font into arbitrary program output. Nerd icons remain confined to c0wrk-rendered chrome (file tree, completions); a prompt that needs its icons carries its own font assumptions.
+
+CodeMirror surfaces carry fixed token sizes rather than inheriting from their containers: every editor surface — file-viewer code and diffs, the plan editor's mini-fields, research hypothesis fields — renders at `--text-xs` (12px) with line-height 1.4 (deliberately denser than the token's 1.33, tuned for code rows), and the chat-input editor renders at `--text-sm` (14px, the app's base size). These surfaces also resolve mono via `FONT_MONO_STACK` (`lib/cmTheme.ts`/`lib/cmChatTheme.ts`), i.e. without the Nerd Font face — the icon-only rule applied to in-app rendered code, where external Nerd codepoints are rare but possible (the same reasoning as the terminal, weaker).
+
 Invariants:
 
 - Text sizes come from the named scale only; arbitrary `text-[Npx]`/`text-[Nrem]` font sizes are forbidden (enforced by `frontend/src/test/typeScaleInvariant.test.ts`, which also forbids hardcoded font-family stacks outside `@theme`/`lib/fonts.ts` and accepts only `var(--font-*)` in CSS).
-- The SauceCodePro Nerd Font face renders icons only; text mono is always `--font-mono`.
+- The SauceCodePro Nerd Font face renders icons only; text mono is always `--font-mono` — including the terminal, whose external Nerd codepoints render as tofu by design (see the note above).
 - Changing a font stack is a two-place edit (`@theme` in `index.css` + `lib/fonts.ts`).
+- CodeMirror surfaces are sized by tokens, not inheritance: editors at `--text-xs`, the chat input at `--text-sm` (see the note above); they resolve mono via `lib/fonts.ts` like every other non-CSS consumer.
 
 Deliberate exceptions outside the scale: SVG labels on the research DAG canvas (`ResearchDagCanvas.tsx`, fontSize 9/11 bound to canvas geometry) and the completion nerd-icon glyph size (0.8125rem).
 
@@ -237,7 +242,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 ## Related Specs
 
 - [ui-scale.md](ui-scale.md) — UI scale feature and the zoom-safety invariant
-- [button-tooltips.md](button-tooltips.md) — the button tooltip convention: native `title=` or a Radix `TooltipTrigger` wrapper on every button, enforced by the project-wide AST guard `frontend/src/test/buttonTitleInvariant.test.ts`
+- [button-tooltips.md](button-tooltips.md) — the button tooltip convention: a `title=`, a Radix `TooltipTrigger` wrapper, or a statically visible label on every button; buttons that may hide their label always carry a `title`, always-labeled buttons never carry an echo — enforced by the project-wide AST guard `frontend/src/test/buttonTitleInvariant.test.ts`
 - [stores.md](stores.md) — Zustand store catalog
 - [git-operation-console.md](git-operation-console.md) — the footer log of the last git mutation result (button tint, anchored popover, per-project scope, acknowledge semantics)
 - [git-changes-list.md](git-changes-list.md) — the Changes tab file list: porcelain-axis sections, flat name-first rows, tree basename rows, full-path tooltips

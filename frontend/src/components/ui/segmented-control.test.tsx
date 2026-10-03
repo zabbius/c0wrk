@@ -163,6 +163,25 @@ describe('SegmentedControl — tabs semantic', () => {
     expect(event.defaultPrevented).toBe(false)
   })
 
+  it('value=null keeps the group keyboard-reachable: the first item anchors the roving tabindex', () => {
+    const onValueChange = vi.fn()
+    act(() => {
+      root.render(
+        <SegmentedControl items={items} value={null} onValueChange={onValueChange} ariaLabel="Views" />,
+      )
+    })
+    // No item is aria-selected, yet the FIRST item carries tabIndex=0 so the
+    // tab order reaches the group; arrow keys from it select as usual.
+    for (const v of ['a', 'b', 'c']) {
+      expect(item(v).getAttribute('aria-selected')).toBe('false')
+    }
+    expect(item('a').getAttribute('tabindex')).toBe('0')
+    expect(item('b').getAttribute('tabindex')).toBe('-1')
+    expect(item('c').getAttribute('tabindex')).toBe('-1')
+    keydown('ArrowRight')
+    expect(onValueChange).toHaveBeenCalledWith('b')
+  })
+
   it('size sm → text-xs, md → text-sm font-medium; fullWidth stretches the track', () => {
     act(() => {
       root.render(

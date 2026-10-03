@@ -161,8 +161,8 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
         </div>
 
         <DialogFooter>
-          <Button variant="outline" title="Cancel" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleSave} disabled={isSaving} title={isSaving ? 'Saving...' : 'Save'}>{isSaving ? 'Saving...' : 'Save'}</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={handleSave} disabled={isSaving}>{isSaving ? 'Saving...' : 'Save'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -53,6 +53,6 @@ A disabled button (`pointer-events-none`) never receives pointer events, so its 
 
 ## Related Specs
 
-- [button-tooltips.md](button-tooltips.md) — the project-wide button tooltip convention and its AST guard; this overlay's native-title contract is one compliant shape under it
+- [button-tooltips.md](button-tooltips.md) — the project-wide button tooltip convention and its AST guard; this overlay's native-title contract is one compliant shape under it (title, TooltipTrigger, or visible label)
 - [Frontend README](README.md) — sidebar layout (project/session selectors), design system
 - [ui-scale.md](ui-scale.md) — zoom-safety rules that `ItemActions`' absolute positioning respects (layout px, no viewport units)

@@ -2,17 +2,29 @@
 //
 // Button-title invariant — scoped to `src/components/chat/**`.
 //
-// Every button-like element in the chat area carries a native `title=`
-// attribute. Chat buttons are frequently icon-only or truncate their label
-// (panel section headers, combobox triggers, tool-card bodies), so the native
-// tooltip is the only discoverable affordance for hover users — and the
-// accessible name for several of them. This guard scans the component tree
-// with the real TypeScript parser so a re-introduced untitled button fails
-// fast in CI no matter which component it lands in.
+// Every button-like element in the chat area exposes its purpose to a user
+// who cannot read its visible label, via one of three channels:
 //
-// Unlike a regex, the parser knows a `<button` in a string literal or a
-// comment from a real JSX element, so prose and fixtures cannot produce
-// false positives.
+// 1. a native `title=` attribute — chat buttons are frequently icon-only or
+//    truncate their label (panel section headers, combobox triggers,
+//    tool-card bodies), so the native tooltip is the only discoverable
+//    affordance for hover users — and the accessible name for several;
+// 2. a statically visible label — JSX text inside the element (including
+//    ternaries whose both branches are string literals). The label IS the
+//    explanation, so an echo tooltip over always-labeled text adds nothing;
+// 3. a `{...spread}` (skipped — none exist today; trusted to forward a
+//    title from the caller).
+//
+// The guard cannot see CSS: markup that may hide its label (responsive
+// collapse, overflow) must keep a title regardless — that obligation is
+// documented in specs/domains/frontend/button-tooltips.md and enforced at
+// review time.
+//
+// This guard scans the component tree with the real TypeScript parser so a
+// re-introduced unlabeled icon-only button fails fast in CI no matter which
+// component it lands in. Unlike a regex, the parser knows a `<button` in a
+// string literal or a comment from a real JSX element, so prose and fixtures
+// cannot produce false positives.
 
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -54,6 +66,43 @@ function isButtonTag(tagName: string): boolean {
 }
 
 /**
+ * True when the expression provably renders a non-empty visible string: a
+ * string literal (direct or parenthesized) or a ternary whose BOTH branches
+ * are provable — including nested ternaries. Deliberately conservative:
+ * identifiers (even a lookup in a const table) are not provable and keep
+ * the title requirement; whitespace-only text does not count, so an
+ * icon-plus-spacing layout still needs its title.
+ */
+function isStaticString(expr: ts.Expression): boolean {
+  if (ts.isParenthesizedExpression(expr)) return isStaticString(expr.expression)
+  if (ts.isStringLiteral(expr)) return expr.text.trim() !== ''
+  if (ts.isConditionalExpression(expr)) {
+    return isStaticString(expr.whenTrue) && isStaticString(expr.whenFalse)
+  }
+  return false
+}
+
+/**
+ * True when the element's own children guarantee a visible text label: JSX
+ * text with non-whitespace content, or an expression proven by
+ * `isStaticString`.
+ */
+function hasStaticVisibleText(
+  node: ts.JsxElement | ts.JsxSelfClosingElement,
+  sf: ts.SourceFile,
+): boolean {
+  if (ts.isJsxSelfClosingElement(node)) return false
+  for (const child of node.children) {
+    if (ts.isJsxText(child) && child.getText(sf).trim() !== '') return true
+    if (!ts.isJsxExpression(child)) continue
+    const expr = child.expression
+    if (expr === undefined) continue
+    if (isStaticString(expr)) return true
+  }
+  return false
+}
+
+/**
  * Inspect one JSX element's attributes.
  *
  * Returns `'untitled'` when no `title` attribute is present, `'dynamic'` when
@@ -72,7 +121,8 @@ function classifyElement(
   return 'untitled'
 }
 
-/** All untitled button-like JSX elements in `source`, as `line: tag`. */
+/** All unlabeled (no title, no static visible text) button-like JSX elements
+ * in `source`, as `line: tag`. */
 function findUntitledButtons(
   source: string,
   fileName: string,
@@ -82,7 +132,15 @@ function findUntitledButtons(
   const visit = (node: ts.Node): void => {
     if (ts.isJsxSelfClosingElement(node) || ts.isJsxOpeningElement(node)) {
       const tag = node.tagName.getText(sf)
-      if (isButtonTag(tag) && classifyElement(node.attributes) === 'untitled') {
+      if (
+        isButtonTag(tag) &&
+        classifyElement(node.attributes) === 'untitled' &&
+        // Static-label channel: only a PAIRED element's own JsxElement is
+        // examined (its direct text children). A self-closing element has no
+        // children — and its parent is the CONTAINER, whose other children's
+        // text must never count as this element's label.
+        !(ts.isJsxOpeningElement(node) && hasStaticVisibleText(node.parent as ts.JsxElement, sf))
+      ) {
         found.push({ line: sf.getLineAndCharacterOfPosition(node.getStart()).line + 1, tag })
       }
     }
@@ -106,7 +164,7 @@ describe('button-title guard (chat components)', () => {
     expect(sources.length).toBeGreaterThan(30)
   })
 
-  it('gives every button-like element a native title', () => {
+  it('gives every button-like element a title or a static visible label', () => {
     const offenders: string[] = []
     for (const file of sources) {
       for (const { line, tag } of findUntitledButtons(readFileSync(file, 'utf8'), file)) {
@@ -116,9 +174,10 @@ describe('button-title guard (chat components)', () => {
     expect(offenders).toEqual([])
   })
 
-  it('flags a native button without a title', () => {
-    expect(flagsSnippet('<button onClick={f}>Go</button>')).toBe(true)
+  it('flags a native button without a title or label', () => {
+    expect(flagsSnippet('<button onClick={f}><X /></button>')).toBe(true)
     expect(flagsSnippet('<button\n  type="button"\n  onClick={f}\n/>')).toBe(true)
+    expect(flagsSnippet('<button onClick={f}>{label}</button>')).toBe(true)
   })
 
   it('passes a button that carries a title (static or bound)', () => {
@@ -126,11 +185,20 @@ describe('button-title guard (chat components)', () => {
     expect(flagsSnippet('<button title={open ? "Collapse" : "Expand"}>x</button>')).toBe(false)
   })
 
+  it('passes a button with a static visible label — no echo title needed', () => {
+    expect(flagsSnippet('<button onClick={f}>Go</button>')).toBe(false)
+    expect(flagsSnippet('<button>{saving ? "Saving…" : "Save"}</button>')).toBe(false)
+    expect(flagsSnippet('<CollapsibleTrigger className="x">Reasoning</CollapsibleTrigger>')).toBe(
+      false,
+    )
+  })
+
   it('holds capitalized Button and CollapsibleTrigger to the same rule', () => {
-    expect(flagsSnippet('<Button size="sm" onClick={f}>Allow</Button>')).toBe(true)
+    expect(flagsSnippet('<Button size="sm" onClick={f}><X /></Button>')).toBe(true)
     expect(flagsSnippet('<Button size="sm" title="Allow" onClick={f}>Allow</Button>')).toBe(false)
-    expect(flagsSnippet('<CollapsibleTrigger className="x">y</CollapsibleTrigger>')).toBe(true)
+    expect(flagsSnippet('<Button size="sm" onClick={f}>Allow</Button>')).toBe(false)
     expect(flagsSnippet('<CollapsibleTrigger title="Reasoning">y</CollapsibleTrigger>')).toBe(false)
+    expect(flagsSnippet('<CollapsibleTrigger className="x" />')).toBe(true)
     // Unrelated components stay out of scope — they may not render a button.
     expect(flagsSnippet('<DialogTrigger>Open</DialogTrigger>')).toBe(false)
   })
@@ -145,7 +213,7 @@ describe('button-title guard (chat components)', () => {
   })
 
   it('reports accurate line numbers', () => {
-    const src = 'const a = 1\nconst b = 2\nconst c = <button>go</button>\n'
+    const src = 'const a = 1\nconst b = 2\nconst c = <button><X /></button>\n'
     expect(findUntitledButtons(src, 'sample.tsx')).toEqual([{ line: 3, tag: 'button' }])
   })
 })

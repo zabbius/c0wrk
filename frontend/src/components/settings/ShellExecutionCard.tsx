@@ -130,7 +130,6 @@ export function ShellExecutionCard({ onSaved }: ShellExecutionCardProps) {
         <Button
           variant="outline"
           size="sm"
-          title={saving ? 'Saving…' : 'Save shell command'}
           onClick={save}
           disabled={!canSave}
           data-testid="shell-exec-save"

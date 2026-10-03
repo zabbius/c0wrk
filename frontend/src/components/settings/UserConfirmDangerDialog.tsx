@@ -71,7 +71,6 @@ export function UserConfirmDangerDialog({ open, onOpenChange, onConfirm }: UserC
         <DialogFooter>
           <Button
             variant="outline"
-            title="Cancel"
             onClick={() => onOpenChange(false)}
             data-testid="user-confirm-danger-cancel"
           >

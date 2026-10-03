@@ -75,7 +75,6 @@ export function EmbeddedLLMSplitRemoveButton({
         size="sm"
         variant="ghost"
         className="gap-2 rounded-r-none border border-border/50 text-destructive enabled:hover:bg-destructive/10 enabled:hover:text-destructive"
-        title="Remove"
         onClick={() => onRemove('all')}
         disabled={busyNow}
         data-testid={idPrefix}
@@ -166,7 +165,6 @@ export function EmbeddedLLMActions({
           size="sm"
           variant="outline"
           className="gap-2"
-          title={busy === 'unload' ? 'Unloading…' : 'Unload'}
           onClick={onUnload}
           disabled={busyNow}
           data-testid="embedded-llm-unload"
@@ -183,7 +181,6 @@ export function EmbeddedLLMActions({
           size="sm"
           variant="outline"
           className="gap-2"
-          title={busy === 'load' || loading ? 'Loading weights…' : 'Load'}
           onClick={onLoad}
           disabled={busyNow || loading}
           data-testid="embedded-llm-load"
@@ -231,7 +228,6 @@ export function EmbeddedLLMInstallAction({
         size="sm"
         variant="outline"
         className="self-start gap-2"
-        title={busy === 'install' ? 'Checking hardware…' : 'Install'}
         onClick={onInstall}
         disabled={busy !== null || unavailable}
         data-testid="embedded-llm-install"

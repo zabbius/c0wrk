@@ -3,12 +3,24 @@
 // Button title invariant — project-wide guard.
 //
 // Every native `<button>` and `<Button>` component in non-test sources must
-// expose its purpose outside its visible label — as a native `title=`
-// attribute (the hover tooltip the desktop app shows on any element) or by
-// being wrapped in a `<TooltipTrigger>` ancestor (the Radix tooltip already
-// carries the text). A bare button — icon-only or not — leaves a user with no
-// way to learn what it does, so this guard scans the source tree and fails
-// fast in CI when one lands.
+// expose its purpose to a user who cannot read its visible label. One of
+// three channels satisfies the invariant:
+//
+// 1. a native `title=` attribute — the hover tooltip the desktop app shows
+//    on any element;
+// 2. a `<TooltipTrigger>` ancestor — the Radix tooltip carries the text;
+// 3. a statically visible label — JSX text inside the element (including
+//    ternaries whose both branches are string literals). The label IS the
+//    explanation, so an echo tooltip over always-labeled text adds nothing.
+//
+// A bare ICON-ONLY button — or one whose markup hides its label (responsive
+// `hidden @min-[…]:inline` chrome, collapsed layouts) — leaves a user with
+// no way to learn what it does, which is what the guard exists to prevent.
+// The guard cannot see CSS, so "this label can disappear" is a review-time
+// obligation (see specs/domains/frontend/button-tooltips.md): markup that
+// may hide its label MUST keep a title even when the label is present in
+// the source. The guard accepts the static text; the spec mandates the
+// title for hide-capable buttons.
 //
 // Context-menu entries are exempt: a button carrying `role="menuitem"` is a
 // menu entry whose visible label IS its explanation — the pointer already
@@ -31,7 +43,11 @@
 //   set at the call site reaches the DOM;
 // - a button rendered by an unrelated component (`<FooButton />` whose
 //   internals forgot the title) is invisible here — only intrinsic `button`
-//   tags and components whose name ends in `.Button`/`Button` are matched.
+//   tags and components whose name ends in `.Button`/`Button` are matched;
+// - static-label acceptance trusts that the text is actually visible — a
+//   label hidden by CSS (`<span className="hidden">`) fools the scan, which
+//   is why the review-time rule above requires titles on hide-capable
+//   markup regardless of what the guard accepts.
 
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -141,6 +157,47 @@ function hasTooltipTriggerAncestor(node: ts.Node): boolean {
   return false
 }
 
+/**
+ * True when the expression provably renders a non-empty visible string:
+ * a string literal (direct or parenthesized) or a ternary whose BOTH
+ * branches are provable — `{busy ? 'Saving…' : 'Save'}` and the nested
+ * `{busy ? '…' : kind === 'x' ? 'A' : 'B'}` forms. Deliberately
+ * conservative: identifiers (even a lookup in a const table) are not
+ * provable and keep the title requirement.
+ */
+function isStaticString(expr: ts.Expression): boolean {
+  if (ts.isParenthesizedExpression(expr)) return isStaticString(expr.expression)
+  if (ts.isStringLiteral(expr)) return expr.text.trim() !== ''
+  if (ts.isConditionalExpression(expr)) {
+    return isStaticString(expr.whenTrue) && isStaticString(expr.whenFalse)
+  }
+  return false
+}
+
+/**
+ * True when the element's own children guarantee a visible text label: JSX
+ * text with non-whitespace content, or an expression proven by
+ * `isStaticString`. This is the third invariant channel: the label IS the
+ * explanation, so a tooltip over always-labeled text can only echo it.
+ *
+ * Whitespace-only text does not count, so an icon-plus-spacing layout still
+ * needs its title.
+ */
+function hasStaticVisibleText(
+  node: ts.JsxElement | ts.JsxSelfClosingElement,
+  sf: ts.SourceFile,
+): boolean {
+  if (ts.isJsxSelfClosingElement(node)) return false
+  for (const child of node.children) {
+    if (ts.isJsxText(child) && child.getText(sf).trim() !== '') return true
+    if (!ts.isJsxExpression(child)) continue
+    const expr = child.expression
+    if (expr === undefined) continue
+    if (isStaticString(expr)) return true
+  }
+  return false
+}
+
 export interface TitleViolation {
   file: string
   line: number
@@ -171,7 +228,12 @@ export function scanButtonTitles(source: string, fileName = 'sample.tsx'): Title
       isButtonTag(jsxTagLabel(node.tagName)) &&
       !hasMenuitemRole(node.attributes) &&
       !hasOwnTitle(node.attributes) &&
-      !hasTooltipTriggerAncestor(node)
+      !hasTooltipTriggerAncestor(node) &&
+      // Static-label channel: only a PAIRED element's own JsxElement is
+      // examined (its direct text children). A self-closing button has no
+      // children — and its parent is the CONTAINER, whose other children's
+      // text must never count as this button's label.
+      !(ts.isJsxOpeningElement(node) && hasStaticVisibleText(node.parent as ts.JsxElement, sf))
     ) {
       const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1
       violations.push({
@@ -186,7 +248,7 @@ export function scanButtonTitles(source: string, fileName = 'sample.tsx'): Title
   return violations
 }
 
-describe('button title invariant (every button has title= or a TooltipTrigger ancestor)', () => {
+describe('button title invariant (title=, a TooltipTrigger ancestor, or a static visible label)', () => {
   const sources = collectSources(SRC_DIR)
 
   it('scans a non-trivial number of source files', () => {
@@ -207,10 +269,13 @@ describe('button title invariant (every button has title= or a TooltipTrigger an
 
   it('flags a button without title', () => {
     for (const src of [
-      '<button onClick={f}>ok</button>',
-      '<Button variant="ghost"><XIcon /></Button>',
-      '<button\n  className="m-1"\n/>' + '',
-      'export const A = () => <Tooltip><button>x</button></Tooltip>', // Tooltip ≠ TooltipTrigger
+      '<Button variant="ghost"><XIcon /></Button>', // icon-only
+      '<button\n  className="m-1"\n/>', // self-closing: no children to label it
+      '<button onClick={f}>{label}</button>', // dynamic expression: not provable
+      '<button>{cond ? a : "Save"}</button>', // a non-literal ternary branch
+      '<button>{items.map((i) => i.name)}</button>', // mapped children
+      '<button><span className="hidden">Go</span></button>', // only an element child
+      'export const A = () => <Tooltip><button><X /></button></Tooltip>', // Tooltip ≠ TooltipTrigger
     ]) {
       expect(scanButtonTitles(src)).toHaveLength(1)
     }
@@ -228,9 +293,9 @@ describe('button title invariant (every button has title= or a TooltipTrigger an
 
   it('only the exact role="menuitem" literal is exempt', () => {
     for (const src of [
-      '<button role="menu">ok</button>', // container role, not a menu entry
-      '<button role={menuItemRole}>ok</button>', // non-literal role is not provably exempt
-      '<button data-role="menuitem">ok</button>', // not the role attribute
+      '<button role="menu"><X /></button>', // container role, not a menu entry
+      '<button role={menuItemRole}><X /></button>', // non-literal role is not provably exempt
+      '<button data-role="menuitem"><X /></button>', // not the role attribute
     ]) {
       expect(scanButtonTitles(src)).toHaveLength(1)
     }
@@ -246,9 +311,22 @@ describe('button title invariant (every button has title= or a TooltipTrigger an
       '<TooltipTrigger>{cond && <Button>x</Button>}</TooltipTrigger>',
       '<TooltipTrigger><button title="both">x</button></TooltipTrigger>',
       '<IconButton label="x" />', // out of scope: not button/Button
+      // Static-label channel — the label IS the explanation:
+      '<button onClick={f}>Cancel</button>',
+      '<button>{saving ? "Saving…" : "Save"}</button>', // literal ternary
+      '<button>{busy ? "Deleting…" : "Delete"}</button>',
+      '<button>\n  <Icon />\n  Retry\n</button>', // icon + static text
+      '<button>{("Save")}</button>', // parenthesized literal
     ]) {
       expect(scanButtonTitles(src)).toEqual([])
     }
+  })
+
+  it('static-label acceptance never leaks to a sibling element', () => {
+    // The label text sits inside a SIBLING <button>, not the scanned one —
+    // the second (self-closing) button must still flag.
+    const src = '<button>Save</button><button onClick={f} />'
+    expect(scanButtonTitles(src)).toHaveLength(1)
   })
 
   it('does not flag <button mentioned in comments', () => {
@@ -279,7 +357,7 @@ describe('button title invariant (every button has title= or a TooltipTrigger an
   })
 
   it('reports an accurate file, line and snippet for each offender', () => {
-    const src = 'const a = 1\nconst b = 2\nexport const C = () => <button>go</button>\n'
+    const src = 'const a = 1\nconst b = 2\nexport const C = () => <button><X /></button>\n'
     const violations = scanButtonTitles(src)
     expect(violations).toHaveLength(1)
     const v = violations[0]

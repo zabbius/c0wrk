@@ -97,8 +97,8 @@ export function MCPSettings() {
         <DialogContent className="sm:max-w-[400px]">
           <DialogHeader><DialogTitle>Delete Server</DialogTitle><DialogDescription>Are you sure you want to delete &quot;{deleteConfirm}&quot;?</DialogDescription></DialogHeader>
           <DialogFooter>
-            <Button variant="outline" title="Cancel" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
-            <Button variant="destructive" title={isSaving ? 'Deleting...' : 'Delete'} onClick={() => deleteConfirm && handleDelete(deleteConfirm)} disabled={isSaving}>{isSaving ? 'Deleting...' : 'Delete'}</Button>
+            <Button variant="outline" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
+            <Button variant="destructive" onClick={() => deleteConfirm && handleDelete(deleteConfirm)} disabled={isSaving}>{isSaving ? 'Deleting...' : 'Delete'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -101,7 +101,7 @@ export function CreateProjectDialog({ open, onOpenChange }: CreateProjectDialogP
         </div>
 
         <DialogFooter>
-          <Button variant="outline" title="Cancel" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button

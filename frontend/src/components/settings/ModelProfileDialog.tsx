@@ -87,10 +87,10 @@ export function ModelProfileDialog({
               </div>
             )}
             <DialogFooter>
-              <Button variant="outline" title="Cancel" onClick={onClose} disabled={busy}>
+              <Button variant="outline" onClick={onClose} disabled={busy}>
                 Cancel
               </Button>
-              <Button variant="destructive" onClick={confirm} disabled={busy} aria-label="Confirm delete profile" title={busy ? 'Deleting…' : 'Delete'}>
+              <Button variant="destructive" onClick={confirm} disabled={busy} aria-label="Confirm delete profile">
                 {busy ? 'Deleting…' : 'Delete'}
               </Button>
             </DialogFooter>
@@ -129,11 +129,11 @@ export function ModelProfileDialog({
               </div>
             )}
             <DialogFooter>
-              <Button variant="outline" title="Cancel" onClick={onClose} disabled={busy}>
+              <Button variant="outline" onClick={onClose} disabled={busy}>
                 Cancel
               </Button>
-              <Button onClick={confirm} disabled={busy || trimmed === ''} aria-label={`Confirm ${kind} profile`} title={busy ? 'Saving…' : NAME_LABELS[kind].action}>
-                {busy ? 'Saving…' : NAME_LABELS[kind].action}
+              <Button onClick={confirm} disabled={busy || trimmed === ''} aria-label={`Confirm ${kind} profile`}>
+                {busy ? 'Saving…' : kind === 'duplicate' ? 'Duplicate' : 'Rename'}
               </Button>
             </DialogFooter>
           </>

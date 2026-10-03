@@ -335,7 +335,6 @@ export function LLMSettings({
                 <Button
                   variant="ghost"
                   size="sm"
-                  title="Cancel"
                   onClick={resetAddForm}
                 >
                   Cancel

@@ -248,10 +248,10 @@ export function ModelConfigDialog({ model, open, onOpenChange, onSaved }: ModelC
         )}
 
         <DialogFooter>
-          <Button variant="ghost" title="Cancel" onClick={() => onOpenChange(false)} disabled={saving}>
+          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button title={saving ? 'Saving...' : 'Save'} onClick={handleSave} disabled={loading || saving}>
+          <Button onClick={handleSave} disabled={loading || saving}>
             {saving ? 'Saving...' : 'Save'}
           </Button>
         </DialogFooter>

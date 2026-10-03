@@ -96,14 +96,14 @@ function AvailableSurface() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button size="xs" title="Update" onClick={handleUpdate} disabled={isDownloading}>
+          <Button size="xs" onClick={handleUpdate} disabled={isDownloading}>
             <Download className="size-3" />
             Update
           </Button>
-          <Button size="xs" variant="ghost" title="Skip" onClick={handleSkip}>
+          <Button size="xs" variant="ghost" onClick={handleSkip}>
             Skip
           </Button>
-          <Button size="xs" variant="ghost" title="Later" onClick={handleDismiss}>
+          <Button size="xs" variant="ghost" onClick={handleDismiss}>
             Later
           </Button>
         </div>
@@ -142,7 +142,7 @@ function DownloadedSurface() {
             <RefreshCw className="size-3" />
             Restart
           </Button>
-          <Button size="xs" variant="ghost" title="Later" onClick={handleDismiss}>
+          <Button size="xs" variant="ghost" onClick={handleDismiss}>
             Later
           </Button>
         </div>

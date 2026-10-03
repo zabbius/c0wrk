@@ -139,7 +139,6 @@ export function EmbeddedLLMProgress({ progress, busy, onCancel }: EmbeddedLLMPro
           size="xs"
           variant="outline"
           className="gap-1.5"
-          title={busy === 'cancel' ? 'Cancelling…' : 'Cancel'}
           onClick={onCancel}
           disabled={busy !== null}
           data-testid="embedded-llm-cancel-install"

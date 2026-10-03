@@ -106,7 +106,7 @@ export function MCPServerCard({ server, tools, expanded, onToggleExpand, onEdit,
             )}
 
             <div className="flex gap-2 pt-2">
-              <Button variant="outline" size="sm" title="Edit" onClick={(e) => { e.stopPropagation(); onEdit() }}>
+              <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); onEdit() }}>
                 <Pencil className="h-3 w-3 mr-1" />
                 Edit
               </Button>
@@ -114,7 +114,6 @@ export function MCPServerCard({ server, tools, expanded, onToggleExpand, onEdit,
                 variant="outline"
                 size="sm"
                 className="text-destructive hover:bg-destructive/10"
-                title="Delete"
                 onClick={(e) => { e.stopPropagation(); onDelete() }}
               >
                 <Trash2 className="h-3 w-3 mr-1" />

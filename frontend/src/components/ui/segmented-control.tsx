@@ -28,11 +28,17 @@ export type SegmentedSize = 'sm' | 'md'
 export interface SegmentedControlItem<V extends string | number> {
   value: V
   /** Text label. Omit for icon-only items. textContent stays verbatim (tests
-   *  assert e.g. 'files'); visual casing is the caller's concern. */
+   *  assert e.g. 'files'); visual casing is the caller's concern. A STRING
+   *  label is also the item's default `title` (see `title` below) — segments
+   *  may hide their label responsively (`labelClassName="hidden …:inline"`),
+   *  and hide-capable markup must keep a tooltip. */
   label?: ReactNode
   /** Leading icon node (already sized, e.g. `<GitBranch className="size-3.5" />`). */
   icon?: ReactNode
-  /** Native tooltip / accessible name for icon-only items. */
+  /** Native tooltip / accessible name for icon-only items. When omitted, a
+   *  string `label` is used as the title automatically (an echo is the
+   *  correct tooltip for label-hiding segments); a non-string label and an
+   *  icon-only item without a title render no title. */
   title?: string
   /** Stable test hook (rendered as data-testid on the item button). */
   testId?: string
@@ -40,6 +46,9 @@ export interface SegmentedControlItem<V extends string | number> {
 
 export interface SegmentedControlProps<V extends string | number> {
   items: ReadonlyArray<SegmentedControlItem<V>>
+  /** The selected value, or `null` for "nothing selected yet". `null` keeps
+   *  the group keyboard-reachable: the FIRST item carries `tabIndex=0` (the
+   *  roving tabindex anchor) and an arrow key from it selects as usual. */
   value: V | null
   onValueChange: (value: V) => void
   semantic?: SegmentedSemantic
@@ -151,12 +160,12 @@ function SegmentedControlInner<V extends string | number>(
             {...(isTabs
               ? { role: 'tab', 'aria-selected': selected }
               : { role: 'radio', 'aria-checked': selected })}
-            title={item.title}
+            title={item.title ?? (typeof item.label === 'string' ? item.label : undefined)}
             disabled={disabled}
             data-segment-value={item.value}
             data-active={selected}
             data-testid={item.testId}
-            tabIndex={selected ? 0 : -1}
+            tabIndex={selected || (value === null && item.value === values[0]) ? 0 : -1}
             onClick={() => onValueChange(item.value)}
             className={itemClass}
           >

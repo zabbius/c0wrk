@@ -229,14 +229,14 @@ function InlineAvailableSurface() {
         </p>
       </div>
       <div className="flex items-center gap-2">
-        <Button size="sm" title="Update" onClick={handleUpdate} disabled={isDownloading}>
+        <Button size="sm" onClick={handleUpdate} disabled={isDownloading}>
           <Download className="size-4" />
           Update
         </Button>
-        <Button size="sm" variant="ghost" title="Skip" onClick={handleSkip}>
+        <Button size="sm" variant="ghost" onClick={handleSkip}>
           Skip
         </Button>
-        <Button size="sm" variant="ghost" title="Later" onClick={handleDismiss}>
+        <Button size="sm" variant="ghost" onClick={handleDismiss}>
           Later
         </Button>
       </div>
@@ -267,7 +267,7 @@ function InlineDownloadedSurface() {
           <RefreshCw className="size-4" />
           Restart
         </Button>
-        <Button size="sm" variant="ghost" title="Later" onClick={handleDismiss}>
+        <Button size="sm" variant="ghost" onClick={handleDismiss}>
           Later
         </Button>
       </div>

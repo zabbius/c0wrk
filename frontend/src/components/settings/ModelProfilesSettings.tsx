@@ -354,7 +354,6 @@ export function ModelProfilesSettings() {
                   onClick={() => openDialog('delete')}
                   disabled={busy}
                   aria-label="Delete profile"
-                  title="Delete"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                   Delete
@@ -386,7 +385,6 @@ export function ModelProfilesSettings() {
                 onClick={() => suggestedId && handleSelect(suggestedId)}
                 disabled={busy}
                 aria-label="Apply suggested profile"
-                title="Apply"
               >
                 Apply
               </Button>

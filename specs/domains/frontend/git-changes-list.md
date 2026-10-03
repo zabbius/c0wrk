@@ -54,4 +54,4 @@ Row-level stage toggles flow through `onToggleFile` (the optimistic checkbox / p
 
 - [stores.md](stores.md) — `gitPanelStore`: `viewMode`, `sortBy`/`groupBy` (persisted), `expandedDirs`, `entries`
 - [git-operation-console.md](git-operation-console.md) — the footer log of git mutation results (stage/unstage/discard fire from these rows)
-- [button-tooltips.md](button-tooltips.md) — the native-`title` tooltip convention this list's path tooltips follow
+- [button-tooltips.md](button-tooltips.md) — the native-`title` tooltip convention this list's path tooltips follow (title, TooltipTrigger, or visible label; hide-capable markup keeps a title)

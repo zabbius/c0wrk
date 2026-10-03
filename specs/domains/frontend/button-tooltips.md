@@ -2,14 +2,15 @@
 
 ## Role
 
-The convention that guarantees every button in the app exposes its purpose outside its visible label — via a native `title=` attribute or a Radix `<TooltipTrigger>` wrapper — and the project-wide source-scan guard that enforces it.
+The convention that guarantees every button in the app exposes its purpose to a user who cannot read its visible label — via a native `title=` attribute, a Radix `<TooltipTrigger>` wrapper, or its own always-visible label — and the project-wide source-scan guard that enforces it. Buttons whose markup may hide the label (responsive collapse into an icon-only state) always carry a `title`; buttons whose label always shows need none.
 
 ## Key Files
 
 - `frontend/src/components/ui/tooltip.tsx` — the Radix tooltip primitive: `TooltipProvider` / `Tooltip` / `TooltipTrigger` / `TooltipContent` and `TOOLTIP_DELAY_MS`, the single open-delay constant (1000 ms) shared by the whole UI
 - `frontend/src/App.tsx` — mounts one `TooltipProvider` at the app root, so every tooltip in the tree shares the app-wide delay; individual surfaces never re-provide it
-- `frontend/src/test/buttonTitleInvariant.test.ts` — the guard: an AST-based scan of the whole non-test source tree that fails when a `<button>` / `<Button>` has neither a `title` attribute nor a `<TooltipTrigger>` ancestor
+- `frontend/src/test/buttonTitleInvariant.test.ts` — the guard: an AST-based scan of the whole non-test source tree that fails when a `<button>` / `<Button>` has neither a `title` attribute, a `<TooltipTrigger>` ancestor, nor a statically visible label
 - `frontend/src/components/layout/ItemAction.tsx` — a native-title-only row-action button (see [row-actions.md](row-actions.md)): the `title` alone satisfies the guard; its disabled reason rides the wrapper span's `title`
+- `frontend/src/components/ui/segmented-control.tsx` — the pinned label-hiding surface: segments may hide their string label responsively (`labelClassName="hidden …:inline"`), so the control derives each item's `title` from its string label automatically (`item.title` overrides)
 
 ## Behavior
 
@@ -17,10 +18,16 @@ The convention that guarantees every button in the app exposes its purpose outsi
 
 Every native `<button>` and shadcn `<Button>` element (including the last segment of a dotted name, `<Tooltip.Button>`) must satisfy **at least one** of:
 
-1. an explicit `title` attribute — any value counts, the attribute's mere presence is the contract (`title="Cancel and stay in c0wrk"`, `title={updatePending ? '…' : '…'}` are both fine); or
-2. a `<TooltipTrigger>` JSX ancestor — the Radix wrapper whose whole purpose is to attach the tooltip text. The check walks the JSX parent chain, so conditional children count too: `<TooltipTrigger>{cond && <Button>x</Button>}</TooltipTrigger>`.
+1. an explicit `title` attribute — any value counts, the attribute's mere presence is the contract (`title={updatePending ? '…' : '…'}` is fine); or
+2. a `<TooltipTrigger>` JSX ancestor — the Radix wrapper whose whole purpose is to attach the tooltip text. The check walks the JSX parent chain, so conditional children count too: `<TooltipTrigger>{cond && <Button>x</Button>}</TooltipTrigger>`; or
+3. a **statically visible label** — JSX text inside the element, or an expression proven to render a non-empty string (`{saving ? 'Saving…' : 'Save'}`, nested ternaries included). The label IS the explanation, so a tooltip over always-labeled text can only echo it — an **echo `title` on a button whose label always shows is the anti-pattern this channel removes**.
 
-A bare button — icon-only or not — leaves a user with no way to learn what it does, which is what the guard exists to prevent. Compliance is a render-time property of the *markup shape*, not of props logic: `title=""` technically passes the guard but is still an empty tooltip, so the text should stay meaningful.
+The three channels answer different visibility regimes:
+
+- **The label may hide** (responsive collapse `hidden @min-[…]:inline`, overflow truncation, a later redesign into icon-only) — the `title` is REQUIRED regardless of what the source shows, because at the moment it hides, the tooltip becomes the only name the button has. The guard cannot see CSS, so this obligation is enforced at review time: markup that hides its label and relies on the static-label channel is a review defect even though the guard accepts it.
+- **The label always shows** — the `title` is NOT needed; write one only when it adds information the label lacks (the selector-trigger rule below), never as an echo.
+
+`title=""` technically passes the guard but is still an empty tooltip, so the text should stay meaningful.
 
 ### The context-menu exception (`role="menuitem"`)
 
@@ -53,24 +60,29 @@ The native `title` tooltip is rendered by the OS/webview on any element — but 
 - sees only real JSX start/self-closing tags — `<button` in comments, string literals or JSX text can never flag (immunity is by construction, not by comment-stripping heuristics);
 - parses `.ts` files as TS (not TSX), so an unparenthesised generic arrow (`<T>(x: T)`) cannot invent a phantom JSX tag;
 - walks the JSX parent chain for the `<TooltipTrigger>` ancestor check;
+- accepts the static-label channel: a paired element's own JSX text and provable expressions (`isStaticString` — string literals, parenthesized literals, and nested ternaries with all-literal leaves). Only the element's OWN children count — a sibling element's text never labels a self-closing button;
 - exempts a button whose own attribute list carries the exact string literal `role="menuitem"` — the context-menu exception documented above, applied before the title check.
+
+The static-label proof is deliberately conservative: an identifier — even a lookup in a `const` table (`{NAME_LABELS[kind].action}`) — is not provable and keeps the title requirement. A label that needs the guard's acceptance must be written as literal text or an all-literal ternary in the JSX; when a static table is the cleaner source of truth for the data, render the string through a literal ternary at the use site.
 
 Violations are reported as `file:line: snippet`, and the tree-wide assertion fails fast with the full offender list.
 
-The `{...spread}` case is **trusted, fail-open**: a button carrying `{...rest}` passes, because props-forwarding wrappers (`<button {...props}>`) are exactly how a title set at the call site reaches the DOM. Equally fail-open by design: wrapper *components* are out of scope — only intrinsic `button` tags and components named `Button` / `*.Button` are matched (`IconButton`, `DropdownMenuTrigger`, … are beyond the invariant's reach, stopped where a component's own contract begins), and a tooltip from a differently-named wrapper is not recognized.
+The `{...spread}` case is **trusted, fail-open**: a button carrying `{...rest}` passes, because props-forwarding wrappers (`<button {...props}>`) are exactly how a title set at the call site reaches the DOM. Equally fail-open by design: wrapper *components* are out of scope — only intrinsic `button` tags and components named `Button` / `*.Button` are matched (`IconButton`, `DropdownMenuTrigger`, … are beyond the invariant's reach, stopped where a component's own contract begins), a tooltip from a differently-named wrapper is not recognized, and a CSS-hidden label fools the static-label acceptance (the review-time rule above is the counterweight).
 
 ### Compliant shapes (all accepted by the guard)
 
 ```tsx
-// 1 — native title
-<Button title="Cancel and stay in c0wrk">Cancel</Button>
+// 1 — icon-only: native title REQUIRED (the label cannot explain anything)
+<Button title="Cancel and stay in c0wrk"><X /></Button>
 
-// 2 — dynamic native title
-<Button title={updatePending ? 'Restart now to apply the update' : 'Quit without waiting for sessions'}>
-  {updatePending ? 'Restart' : 'Quit'}
-</Button>
+// 2 — static visible label: NO title — the label IS the explanation
+<Button variant="outline" onClick={close}>Cancel</Button>
+<Button onClick={save} disabled={isSaving}>{isSaving ? 'Saving...' : 'Save'}</Button>
 
-// 3 — Radix tooltip (works on disabled buttons too)
+// 3 — dynamic text: title REQUIRED (the guard cannot prove the label)
+<Button title={dynamicTitle}>ok</Button>
+
+// 4 — Radix tooltip (works on disabled buttons too)
 <Tooltip>
   <TooltipTrigger asChild>
     <button type="button" onClick={f}><Icon /></button>
@@ -78,7 +90,7 @@ The `{...spread}` case is **trusted, fail-open**: a button carrying `{...rest}` 
   <TooltipContent side="left">Copy path</TooltipContent>
 </Tooltip>
 
-// 4 — both channels (works on disabled buttons too)
+// 5 — both channels (works on disabled buttons too)
 <Tooltip>
   <TooltipTrigger asChild>
     <button title={label} disabled={disabled} onClick={onClick}><Icon /></button>
@@ -86,31 +98,45 @@ The `{...spread}` case is **trusted, fail-open**: a button carrying `{...rest}` 
   <TooltipContent side="left">{label}</TooltipContent>
 </Tooltip>
 
-// 5 — native title with the reason on a focusable wrapper (the ItemAction
+// 6 — native title with the reason on a focusable wrapper (the ItemAction
 //     pattern; see row-actions.md — no Radix needed)
 <span tabIndex={disabled ? 0 : undefined} title={disabled ? reason : undefined}>
   <button title={disabled ? reason : label} disabled={disabled} onClick={onClick}><Icon /></button>
 </span>
 
-// 6 — conditional child inside the trigger still counts
+// 7 — conditional child inside the trigger still counts
 <TooltipTrigger>{ok && <Button>x</Button>}</TooltipTrigger>
 
-// 7 — context-menu entry: the role="menuitem" exemption (no title needed)
+// 8 — context-menu entry: the role="menuitem" exemption (no title needed)
 <button role="menuitem" onClick={handleClose} className={menuItemClass}>
   <X className="size-4" />
   Close
 </button>
+
+// 9 — MAY-HIDE label: title REQUIRED even though the label is in the source
+//     (responsive collapse to icon-only — the SegmentedControl pattern; the
+//     control derives this title from the string label automatically)
+<SegmentedControl
+  items={[{ value: 'files', icon: <FolderTree />, label: 'Files' }]}
+  labelClassName="hidden @min-[272px]:inline"
+/>
+
+// 10 — may-hide label kept in a data table: render it through a literal
+//      ternary so the guard proves the label without an echo title
+<Button>{busy ? 'Saving…' : kind === 'duplicate' ? 'Duplicate' : 'Rename'}</Button>
 ```
 
 ## Error Handling
 
-The guard is a test-time gate, not runtime code: it fails `npm test` (and therefore CI) with an actionable `file:line: snippet` list. A red run means a newly landed button lacks both channels — fix the button, or rely on one of the documented fail-open passes: the `{...spread}` pass-through (only for a genuine wrapper that forwards `title` from its caller) or the `role="menuitem"` context-menu exemption (only for a real menu entry). There is no runtime fallback: an unannotated button that bypasses the test simply shows no tooltip.
+The guard is a test-time gate, not runtime code: it fails `npm test` (and therefore CI) with an actionable `file:line: snippet` list. A red run means a newly landed button has none of the three channels — give an icon-only button a `title`, let an always-labeled button's text speak for itself (write it as JSX text or an all-literal ternary), or rely on one of the documented fail-open passes: the `{...spread}` pass-through (only for a genuine wrapper that forwards `title` from its caller) or the `role="menuitem"` context-menu exemption (only for a real menu entry). There is no runtime fallback: a button that bypasses the test and can hide its label simply shows no tooltip in its icon-only state.
 
 ## Invariants
 
-- Every `<button>` / `<Button>` in non-test frontend sources has a `title` attribute or a `<TooltipTrigger>` ancestor — enforced by `frontend/src/test/buttonTitleInvariant.test.ts` on every test run.
-- Context-menu entries are the single exception to that invariant: a button with `role="menuitem"` carries no `title` — its visible label is the explanation — and the guard exempts it before the title check.
+- Every `<button>` / `<Button>` in non-test frontend sources exposes its purpose via at least one of the three channels — a `title` attribute, a `<TooltipTrigger>` ancestor, or a statically visible label — enforced by `frontend/src/test/buttonTitleInvariant.test.ts` on every test run. The chat-scoped `frontend/src/test/chatButtonTitles.test.ts` additionally holds `CollapsibleTrigger` to the same rule.
+- A button whose markup may hide its label (responsive collapse into an icon-only state, truncation to the point of loss) carries a `title` regardless of the label's presence in the source — at the moment the label hides, the tooltip is the only name the button has. The guard cannot verify visibility, so this obligation is enforced at review time; `SegmentedControl` is the pinned compliant surface (it derives each item's `title` from its string label automatically).
+- A button whose label always shows carries no echo `title` — its label is the explanation, and a tooltip repeating it verbatim adds nothing. The static-label channel accepts the button; writing `title="Cancel"` over the label `Cancel` is the anti-pattern this convention removed from `CreateProjectDialog`, `MCPServerForm`, `ModelConfigDialog`, `ModelProfileDialog`, `MCPSettings`, `MCPServerCard`, `UpdateSettings`, `UpdateToast`, `SessionActionConfirmDialog`, `UserConfirmDangerDialog`, `ModelProfilesSettings`, `SecuritySettings`, `FileTreePanel`, `EmbeddedLLM*`, `ui/dialog`, and `LLMSettings` (text Cancel). `ui/dialog`'s footer Close is the pinned echo example.
 - A picker trigger's `title` adds information the visible label does not carry — an action name (`Switch project`) or an enrichment (`Provider: Model` over the bare model label) — and never echoes the label verbatim (`title={activeProject?.name}` is the anti-pattern). The guard cannot verify wording — this rule is enforced at review time, with `ModelPickerMenu`'s "the title is exactly `Embedded: Bonsai 2 27B` over the bare `Bonsai 2 27B` label" test as the pinned enrich example.
+- The static-label proof is deliberately conservative: only JSX text and all-literal (nested) ternaries are provable; identifiers and expressions keep the title requirement — a label meant for the static channel is written as literal text or a literal ternary at the use site. The check reads a paired element's OWN children only: a sibling element's text never labels a self-closing button.
 - The `role="menuitem"` exemption keys off the exact string literal in the element's own attribute list: `role="menu"`, a non-literal `role={…}` and `data-role="menuitem"` still flag, and a `title` on a menu entry stays accepted — all pinned by the guard's self-tests.
 - The app mounts exactly one `TooltipProvider`, at the root in `frontend/src/App.tsx`; tooltip open delay is the single constant `TOOLTIP_DELAY_MS` (1000 ms) exported from `frontend/src/components/ui/tooltip.tsx`.
 - The guard's comment/string immunity is structural (AST-based), so prose mentioning `<button` never produces false positives.
