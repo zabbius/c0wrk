@@ -9,6 +9,7 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { ConfigWarningBanner } from './ConfigWarningBanner'
 import { LogLevelSelector } from './LogLevelSelector'
 import { ThemeSelector } from './ThemeSelector'
+import { TabsSettings } from './TabsSettings'
 import { UIScaleSelector } from './UIScaleSelector'
 import { FontSettings } from './FontSettings'
 import { ProxySettings } from './ProxySettings'
@@ -268,6 +269,9 @@ export function SettingsModal() {
           <TabsContent value="appearance" className={TAB_CONTENT_CLASS}>
             <div className="space-y-6">
               <ThemeSelector />
+              <div className="border-t border-border pt-4">
+                <TabsSettings />
+              </div>
               <div className="border-t border-border pt-4 flex flex-col gap-6">
                 <UIScaleSelector />
                 {/* FontSettings always renders: its comboboxes are free-text

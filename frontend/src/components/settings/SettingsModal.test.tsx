@@ -441,3 +441,31 @@ describe('SettingsModal layout: vertical left nav and fixed height', () => {
     expect(content!.className).not.toContain('max-h-[calc(var(--ui-vh)*0.8)]')
   })
 })
+
+describe('SettingsModal appearance — Tabs block', () => {
+  it('renders the Tabs switch after Theme and toggles uiStore.tabsEnabled', async () => {
+    useUIStore.setState({ tabsEnabled: false })
+    useSettingsStore.setState({ open: true, activeTab: 'appearance' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    expect(bannerText()).toContain('Tabs')
+    // The Toggle's peer-switch checkbox is the appearance tab's only checkbox.
+    const toggle = document.body.querySelector<HTMLInputElement>('input[type="checkbox"]')
+    expect(toggle).not.toBeNull()
+    expect(toggle!.checked).toBe(false)
+    expect(useUIStore.getState().tabsEnabled).toBe(false)
+
+    await act(async () => {
+      toggle!.click()
+    })
+    expect(useUIStore.getState().tabsEnabled).toBe(true)
+
+    await act(async () => {
+      toggle!.click()
+    })
+    expect(useUIStore.getState().tabsEnabled).toBe(false)
+  })
+})

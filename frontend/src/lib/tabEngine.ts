@@ -1,0 +1,260 @@
+import { logger } from '@/lib/logger'
+import { captureTabUI, restoreTabUI, type TabInputSnapshot, type TabUIState } from '@/lib/tabSnapshot'
+import { useInputModeStore } from '@/stores/inputModeStore'
+import { useProjectStore } from '@/stores/projectStore'
+import { useSessionStore } from '@/stores/sessionStore'
+import { useTabStore } from '@/stores/tabStore'
+import { useUIStore } from '@/stores/uiStore'
+import type { ProjectInfo } from '@/types/models'
+
+// Tab activation engine — the SINGLE path a tab is activated through.
+//
+// The engine is a plain lib module (no React): it coordinates the tab layer
+// (stores/tabStore) with the live workspace context (project/session stores)
+// and the snapshot slices (lib/tabSnapshot). The React seam lives in
+// hooks/useTabController, which owns one engine instance and mounts the
+// write-back subscriptions for the app lifetime.
+//
+// One path, no flag branches: `uiStore.tabsEnabled` gates only whether the
+// tab BAR renders. With the flag off the layer is its documented
+// "exactly one tab" special case — and the write-back below is what makes
+// that single tab a live mirror of the workspace. The engine never reads the
+// flag.
+
+/**
+ * Async project switcher — the curried `useProjectSwitchState()` callback.
+ * Serialized internally (switch chain + 30s watchdog) and REJECTS on
+ * failure; the engine is the only place that observes those rejections.
+ */
+export type ProjectSwitcher = (projectId: string) => Promise<void>
+
+export interface TabEngine {
+  /**
+   * Activate a tab. The returned promise NEVER rejects: every failure is
+   * rolled back (activeTabId reverts to the outgoing tab) and reported via
+   * `logger.warn`, so fire-and-forget callers cannot produce an unhandled
+   * rejection.
+   */
+  activate: (tabId: string) => Promise<void>
+  /**
+   * Write-back: mirror the LIVE context (activeProjectId, activeSessionId,
+   * the uiStore per-project maps, the input-panel slice) into the ACTIVE
+   * tab. Unconditional — it runs under any tabsEnabled value; with the flag
+   * off it is what keeps the single tab identical to the workspace.
+   * Content-equal writes are reference-stable no-ops (updateActiveContext).
+   */
+  writeBack: () => void
+  /**
+   * Mount the write-back subscriptions (project/session/ui/input stores →
+   * writeBack). Returns the detach function; the initial context is adopted
+   * synchronously on attach, so a freshly mounted layer immediately mirrors
+   * the live workspace.
+   */
+  attachWriteBack: () => () => void
+}
+
+// --- Live slice readers ---
+
+/** The current input-panel slice (exactly the TabInputSnapshot fields). */
+function liveInputSnapshot(): TabInputSnapshot {
+  const s = useInputModeStore.getState()
+  return { mode: s.mode, height: s.height, collapsedHeight: s.collapsedHeight, isExpanded: s.isExpanded }
+}
+
+/** A validated capture of the three live snapshot slices. */
+function captureLiveUI(): TabUIState {
+  const ui = useUIStore.getState()
+  return captureTabUI({
+    workspaceTabByProject: ui.workspaceTabByProject,
+    researchSegmentByProject: ui.researchSegmentByProject,
+    inputMode: liveInputSnapshot(),
+  })
+}
+
+// --- Write-back ---
+
+function writeBack(): void {
+  useTabStore.getState().updateActiveContext({
+    projectId: useProjectStore.getState().activeProjectId,
+    sessionId: useSessionStore.getState().activeSessionId,
+    ui: captureLiveUI(),
+  })
+}
+
+// --- Sync-slice restore ---
+
+/**
+ * Apply a tab's remembered slices to the live stores. The per-project maps
+ * merge entry-by-entry (the maps are shared across tabs; a restore layers
+ * this tab's remembered entries over the live map without erasing other
+ * projects' entries), and the input-panel fields are written as a unit —
+ * the same four persisted fields the persist middleware restores on boot.
+ */
+function restoreSlices(ui: TabUIState): void {
+  const uiStore = useUIStore.getState()
+  for (const [projectId, tab] of Object.entries(ui.workspaceTabByProject)) {
+    uiStore.setWorkspaceTab(projectId, tab)
+  }
+  for (const [projectId, segment] of Object.entries(ui.researchSegmentByProject)) {
+    uiStore.setResearchSegment(projectId, segment)
+  }
+  useInputModeStore.setState({
+    mode: ui.inputMode.mode,
+    height: ui.inputMode.height,
+    collapsedHeight: ui.inputMode.collapsedHeight,
+    isExpanded: ui.inputMode.isExpanded,
+  })
+}
+
+// --- Activation ---
+
+/** The CHAT pseudo-project entry (No Project), discovered like SidebarHeader does. */
+function findNoProject(projects: ProjectInfo[]): ProjectInfo | undefined {
+  return projects.find((p) => p.is_no_project)
+}
+
+async function runActivation(switchProjectWithState: ProjectSwitcher, tabId: string): Promise<void> {
+  const before = useTabStore.getState()
+  // No-op: the requested tab is already active (nothing to capture or restore).
+  if (tabId === before.activeTabId) return
+  const target = before.tabs.find((t) => t.id === tabId)
+  // The tab vanished while this activation sat in the queue (closed) — nothing to do.
+  if (target === undefined) return
+
+  // 1. Capture the outgoing tab's context + slices while it is still active.
+  writeBack()
+
+  // 2. Optimistic flip — the UI paints the incoming tab immediately.
+  const outgoingId = before.activeTabId
+  useTabStore.getState().activateTab(tabId)
+  // Snapshot the incoming tab's remembered slices BEFORE any await: a
+  // mid-switch write-back transiently re-mirrors live slices into the now
+  // active tab, and the restore below must apply what the tab REMEMBERED,
+  // not what the mirror overwrote it with.
+  const rememberedUI = target.ui
+
+  try {
+    const projects = useProjectStore.getState()
+    let destProjectId = target.projectId
+
+    // Edge: the tab's project was deleted. Retarget the tab to the CHAT
+    // pseudo-project and complete the activation there — the tab stays
+    // usable and activeTabId stays put.
+    if (destProjectId !== null && projects.projects !== null && !projects.projects.some((p) => p.id === destProjectId)) {
+      const noProject = findNoProject(projects.projects)
+      if (noProject === undefined) {
+        throw new Error(`tab project "${destProjectId}" no longer exists and no CHAT pseudo-project is available`)
+      }
+      destProjectId = noProject.id
+      useTabStore.getState().updateActiveContext({ projectId: noProject.id, sessionId: null })
+    }
+
+    if (destProjectId !== projects.activeProjectId) {
+      // A CHAT tab (null) switches to the No Project pseudo-project entry.
+      let switchTarget = destProjectId
+      if (switchTarget === null) {
+        const chat = projects.projects !== null ? findNoProject(projects.projects) : undefined
+        if (chat === undefined) {
+          throw new Error('cannot activate a CHAT tab: the CHAT pseudo-project is not available')
+        }
+        switchTarget = chat.id
+      }
+      // Different project (null = CHAT pseudo-project): the switch flow owns
+      // the session restore (saved session → latest → fresh session), so no
+      // explicit session selection happens here; the final write-back
+      // converges the tab with whatever the restore landed on.
+      await switchProjectWithState(switchTarget)
+    } else {
+      // Same project: only the session may need to move. A deleted session is
+      // dropped from the tab instead of being force-selected; the live
+      // session is left alone and the final write-back converges the tab.
+      const sessions = useSessionStore.getState()
+      if (target.sessionId !== sessions.activeSessionId) {
+        const deleted =
+          target.sessionId !== null &&
+          sessions.sessions !== null &&
+          !sessions.sessions.some((s) => s.id === target.sessionId)
+        if (deleted) {
+          useTabStore.getState().updateActiveContext({ sessionId: null })
+        } else {
+          sessions.selectSession(target.sessionId, target.projectId ?? undefined)
+        }
+      }
+    }
+  } catch (error) {
+    // Failure → roll the optimistic flip back. The live context may have
+    // partially moved (the switch flow writes stores as it goes); the
+    // write-back re-mirrors whatever live ended up as into the refocused
+    // tab, keeping the "active tab mirrors live" invariant intact.
+    logger.warn(`tabEngine: failed to activate tab; rolling back to the previous tab`, error)
+    useTabStore.getState().activateTab(outgoingId)
+    writeBack()
+    return
+  }
+
+  // 3. Restore the remembered sync slices (validated fail-closed against the
+  //    live input snapshot — garbage can never reach the stores).
+  restoreSlices(restoreTabUI(rememberedUI, liveInputSnapshot()))
+
+  // 4. Converge: mirror the live context (restored session ids included)
+  //    into the active tab. Content-equal against the remembered snapshot,
+  //    so a clean activation is a reference-stable no-op here.
+  writeBack()
+}
+
+// --- Engine factory ---
+
+export function createTabEngine(switchProjectWithState: ProjectSwitcher): TabEngine {
+  // Activation chain: each activation's full body (capture → flip → switch/
+  // select → restore → write-back) completes before the next one starts, so
+  // rapid tab clicks cannot interleave their store writes. runActivation
+  // never rejects (all failures are caught and rolled back), but the chain
+  // link guards both settlements anyway so a future edit can never poison
+  // the queue.
+  let chain: Promise<void> = Promise.resolve()
+
+  const activate = (tabId: string): Promise<void> => {
+    const run = chain.then(
+      () => runActivation(switchProjectWithState, tabId),
+      () => runActivation(switchProjectWithState, tabId),
+    )
+    chain = run
+    return run
+  }
+
+  const attachWriteBack = (): (() => void) => {
+    writeBack()
+    const detachProject = useProjectStore.subscribe((s, prev) => {
+      if (s.activeProjectId !== prev.activeProjectId) writeBack()
+    })
+    const detachSession = useSessionStore.subscribe((s, prev) => {
+      if (s.activeSessionId !== prev.activeSessionId) writeBack()
+    })
+    const detachUI = useUIStore.subscribe((s, prev) => {
+      if (
+        s.workspaceTabByProject !== prev.workspaceTabByProject ||
+        s.researchSegmentByProject !== prev.researchSegmentByProject
+      ) {
+        writeBack()
+      }
+    })
+    const detachInput = useInputModeStore.subscribe((s, prev) => {
+      if (
+        s.mode !== prev.mode ||
+        s.height !== prev.height ||
+        s.collapsedHeight !== prev.collapsedHeight ||
+        s.isExpanded !== prev.isExpanded
+      ) {
+        writeBack()
+      }
+    })
+    return () => {
+      detachProject()
+      detachSession()
+      detachUI()
+      detachInput()
+    }
+  }
+
+  return { activate, writeBack, attachWriteBack }
+}
