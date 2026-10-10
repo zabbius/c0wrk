@@ -17,6 +17,10 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `core/orchestrator_mcp_prepare.go` — `prepareTaskMCP`: synchronous durable mention preparation and one current-mode snapshot before any task execution or resume wave
 - `backend/session/persistence_mcp.go` — atomic task-scoped mention union and ordered load; authorization-state errors propagate for retry
 - `backend/session/persistence_fork.go` — `(*SQLiteSessionStore).ForkSession` deep-copy (messages, tasks+steps/facts/attachments/trajectory/MCP mentions, terminal commands, work directories) with regenerated identifiers in a single atomic transaction; `ForkSessionWithBinding` additionally commits a prepared managed fork binding
+- `backend/session/persistence_promote.go` — `(*SQLiteSessionStore).PromoteSessionToProject`: one transaction re-parenting `sessions.project_id` (`__no_project__` → CODE project, archived cleared) and rewriting persisted metadata path prefixes (raw + JSON-escaped, longest first); see § Session Promotion
+- `backend/session/manager_promote.go` — `Manager.EvictSession` (in-memory drop without fs changes, single-flight-aware) and `Manager.MoveSessionStorage`/`UndoMoveSessionStorage` (the two-hop rename move of the session directory + workspace lift, best-effort rollback)
+- `backend/frontend_api_session_promote.go` — `FrontendAPI.PromoteSessionToProject`: guards, internal project creation, terminal stop → evict → move → store tx, pointer swap, fail-soft `git init`, compensation
+- `frontend/src/components/layout/PromoteSessionDialog.tsx` + `frontend/src/api/sessions.ts` (`promoteSessionToProject`) — the chat-side promotion UX (ADR-less; see § Session Promotion)
 - `backend/frontend_api_worktrees.go` — the Git lifecycle owner RPC surface for managed sessions (ADR-080): `CreateManagedSession` (draft → provision → commit → persist, with compensation), the restore `WorkspaceEnsurer` installed on the manager, `ForkSession`'s managed branch, and the `DeleteSession`/`DeleteSessionWithOptions` tree-release protocol
 - `backend/session/workspace_binding.go` — typed immutable `WorkspaceBinding` (`local` / `managed_worktree` / nil for CHAT), `NormalizeWorkspaceBinding`, `SessionDraft`; see [session-worktrees.md](session-worktrees.md)
 - `frontend/src/stores/sessionDraftStore.ts` + `frontend/src/lib/sessionDraft.ts` — the chat-side draft UX (ADR-080): the pending New-Session draft state and `createSessionFromDraft()` — the single commit path shared by send / attachment staging / paste / terminal open (`CreateManagedSession` for a branch draft, `CreateSession` otherwise)
@@ -182,19 +186,26 @@ Every session carries a persisted, immutable workspace binding
 
 - `local` — the project checkout; execution path follows the project's
   current registered root.
-- `managed_worktree` — a session-owned git worktree under
-  `<repo>/.worktrees/<name>` with the branch pinned at selection.
+- `managed_worktree` — a managed git worktree under
+  `<repo>/.worktrees/<name>` with the branch pinned at selection; since
+  ADR-082 several sessions may share one tree (the release refcount is keyed
+  by the globally unique tree name, across project rows).
 - `nil` — CHAT (No Project) sessions keep their per-session workspace under
   `~/.c0wrk/projects/__no_project__/`, unchanged.
 
 Creation may go through `SessionDraft` (`NewSessionDraft` +
 `Manager.CreateSessionFromDraft`) so a managed tree can be provisioned before
 any orchestrator, log file, or persisted row exists — `FrontendAPI.CreateManagedSession`
-drives that flow: reserve identity → provision the tree via `worktrees.Owner`
-(new branch at a start point, or checkout of an existing one) → commit the
-runtime session via `CreateSessionFromDraft` → persist the binding. The
+drives that flow: reserve identity → look up the requested branch's holder (a
+managed tree is ADOPTED — the session binds to the existing tree, ADR-082; the
+main checkout silently degrades the request to a plain local session; an
+external linked tree is a typed refusal) → provision a fresh tree via
+`worktrees.Owner` when nobody holds the branch (new branch at a start point,
+or checkout of an existing one) → commit the runtime session via
+`CreateSessionFromDraft` → persist the binding. The
 persisted binding is REQUIRED for a managed session: a store failure rolls
-the whole creation back (in-memory session removed, fresh tree released; the
+the whole creation back (in-memory session removed, freshly provisioned tree
+released — adopted trees are never touched; the
 created branch is kept — no path ever deletes branches). Lazy restore and
 `WorkspacePathFor` resolve the execution path from the stored binding — never
 from the ambient active-project state. A managed session forks only through
@@ -215,10 +226,19 @@ explicit restore failure. A managed restore NEVER falls back to the project
 checkout, and without an ensurer configured it fails closed.
 
 **Managed deletion.** `DeleteSession`/`DeleteSessionWithOptions` release the
-session-owned tree BEFORE any session state is removed, in this order: join
+session's managed tree BEFORE any session state is removed, in this order: join
 the running task (`CancelTask` cancels and waits, so the task's final writes
 are visible to the dirty recheck), stop the session terminal (its shell's
-cwd lives inside the tree), then release through `worktrees.Owner` — the
+cwd lives inside the tree), then run the [count remaining owners → own-row
+removal → release] protocol (`CountManagedWorktreeSessions`; while another
+row — live or archived — still binds the tree, the release is skipped and the
+deleting session's own row is removed inside the same critical section, so a
+concurrent co-owner deletion observes it gone and performs the release —
+two simultaneous deletions of the last two owners can never both skip; the
+[count → release] protocol shares the critical section with the adoption
+commit, so a binding committed concurrently is either counted or rolled back
+— ADR-082), then release
+through `worktrees.Owner` — the
 primitives recheck dirty/lock state at removal time, never from a stale
 snapshot. A dirty tree without `confirm_uncommitted_loss`, or a locked tree
 without `unlock_locked_tree`, fails with `*SessionDeleteBlockedError` and the
@@ -701,6 +721,42 @@ User clicks "Cancel"
           → emit task_cancelled
 ```
 
+`CancelTask` cancels the run's context and waits up to `Manager.stopTimeout`
+(10 s) for the task goroutine to settle. A well-behaved goroutine settles well
+within that (the ctx cancellation aborts an in-flight LLM request and, via the
+per-tool watchdog, every in-flight tool). If the deadline expires the manager
+calls `forceTerminateStuckTask`, which durably terminalizes the task and emits
+the single `task_cancelled` + agent metrics:
+
+- **One terminal emission per run.** A `terminalEmitted` flag on the `Session`
+  (reset when a NEW task launches, not on settle) is claimed by whichever path
+  emits first — the forced path or the settling goroutine's own
+  `emitTaskCancelledUnlessShuttingDown`. So a stuck goroutine that finally
+  settles after a forced termination, or a repeated Stop click, cannot emit a
+  second `task_cancelled` with zeroed step counters over the run's real metrics.
+- **Shutdown wins.** Under `m.shuttingDown` the forced path neither persists nor
+  emits, mirroring the goroutine's own terminal path, so a Stop racing app
+  shutdown leaves the task `in_progress` and resumable.
+- The session is deliberately NOT deactivated by the forced path (the goroutine
+  really is still running), so `ActiveSessions` keeps listing it and the quit
+  close guard flags it as **hung** — `stopRequestedAt` is recorded only by a
+  **Stop** (never by a cooperative pause, which a long LLM call can legitimately
+  delay) and `Hung` is set once `hungSessionThreshold` (10 s) elapses unanswered,
+  so the exit modal can label that session "not responding" (see
+  [../contracts/event-catalog.md](../contracts/event-catalog.md) `app:exit_requested`).
+- A live message the user sends into that window — while the forced-cancelled
+  goroutine is still settling — arrived AFTER the cancel was reported, so it
+  belongs to the **next** task. The settling goroutine's `deactivateSessionTask`
+  therefore KEEPS it queued (`liveActionNone` semantics) instead of discarding it
+  with the dead run, so the follow-up does not silently vanish. A plain
+  (non-forced) user cancel still discards the live queue.
+
+At **shutdown**, `stopBackground` drains the tracked blackboards under a single
+shared deadline (the same `stopTimeout` spent by the background-goroutine join).
+Once it expires the loop abandons the remaining persistence workers with a WARN
+(from the second pass on it words them "late-registered"; a first-pass abort —
+the join consumed the whole budget — keeps the plain wording).
+
 ### Session Pause / Resume / Nudge
 
 Pause/resume is a **session-level** control that applies uniformly to **all** tasks — goal and non-goal alike. There is no goal-specific pause; the universal pause signal (`Orchestrator.activePause`) is read by every conductor run's pause-checker at each step boundary. See [goal-mode.md § Pause is Session-Level](goal-mode.md#pause-is-session-level-universal-pause-signal).
@@ -715,7 +771,19 @@ User clicks "Pause"
       └─ Manager.PauseSession() — sets session.pausing (under session.mu,
           only when a task is active) + Orchestrator.PauseSession() flips
           the active pause signal
-      In-flight conductor run observes the signal at the next step boundary
+      In-flight conductor run observes the signal at the next step boundary,
+        or — while a TOOL call is in flight — at the next per-tool watchdog
+        tick: the executor's watchdog polls the pause checker mid-call, so a
+        long tool (bash_exec, a blocking delegate) reaches its pause
+        checkpoint promptly instead of waiting for the step boundary. The
+        pause is cooperative and mid-tool: the watchdog abandons the WAIT and
+        cancels the tool's child context (a cooperative request — an
+        uninterruptible or already-past-its-last-cancellation-check tool may
+        still run to completion), so the in-flight tool's side effects must be
+        treated as possibly occurred
+        (see the per-tool-call ceiling in [orchestration/executor.md](orchestration/executor.md)); a paused
+        run's checkpoint carries the flushed trajectory but NOT the in-flight
+        call's step.
         → executor returns ErrPaused → Conductor maps to ExecutionStatusPaused
         → persistTaskOutcome: pbb.PauseTask() (task persisted as "paused")
         → emit session_paused (UI unlocks input; shows Resume + Stop)
@@ -892,11 +960,89 @@ execution state. The guard runs on the backend (authoritative); the frontend
 also disables the fork button preemptively from the row's derived status (any
 non-idle status — active, paused, failed, or pending — is busy).
 
+### Session Promotion (CHAT → CODE project)
+
+A CHAT (No Project) session can be promoted into a CODE project with that
+single session in it. This is a TRANSFORM, not a copy: the session keeps its
+identity (id) and every artifact keyed by it — messages, tasks with their
+steps/facts/attachments/trajectory/goal/E2S state, MCP mentions, terminal
+history, work directories, review, frontend bookmarks — while its owner
+changes and its on-disk state moves into the destination project's layout.
+
+```
+User clicks "Promote to project" (FolderOpen icon) on a CHAT SessionList row
+  → Frontend: PromoteSessionDialog (name pre-filled with the session's name)
+      → promoteSessionToProject(id, name) → RPC PromoteSessionToProject
+        (action rendered ONLY when session.project_id == __no_project__;
+         busy-gated from the row's derived status, same rule as fork)
+  → Backend: FrontendAPI.PromoteSessionToProject(sessionID, projectName)
+      ├─ Guards: store.LoadSession → owner == __no_project__;
+      │   store.GetUnfinishedTask → nil (fork's exact rule)
+      ├─ projectManager.CreateProject(name, "") — INTERNAL workspace
+      ├─ stopSessionTerminal(id)   (PTY cwd sits inside the tree being moved;
+      │   when a live PTY was stopped, the RPC emits session:<id>:terminal_exited —
+      │   the ONE explicit-stop exception to the terminal manager's silent rule,
+      │   so the surviving xterm instance resurrects the shell in the promoted
+      │   workspace instead of sitting frozen on the dead PTY)
+      ├─ manager.EvictSession(id)  (close log/dump handles, purge trackers;
+      │   refuses an active task or in-flight compaction; waits out any
+      │   in-flight lazy restore so it cannot re-insert the session)
+      ├─ manager.ReserveRestores(id) — parks NEW lazy restores for the whole
+      │   evict → move → commit window; a parked GetSession restarts from
+      │   scratch after the release, so it can never rebuild the session from
+      │   the pre-commit store state or recreate the undo's source directory
+      ├─ manager.MoveSessionStorage(id, __no_project__, dst) — two renames
+      │   on one filesystem:
+      │     projects/__no_project__/<sid>/        → projects/<dst>/<sid>/
+      │     projects/<dst>/<sid>/workspace/       → projects/<dst>/Workspace/
+      │   (missing source dir is not an error — a never-materialized session
+      │    has nothing to move; a non-empty destination Workspace is refused)
+      ├─ store.PromoteSessionToProject — ONE transaction:
+      │   UPDATE sessions SET project_id = dst, archived = 0 (owner ==
+      │   __no_project__ predicate doubles as the existence check) +
+      │   rewrite persisted metadata path prefixes (image attachments)
+      │   old session-dir/workspace → new, raw and JSON-escaped forms,
+      │   longest prefix first; free message text is NOT rewritten
+      └─ Best-effort tail: saved-session pointers swap (dst → session,
+          __no_project__ → cleared) + fail-soft `git init` in the promoted
+          Workspace (skipped when .git exists, Warn and continue on failure)
+  → Frontend: useProjectSwitchState(project.id) — lands in the new CODE
+      project with the promoted session active; the session's next lazy
+      restore rebuilds the orchestrator WITHOUT NoProjectMode (derived from
+      project_id) against the new workspace
+```
+
+Compensation: any failure inside the mutation core restores the prior state —
+the inverse file move (`UndoMoveSessionStorage`) runs only when the forward
+move completed, and the fresh project is deleted only once the files are
+verifiably back home (the undo succeeded and the project tree demonstrably
+holds no session directory — a failed in-move rollback looks the same to the
+gate). When the undo fails, nothing is deleted: the fresh project row and its
+directory stay in place for manual recovery and an Error names the paths — a
+leftover project the user can see, never silently lost session files.
+
+Invariants:
+- The session's identity never changes; only `sessions.project_id` (and the
+  archived flag, cleared) is rewritten, so every session-keyed artifact
+  survives untouched.
+- Machine-resolved path references (image attachment paths in message
+  metadata) follow the files; historical message TEXT keeps its original
+  absolute paths by design — the agent re-resolves stale paths on contact.
+- `NoProjectMode` is never persisted, so flipping `project_id` alone restores
+  the full CODE toolset at the next orchestrator build; the vector index for
+  the new project comes up lazily on project activation.
+- The promoted session lives and dies with its project (the sessions FK
+  cascades on project deletion) — standard CODE semantics.
+- Promotion is settled-only and CHAT-only; CODE sessions and busy sessions
+  are refused fail-closed.
+
 ### Per-Session Terminal Lifetime
 
 The terminal manager owns at most one PTY per session ID. Switching the active session or project does not stop that PTY: the frontend keeps one xterm instance per session, and `StartTerminal(sessionID)` treats an already-active PTY as a successful reattach. Input, resize, output events, and command history remain session-keyed, so concurrent terminal sessions do not cross streams.
 
 `StartTerminalInDir` is the explicit restart path: the requested working directory must be contained in the session workspace, then any existing PTY for that session is stopped and replaced. `StopTerminal` ends only the named session's PTY. Application shutdown calls the terminal manager's global stop through backend cleanup; terminal processes do not outlive the app.
+
+Session promotion is the one flow that stops a PTY whose session SURVIVES the stop: the session's xterm instance is keyed by the unchanged session ID and the terminal registry intentionally outlives project switches, so a silent stop would leave a frozen panel with no user-reachable restart. The promotion therefore emits `session:<id>:terminal_exited` right after stopping a live PTY — the sole explicit-stop exception to the manager's silent rule — which arms the same lazy resurrection a natural shell exit uses: the shell respawns in the promoted workspace on the session's next activation, scrollback preserved.
 
 ### Session Persistence
 

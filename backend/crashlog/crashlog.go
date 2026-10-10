@@ -35,6 +35,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -62,6 +63,12 @@ const (
 // const) so tests can shrink it; panic dumps are a few hundred KiB at most,
 // 4 MiB keeps several of them plus chatty native-library output.
 var maxStderrLogBytes int64 = 4 << 20
+
+// currentCapture is the process-wide capture installed by install(). It lets a
+// forced-exit path in another package (the desktop shutdown watchdog) run the
+// same clean-exit hooks main() runs on a normal return, without a handle to the
+// caller's capture. Nil until install() succeeds (or when capture is disabled).
+var currentCapture atomic.Pointer[Capture]
 
 // runRecord is the JSON payload of the liveness marker.
 type runRecord struct {
@@ -103,7 +110,13 @@ func Install(logDir string) (*Capture, error) {
 // side effects (fd redirection, default logger rewiring, signal handling) so
 // tests can exercise banner/marker/rotation logic inside the test process.
 func install(logDir string, redirect bool) (*Capture, error) {
-	if err := os.MkdirAll(logDir, 0o750); err != nil {
+	// MkdirAllReal: the logs directory is created as a chain of REAL
+	// directories — a dangling link, a non-directory component, or a link
+	// swapped into a created component fails capture closed for the run (the
+	// caller warns); an operator-symlinked logs dir resolves and keeps the
+	// fd 1/2 capture and the liveness marker inside the operator's chosen
+	// tree.
+	if err := safeio.MkdirAllReal(logDir, 0o750); err != nil {
 		return nil, fmt.Errorf("crashlog: creating log directory: %w", err)
 	}
 
@@ -120,7 +133,15 @@ func install(logDir string, redirect bool) (*Capture, error) {
 		slog.Warn("crashlog: failed to rotate oversized stderr log", "error", err)
 	}
 
-	file, err := safeio.OpenFile(filepath.Join(logDir, stderrLogName),
+	// OpenFileNoFollow: the fixed stderr.log path must not have the
+	// O_CREATE (and the fd 1/2 capture) redirected through a planted
+	// symlink — the post-open fstat of plain safeio.OpenFile would see the
+	// (regular) link target and pass. A symlink fails the open with ELOOP
+	// and disables capture for this run (fail closed). On Windows the
+	// safeio parity note applies — the final symlink is still resolved
+	// there — tempered by Windows requiring elevated/dev-mode rights to
+	// create symlinks.
+	file, err := safeio.OpenFileNoFollow(filepath.Join(logDir, stderrLogName),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("crashlog: opening stderr log: %w", err)
@@ -150,6 +171,9 @@ func install(logDir string, redirect bool) (*Capture, error) {
 	if err := c.writeMarker(); err != nil {
 		slog.Warn("crashlog: failed to write liveness marker", "error", err)
 	}
+	// Publish the capture so ForceExit (the forced-exit path in another
+	// package) can run the clean-exit hooks on a normal-return-less exit.
+	currentCapture.Store(c)
 	return c, nil
 }
 
@@ -184,6 +208,22 @@ func (c *Capture) LogExit(code int) {
 	_ = c.file.Sync()
 }
 
+// ForceExit runs the clean-exit hooks on the process-wide capture and exits
+// immediately: RemoveMarker (so the surviving marker cannot make the next
+// launch report this quit as an unclean shutdown) and LogExit (so the run ends
+// with its closing banner), then os.Exit(code). It is the forced-exit path —
+// the desktop shutdown watchdog's hard deadline — which cannot wait for the
+// normal main() return where those hooks otherwise run. Without it a legitimate
+// forced quit looks indistinguishable from a crash on the next launch.
+// Nil-tolerant: with no capture installed it simply exits.
+func ForceExit(code int) {
+	if c := currentCapture.Load(); c != nil {
+		c.RemoveMarker()
+		c.LogExit(code)
+	}
+	os.Exit(code)
+}
+
 // writeBanner records the run header: pid and build identify the process in
 // OS crash reports and let multiple runs be told apart in the append-only
 // file.
@@ -206,7 +246,13 @@ func (c *Capture) writeMarker() error {
 	if err != nil {
 		return fmt.Errorf("crashlog: encoding marker: %w", err)
 	}
-	if werr := os.WriteFile(c.markerPath, data, 0o640); werr != nil {
+	// WriteFileAtomic: the rename REPLACES the directory entry, so a
+	// symlink planted at the fixed marker path — including a DANGLING one,
+	// which stashPreviousMarker does not stash (its os.Stat reports
+	// ErrNotExist) — is replaced itself instead of being written through
+	// (which would create the link target outside ~/.c0wrk). The random-
+	// suffix staging file also leaves no plantable fixed temp path.
+	if werr := safeio.WriteFileAtomic(c.markerPath, data, 0o640); werr != nil {
 		return fmt.Errorf("crashlog: writing marker: %w", werr)
 	}
 	return nil

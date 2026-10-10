@@ -30,6 +30,11 @@ func newExitGuardFixture(active []session.ActiveSessionInfo) *exitGuardFixture {
 	f.app.activeSessionsFn = func() []session.ActiveSessionInfo { return f.active }
 	f.app.quitFn = func(context.Context) { f.quitCalls++ }
 	f.app.windowShowFn = func(context.Context) {}
+	// Geometry seams for captureWindowGeometry (the close guard snapshots
+	// the live window geometry on every pass now): the real wailsRuntime
+	// calls fatal on a context no live runtime owns.
+	f.app.windowGetSizeFn = func(context.Context) (int, int) { return 1400, 900 }
+	f.app.windowIsMaximisedFn = func(context.Context) bool { return false }
 	f.app.wailsEmit = func(eventName string, optionalData ...any) {
 		f.emitted = append(f.emitted, eventName)
 		if len(optionalData) > 0 {
@@ -155,5 +160,25 @@ func TestShouldPreventClose_UpdatePendingContext(t *testing.T) {
 	f3.app.ShouldPreventClose(context.Background())
 	if f3.payloads[0].UpdatePending {
 		t.Error("an expired update-quit marker must not carry update_pending=true")
+	}
+}
+
+// TestShouldPreventClose_PayloadCarriesHungFlag verifies that a session the
+// backend flagged as hung (a stop request that went unanswered) is
+// forwarded to the modal, so "quit anyway" is an informed choice. The guard
+// copies ActiveSessionInfo verbatim; this pins that the hung field survives.
+func TestShouldPreventClose_PayloadCarriesHungFlag(t *testing.T) {
+	f := newExitGuardFixture([]session.ActiveSessionInfo{
+		{ID: "sess-1", Name: "Stuck", Hung: true},
+	})
+
+	if !f.app.ShouldPreventClose(context.Background()) {
+		t.Fatal("expected close to be prevented with an active session")
+	}
+	if len(f.payloads) != 1 || len(f.payloads[0].Sessions) != 1 {
+		t.Fatalf("expected one session in the payload, got %+v", f.payloads)
+	}
+	if !f.payloads[0].Sessions[0].Hung {
+		t.Errorf("expected the hung flag to reach the modal payload, got %+v", f.payloads[0].Sessions[0])
 	}
 }

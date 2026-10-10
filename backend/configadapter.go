@@ -10,7 +10,9 @@ import (
 	"github.com/v0lka/c0wrk/backend/providerauth"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/proxy"
+	"github.com/v0lka/sp4rk/agent"
 	sdktools "github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // derefBool safely dereferences a *bool, defaulting to true when nil.
@@ -19,6 +21,35 @@ func derefBool(b *bool) bool {
 		return true
 	}
 	return *b
+}
+
+// globLimitsExplicit reports whether the resolved glob config is explicitly
+// customized: at least one of the three knobs differs from sp4rk's default.
+// ApplyDefaults materializes absent *int knobs to their defaults, so
+// post-defaults a non-default value can only come from an explicitly set knob
+// — including the explicit "0 disables". A knob explicitly set to its default
+// value is indistinguishable from an absent one here, but both resolve to the
+// identical tool, so the collapse is observationally irrelevant; the flag only
+// gates the all-zero case, where the no-fallback constructor
+// (NewGlobToolWithLimitsOverride) is required so the documented "0 disables"
+// on all three knobs is not silently replaced by the defaults.
+func globLimitsExplicit(maxEntries, maxResults, timeoutSec int) bool {
+	def := builtins.DefaultGlobLimits()
+	return maxEntries != def.MaxEntries ||
+		maxResults != def.MaxResults ||
+		timeoutSec != int(def.Timeout/time.Second)
+}
+
+// derefInt dereferences a *int, returning def when the pointer is nil. The
+// *int config knobs distinguish an absent key (nil → default) from an explicit
+// zero ("0 disables"); config normally flows through ApplyDefaults (which
+// materializes the default), but a programmatically built config may bypass it,
+// so the deref is defensive.
+func derefInt(p *int, def int) int {
+	if p == nil {
+		return def
+	}
+	return *p
 }
 
 // loadModelProfilesCatalog loads the full model-profile profile catalog (predefined ∪
@@ -351,17 +382,33 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 		ToolLimits: core.BuilderToolLimitsConfig{
 			ReadDefaultLines:    cfg.ToolLimits.ReadDefaultLines,
 			WebSearchMaxResults: cfg.ToolLimits.WebSearchMaxResults,
-			PerToolTruncation:   convertTruncationMap(cfg.ToolLimits.PerToolTruncation),
+			GlobMaxEntries:      derefInt(cfg.ToolLimits.GlobMaxEntries, builtins.DefaultGlobLimits().MaxEntries),
+			GlobMaxResults:      derefInt(cfg.ToolLimits.GlobMaxResults, builtins.DefaultGlobLimits().MaxResults),
+			GlobLimitsExplicit: globLimitsExplicit(
+				derefInt(cfg.ToolLimits.GlobMaxEntries, builtins.DefaultGlobLimits().MaxEntries),
+				derefInt(cfg.ToolLimits.GlobMaxResults, builtins.DefaultGlobLimits().MaxResults),
+				derefInt(cfg.Timeouts.GlobTimeout, int(builtins.DefaultGlobLimits().Timeout/time.Second))),
+			PerToolTruncation: convertTruncationMap(cfg.ToolLimits.PerToolTruncation),
 		},
 		Timeouts: core.BuilderTimeoutsConfig{
-			BashMaxTimeout:       cfg.Timeouts.BashMaxTimeout,
-			BashWaitDelay:        cfg.Timeouts.BashWaitDelay,
-			RipgrepTimeout:       cfg.Timeouts.RipgrepTimeout,
-			WebFetchTimeout:      cfg.Timeouts.WebFetchTimeout,
-			WebFetchProxyTimeout: cfg.Timeouts.WebFetchProxyTimeout,
-			WebFetchRetries:      cfg.Timeouts.WebFetchRetries,
-			WebSearchTimeout:     cfg.Timeouts.WebSearchTimeout,
-			LLMRequestTimeout:    cfg.Timeouts.LLMRequestTimeout,
+			BashMaxTimeout:  cfg.Timeouts.BashMaxTimeout,
+			BashWaitDelay:   cfg.Timeouts.BashWaitDelay,
+			RipgrepTimeout:  cfg.Timeouts.RipgrepTimeout,
+			GlobTimeout:     derefInt(cfg.Timeouts.GlobTimeout, int(builtins.DefaultGlobLimits().Timeout/time.Second)),
+			ToolCallTimeout: derefInt(cfg.Timeouts.ToolCallTimeout, int(agent.DefaultToolCallTimeout/time.Second)),
+			// The ceiling's exempt tool-name set: nil (knob absent — the
+			// normal load path, since ApplyDefaults deliberately leaves it
+			// nil) threads through and keeps sp4rk's built-in default set,
+			// resolved at execution time so it can track sp4rk updates and is
+			// never persisted into config.yaml by a save; an explicit list —
+			// including empty ("no exemptions") — replaces it wholesale in
+			// the executor setter.
+			ToolCallTimeoutExemptTools: []string(cfg.Timeouts.ToolCallTimeoutExemptTools),
+			WebFetchTimeout:            cfg.Timeouts.WebFetchTimeout,
+			WebFetchProxyTimeout:       cfg.Timeouts.WebFetchProxyTimeout,
+			WebFetchRetries:            cfg.Timeouts.WebFetchRetries,
+			WebSearchTimeout:           cfg.Timeouts.WebSearchTimeout,
+			LLMRequestTimeout:          cfg.Timeouts.LLMRequestTimeout,
 			// Adaptive request budget kill-switch (ADR-071 D11). derefBool
 			// defaults a nil (unset — a programmatic config that bypassed
 			// ApplyDefaults) to the feature's enabled-by-default posture.
