@@ -458,7 +458,10 @@ func (s *SQLiteSessionStore) createTables() error {
 		s.log().Warn("failed to normalize session_messages.created_at to UTC RFC3339", "error", err)
 	}
 
-	return s.migrateWorkspaceBindings()
+	if err := s.migrateWorkspaceBindings(); err != nil {
+		return err
+	}
+	return s.migrateSharedManagedWorktrees()
 }
 
 // columnExists checks whether a column exists in a table using PRAGMA table_info.
@@ -876,8 +879,12 @@ func (s *SQLiteSessionStore) ReplaceStepTodoUpdate(ctx context.Context, sessionI
 		}
 	}
 
-	if err := s.insertMessage(ctx, conn, msg); err != nil {
-		return err
+	// Assign to the OUTER err (no :=): the deferred ROLLBACK above observes
+	// this variable, so an INSERT failure must land here or the connection is
+	// returned to the pool with the BEGIN IMMEDIATE transaction still open.
+	if insertErr := s.insertMessage(ctx, conn, msg); insertErr != nil {
+		err = insertErr // the deferred ROLLBACK observes the OUTER err variable
+		return insertErr
 	}
 
 	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {

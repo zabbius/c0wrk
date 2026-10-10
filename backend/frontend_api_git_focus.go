@@ -24,6 +24,7 @@
 package backend
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -146,13 +147,27 @@ func (f *FrontendAPI) gitFocusPathSnapshot() string {
 	return f.gitFocusPath
 }
 
+// listWorktreesBounded lists the project's worktrees under the same 30s
+// budget every other local git invocation gets (gitCmdTimeout). f.ctx() is
+// the application context — cancelled only at app shutdown and carrying no
+// deadline — and the worktree primitives apply no internal bound, so a
+// wedged git (stuck worktree metadata, hung filesystem) would otherwise
+// hang the Git-panel RPCs indefinitely (review [162]).
+func (f *FrontendAPI) listWorktreesBounded(projectPath string) ([]workspace.WorktreeInfo, error) {
+	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
+	defer cancel()
+	return f.worktreeOwner().List(ctx, projectPath)
+}
+
 // SetGitPanelFocus switches the Git panel's focus target. An empty path
 // resets the focus to the default (the project checkout); a non-empty path
 // must be a worktree of the active project's repository — the checkout
 // itself, an app-managed session tree, or an external linked tree — and is
 // validated against the live `git worktree list` before being stored.
 // Emits git:status_changed for the new target so the panel refreshes its
-// status/branch/branch-list from the focused tree. Returns an error when no
+// status/branch/branch-list from the focused tree, and moves the vector
+// registry's focus to the same root so the user-facing index identity
+// follows the panel (focusVectorRoots; fail-soft). Returns an error when no
 // project is active, the project is No Project, the listing fails, or the
 // path is not a worktree of the active project.
 func (f *FrontendAPI) SetGitPanelFocus(worktreePath string) error {
@@ -163,6 +178,10 @@ func (f *FrontendAPI) SetGitPanelFocus(worktreePath string) error {
 	target := strings.TrimSpace(worktreePath)
 	if target == "" {
 		f.setGitFocusPath("")
+		// The reset lands on the default target — the project checkout —
+		// NOT LeaveFocus: the visible index identity follows the checkout
+		// rather than going blank.
+		f.focusVectorRoots(projectPath)
 		f.emitGitStatusChanged(projectPath)
 		return nil
 	}
@@ -170,7 +189,7 @@ func (f *FrontendAPI) SetGitPanelFocus(worktreePath string) error {
 	if err != nil {
 		return fmt.Errorf("invalid focus path: %w", err)
 	}
-	trees, err := f.worktreeOwner().List(f.ctx(), projectPath)
+	trees, err := f.listWorktreesBounded(projectPath)
 	if err != nil {
 		return fmt.Errorf("listing worktrees of the active project: %w", err)
 	}
@@ -179,8 +198,23 @@ func (f *FrontendAPI) SetGitPanelFocus(worktreePath string) error {
 		return fmt.Errorf("%w: %s is not a worktree of the active project", workspace.ErrWorktreeNotLinked, abs)
 	}
 	f.setGitFocusPath(entry.Path)
+	f.focusVectorRoots(entry.Path)
 	f.emitGitStatusChanged(entry.Path)
 	return nil
+}
+
+// focusVectorRoots re-points the vector registry at the new Git-panel focus
+// root so the user-facing index identity (status RPC, SearchVectorStore,
+// manual reindex, the vector_index:status stream) follows the panel focus —
+// the documented "USER routing resolves the Git-panel focus root" contract.
+// Fail-soft, mirroring switchProjectSetupVector: a focus that cannot be
+// indexed (manager factory still unwired during the startup race,
+// unresolvable root) is logged at Warn and never fails the git RPC — the
+// vector_index:status stream carries the actionable state instead.
+func (f *FrontendAPI) focusVectorRoots(root string) {
+	if err := f.vectorRootsRegistry().ApplyFocus(canonicalRoot(root)); err != nil {
+		f.log().Warn("vector focus unavailable for git panel target", "root", root, "error", err)
+	}
 }
 
 // GetGitPanelFocus returns the resolved focus target with its
@@ -193,7 +227,7 @@ func (f *FrontendAPI) GetGitPanelFocus() (GitPanelFocusInfo, error) {
 		return GitPanelFocusInfo{}, err
 	}
 	focus := f.resolveGitFocusRoot(projectPath)
-	trees, err := f.worktreeOwner().List(f.ctx(), projectPath)
+	trees, err := f.listWorktreesBounded(projectPath)
 	if err != nil {
 		return GitPanelFocusInfo{}, fmt.Errorf("listing worktrees of the active project: %w", err)
 	}
@@ -237,7 +271,7 @@ func (f *FrontendAPI) ListProjectWorktrees() ([]GitWorktree, error) {
 	if err != nil {
 		return nil, err
 	}
-	trees, err := f.worktreeOwner().List(f.ctx(), projectPath)
+	trees, err := f.listWorktreesBounded(projectPath)
 	if err != nil {
 		return nil, fmt.Errorf("listing worktrees of the active project: %w", err)
 	}
@@ -270,11 +304,12 @@ func (f *FrontendAPI) ListProjectWorktrees() ([]GitWorktree, error) {
 	return out, nil
 }
 
-// managedTreeOwner resolves the session that owns the managed worktree
-// name, if a live session claims it. The session's persisted binding is the
-// ownership record (one session per managed tree, enforced by the partial
-// unique index); an unresolvable listing is non-fatal — ownership metadata
-// is display-only enrichment.
+// managedTreeOwner resolves the session bound to the managed worktree name,
+// if any session claims it — since the shared-tree revision of ADR-080
+// several sessions may execute in one tree, and this returns one of them
+// (the listing order's first match). The session's persisted binding is the
+// ownership record; an unresolvable listing is non-fatal — ownership
+// metadata is display-only enrichment.
 func (f *FrontendAPI) managedTreeOwner(projectID, worktreeName string) (sessionInfoSnapshot, bool) {
 	for _, s := range f.projectSessions(projectID) {
 		if b := s.WorkspaceBinding; b != nil && b.Kind == session.WorkspaceManagedWorktree && b.WorktreeName == worktreeName {
@@ -295,7 +330,7 @@ type sessionInfoSnapshot struct {
 // metadata; nil when no manager is wired (ownership enrichment degrades to
 // absent, never fails the RPC).
 func (f *FrontendAPI) projectSessions(projectID string) []session.SessionInfo {
-	if f.app == nil {
+	if f.appCell() == nil {
 		return nil
 	}
 	mgr := f.app.Manager()

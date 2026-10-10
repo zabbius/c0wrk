@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -357,6 +358,112 @@ func TestToBuilderConfig_WebFetchTimeouts(t *testing.T) {
 	}
 	if got := bc.Timeouts.WebFetchRetries; got != 3 {
 		t.Errorf("WebFetchRetries = %d, want 3", got)
+	}
+}
+
+// TestToBuilderConfig_GlobLimitsAndToolCallTimeout verifies the config→builder
+// mapping for the glob budgets and the tool-call ceiling: toolLimits
+// globMaxEntries/globMaxResults and timeouts globTimeout/toolCallTimeout flow
+// into BuilderToolLimitsConfig / BuilderTimeoutsConfig, from where core builds
+// the glob tool's GlobLimits and threads the timeout to the executors.
+func TestToBuilderConfig_GlobLimitsAndToolCallTimeout(t *testing.T) {
+	cfg := &config.Config{}
+	config.ApplyDefaults(cfg)
+
+	bc := ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+	if got := bc.ToolLimits.GlobMaxEntries; got != 500000 {
+		t.Errorf("GlobMaxEntries default = %d, want 500000", got)
+	}
+	if got := bc.ToolLimits.GlobMaxResults; got != 10000 {
+		t.Errorf("GlobMaxResults default = %d, want 10000", got)
+	}
+	if got := bc.Timeouts.GlobTimeout; got != 30 {
+		t.Errorf("GlobTimeout default = %d, want 30", got)
+	}
+	if got := bc.Timeouts.ToolCallTimeout; got != 300 {
+		t.Errorf("ToolCallTimeout default = %d, want 300", got)
+	}
+	if bc.ToolLimits.GlobLimitsExplicit {
+		t.Error("a fully-unset glob config must keep GlobLimitsExplicit=false (zero-struct→defaults fallback)")
+	}
+
+	ptr := func(v int) *int { return &v }
+	cfg.ToolLimits.GlobMaxEntries = ptr(123)
+	cfg.ToolLimits.GlobMaxResults = ptr(7)
+	cfg.Timeouts.GlobTimeout = ptr(11)
+	cfg.Timeouts.ToolCallTimeout = ptr(42)
+
+	bc = ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+	if got := bc.ToolLimits.GlobMaxEntries; got != 123 {
+		t.Errorf("GlobMaxEntries = %d, want 123", got)
+	}
+	if got := bc.ToolLimits.GlobMaxResults; got != 7 {
+		t.Errorf("GlobMaxResults = %d, want 7", got)
+	}
+	if got := bc.Timeouts.GlobTimeout; got != 11 {
+		t.Errorf("GlobTimeout = %d, want 11", got)
+	}
+	if got := bc.Timeouts.ToolCallTimeout; got != 42 {
+		t.Errorf("ToolCallTimeout = %d, want 42", got)
+	}
+	if !bc.ToolLimits.GlobLimitsExplicit {
+		t.Error("an explicitly customized glob config must set GlobLimitsExplicit=true")
+	}
+
+	// An explicit 0 must mean "disabled/no budget", NOT the default — the
+	// documented contract that a plain int (which cannot tell absent from 0)
+	// could not honor. *int + ApplyDefaults (nil = default) make it reachable.
+	cfg.ToolLimits.GlobMaxEntries = ptr(0)
+	cfg.ToolLimits.GlobMaxResults = ptr(0)
+	cfg.Timeouts.GlobTimeout = ptr(0)
+	cfg.Timeouts.ToolCallTimeout = ptr(0)
+
+	bc = ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+	if bc.ToolLimits.GlobMaxEntries != 0 || bc.ToolLimits.GlobMaxResults != 0 {
+		t.Errorf("explicit 0 glob budgets must reach the builder as 0, got entries=%d results=%d",
+			bc.ToolLimits.GlobMaxEntries, bc.ToolLimits.GlobMaxResults)
+	}
+	if bc.Timeouts.GlobTimeout != 0 || bc.Timeouts.ToolCallTimeout != 0 {
+		t.Errorf("explicit 0 timeouts must reach the builder as 0, got glob=%d toolCall=%d",
+			bc.Timeouts.GlobTimeout, bc.Timeouts.ToolCallTimeout)
+	}
+	if !bc.ToolLimits.GlobLimitsExplicit {
+		t.Error("an explicitly all-zero glob config must set GlobLimitsExplicit=true so the no-fallback constructor honors the zeros verbatim")
+	}
+}
+
+// TestToBuilderConfig_ToolCallTimeoutExemptTools verifies the exempt tool-name
+// set for the per-tool-call ceiling: an absent knob stays nil through
+// ApplyDefaults AND the adapter (sp4rk then applies its own built-in set at
+// execution time — materializing the default here would persist it into
+// config.yaml on the first save and freeze it against sp4rk updates), an
+// explicit list threads through verbatim, and an explicit empty list survives
+// as "no exemptions" (a non-nil empty slice) instead of collapsing into the
+// default.
+func TestToBuilderConfig_ToolCallTimeoutExemptTools(t *testing.T) {
+	cfg := &config.Config{}
+	config.ApplyDefaults(cfg)
+	if cfg.Timeouts.ToolCallTimeoutExemptTools != nil {
+		t.Errorf("ApplyDefaults materialized the exempt set (%v); the absent knob must stay nil so a config save never freezes today's default into config.yaml",
+			cfg.Timeouts.ToolCallTimeoutExemptTools)
+	}
+
+	bc := ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+	if bc.Timeouts.ToolCallTimeoutExemptTools != nil {
+		t.Errorf("absent knob must thread through as nil (sp4rk resolves its built-in default at execution time), got %v",
+			bc.Timeouts.ToolCallTimeoutExemptTools)
+	}
+
+	cfg.Timeouts.ToolCallTimeoutExemptTools = config.YAMLNilAwareList{"my_slow_mcp_tool", "ask_user"}
+	bc = ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+	if want := []string{"my_slow_mcp_tool", "ask_user"}; !slices.Equal(bc.Timeouts.ToolCallTimeoutExemptTools, want) {
+		t.Errorf("explicit exempt set = %v, want %v", bc.Timeouts.ToolCallTimeoutExemptTools, want)
+	}
+
+	cfg.Timeouts.ToolCallTimeoutExemptTools = config.YAMLNilAwareList{}
+	bc = ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+	if bc.Timeouts.ToolCallTimeoutExemptTools == nil || len(bc.Timeouts.ToolCallTimeoutExemptTools) != 0 {
+		t.Errorf("explicit empty exempt set = %#v, want a non-nil empty slice (\"no exemptions\")", bc.Timeouts.ToolCallTimeoutExemptTools)
 	}
 }
 

@@ -53,6 +53,9 @@ type Config struct {
 	Search     SearchConfig     `yaml:"search"`
 	ToolLimits ToolLimitsConfig `yaml:"toolLimits"`
 	Timeouts   TimeoutsConfig   `yaml:"timeouts"`
+	// Shutdown bounds the application teardown so that a stuck goroutine can
+	// never leave the process alive on quit. See ShutdownConfig.
+	Shutdown ShutdownConfig `yaml:"shutdown"`
 	// ShellExec overrides the shell-execution tool's launch shape
 	// (bash_exec on Unix, posh_exec on Windows) and declares the shell the
 	// command text is written in. Zero value = built-in launch shape; load
@@ -2230,6 +2233,13 @@ type ToolLimitsConfig struct {
 	// Search limits
 	WebSearchMaxResults int `yaml:"webSearchMaxResults"` // max web search results (default: 5)
 
+	// Glob limits (runaway-walk protection). Together they make a single glob
+	// walk bounded so a symlink loop or an enormous directory tree can neither
+	// hang the tool nor exhaust memory. *int: an absent key (nil) takes the
+	// default; an explicit 0 disables the respective budget.
+	GlobMaxEntries *int `yaml:"globMaxEntries"` // max filesystem entries visited per glob walk before abort (nil = default 500000; 0 = no entry budget)
+	GlobMaxResults *int `yaml:"globMaxResults"` // max matching paths collected per glob walk before abort (nil = default 10000; 0 = unlimited)
+
 	// Per-tool Stage 1 truncation defaults (line/byte-based, applied before token budget).
 	// If omitted for a tool, no Stage 1 truncation is applied.
 	PerToolTruncation map[string]ToolTruncationConfig `yaml:"perToolTruncation"`
@@ -2242,21 +2252,77 @@ type ToolTruncationConfig struct {
 }
 
 // TimeoutsConfig holds configurable timeout values for various operations.
+// YAMLNilAwareList is a []string whose nil state survives the Save→Load
+// round-trip: yaml.v3 marshals a plain nil []string as `[]`, which would
+// reload as an explicit empty list — for Timeouts.ToolCallTimeoutExemptTools
+// that would silently turn "follow sp4rk's built-in exempt set" (nil) into
+// "no exemptions" (non-nil empty) on the first config save. MarshalYAML
+// renders nil as YAML null (which unmarshals back to nil) and passes every
+// non-nil slice — including the explicit empty one — through verbatim.
+type YAMLNilAwareList []string
+
+func (l YAMLNilAwareList) MarshalYAML() (interface{}, error) {
+	if l == nil {
+		return nil, nil
+	}
+	return []string(l), nil
+}
+
 type TimeoutsConfig struct {
-	BashMaxTimeout           int `yaml:"bashMaxTimeout"`           // seconds, default: 120
-	BashWaitDelay            int `yaml:"bashWaitDelay"`            // seconds, default: 5
-	RipgrepTimeout           int `yaml:"ripgrepTimeout"`           // seconds, default: 60
-	WebFetchTimeout          int `yaml:"webFetchTimeout"`          // seconds, default: 30
-	WebFetchProxyTimeout     int `yaml:"webFetchProxyTimeout"`     // seconds, default: 30 — per-attempt web fetch timeout used when the proxy is enabled
-	WebFetchRetries          int `yaml:"webFetchRetries"`          // retry count (not seconds) for failed web fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when the proxy is on), default: 2
-	WebSearchTimeout         int `yaml:"webSearchTimeout"`         // seconds, default: 30
-	PersistenceTimeout       int `yaml:"persistenceTimeout"`       // seconds, default: 5
-	LLMRequestTimeout        int `yaml:"llmRequestTimeout"`        // seconds; the main chat loop. Under the adaptive budget (ADR-071): >0 is a FIXED, never-escalated override, 0 (the default) means "no opinion" and the trained per-model budgets govern; with the adaptive budget disabled it keeps the legacy fixed semantics (0 behaves as 600).
-	ServiceLLMRequestTimeout int `yaml:"serviceLLMRequestTimeout"` // seconds, default: 600 (10 min) — one-shot service LLM requests (session title, commit message, prompt optimization); one budget for the whole client exchange incl. auto-retry re-sends
-	GitCommitTimeout         int `yaml:"gitCommitTimeout"`         // seconds, default: 300 (5 min) — git commit spawn (rev-parse and other quick git probes keep the fast 30s timeout)
+	BashMaxTimeout  int  `yaml:"bashMaxTimeout"`  // seconds, default: 120
+	BashWaitDelay   int  `yaml:"bashWaitDelay"`   // seconds, default: 5
+	RipgrepTimeout  int  `yaml:"ripgrepTimeout"`  // seconds, default: 60
+	GlobTimeout     *int `yaml:"globTimeout"`     // seconds; wall-clock budget for a single glob walk (nil = default 30; 0 = no timeout)
+	ToolCallTimeout *int `yaml:"toolCallTimeout"` // seconds; ceiling for a SINGLE tool call in the ReAct loop, applied to the main and every subagent executor (nil = default 300 (5 min); 0 = disabled)
+	// ToolCallTimeoutExemptTools replaces the ceiling's exempt tool-NAME set (Conductor/executor loops only — the experimental E2S watchdog keeps its own narrowed built-in exemption set)
+	// (not a capability group). Absent (nil) keeps sp4rk's built-in default —
+	// ask_user, declare_plan, propose_goal, delegate, execute_plan (see
+	// agent.DefaultToolCallTimeoutExemptTools); an explicit list replaces it
+	// wholesale, so an operator can exempt long-running tools the default set
+	// does not know (e.g. an MCP-backed tool with no internal timeout). An
+	// explicit empty list means "no exemptions". The absent default is
+	// resolved from sp4rk at runtime and deliberately never persisted (a save
+	// must not freeze it); a stored list identical to the built-in default may
+	// be a leftover from an older build's save — deleting the key re-follows
+	// the built-in set. The YAMLNilAwareList type preserves the
+	// absent-vs-empty distinction through Save: yaml.v3 would render a plain
+	// nil []string as `[]` (explicit "no exemptions" on reload), so nil is
+	// marshaled as YAML null instead.
+	ToolCallTimeoutExemptTools YAMLNilAwareList `yaml:"toolCallTimeoutExemptTools"`
+	WebFetchTimeout            int              `yaml:"webFetchTimeout"`          // seconds, default: 30
+	WebFetchProxyTimeout       int              `yaml:"webFetchProxyTimeout"`     // seconds, default: 30 — per-attempt web fetch timeout used when the proxy is enabled
+	WebFetchRetries            int              `yaml:"webFetchRetries"`          // retry count (not seconds) for failed web fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when the proxy is on), default: 2
+	WebSearchTimeout           int              `yaml:"webSearchTimeout"`         // seconds, default: 30
+	PersistenceTimeout         int              `yaml:"persistenceTimeout"`       // seconds, default: 5
+	LLMRequestTimeout          int              `yaml:"llmRequestTimeout"`        // seconds; the main chat loop. Under the adaptive budget (ADR-071): >0 is a FIXED, never-escalated override, 0 (the default) means "no opinion" and the trained per-model budgets govern; with the adaptive budget disabled it keeps the legacy fixed semantics (0 behaves as 600).
+	ServiceLLMRequestTimeout   int              `yaml:"serviceLLMRequestTimeout"` // seconds, default: 600 (10 min) — one-shot service LLM requests (session title, commit message, prompt optimization); one budget for the whole client exchange incl. auto-retry re-sends
+	GitCommitTimeout           int              `yaml:"gitCommitTimeout"`         // seconds, default: 300 (5 min) — git commit spawn (rev-parse and other quick git probes keep the fast 30s timeout)
 	// AdaptiveBudget configures the adaptive per-model LLM request budget
 	// (ADR-071). See AdaptiveBudgetConfig.
 	AdaptiveBudget AdaptiveBudgetConfig `yaml:"adaptive_budget"`
+}
+
+// ShutdownConfig bounds the application teardown. Every teardown step is
+// individually bounded (task-goroutine joins, background-goroutine joins,
+// blackboard persistence workers all share the manager's stopTimeout), but a
+// cancellation path that is broken somewhere can still, in principle, park the
+// main thread. The desktop layer therefore arms one hard watchdog over the
+// whole teardown: when it expires the process logs at Error and forces an exit,
+// so a silent "application shutdown: complete" that never appears (the app
+// beach-balls until it is killed) is impossible.
+type ShutdownConfig struct {
+	// HardDeadline is the total budget, in seconds, for the whole Shutdown
+	// teardown. When exceeded the desktop layer logs at Error and exits the
+	// process immediately. 0 / omitted = default 60.
+	//
+	// The default deliberately sits above the embedded local model's stop
+	// ceiling: the embedded-server stop is itself bounded but can legitimately
+	// take up to ~46 s when a quit races an in-flight cold load holding the
+	// supervisor gate. A hardDeadline shorter than that truncates that stop —
+	// the process still exits, but the detached llama-server may outlive it,
+	// exactly the one quit outcome the embedded teardown cannot otherwise
+	// produce. Lower it only if a short forced exit matters more than that.
+	HardDeadline int `yaml:"hardDeadline"`
 }
 
 // AdaptiveBudgetConfig holds the adaptive per-model LLM request budget
@@ -2937,15 +3003,21 @@ func Save(cfg *Config, path string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	// Write atomically: write to temp file, then rename
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
-		return fmt.Errorf("failed to write temp config file: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		// Clean up temp file on rename failure
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("failed to rename config file: %w", err)
+	// Write atomically via safeio: the temporary file carries a randomized
+	// name, so there is no plantable fixed "<path>.tmp" (a FIFO planted there
+	// used to block the write-open forever, and a symlink was followed into
+	// an arbitrary write target), and the final rename replaces a planted
+	// symlink at path itself instead of writing through it.
+	//
+	// The mode is an unconditional 0o600, deliberately NOT the historical
+	// 0o644: WriteFileAtomic publishes the staging file with an exact fchmod
+	// and no umask filtering (unlike the os.WriteFile staging write this file
+	// had before, which produced perm &^ umask), so a literal 0o644 would
+	// silently widen config.yaml to world-readable on hosts whose umask used
+	// to keep it tighter. The file carries provider API keys, so it is
+	// published owner-only regardless of the ambient umask.
+	if err := safeio.WriteFileAtomic(path, data, 0o600); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
 	}
 	return nil
 }

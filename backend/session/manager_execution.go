@@ -131,6 +131,9 @@ func (m *Manager) deactivateSessionTask(session *Session, action liveAction) []s
 	session.cancel = nil
 	session.done = nil
 	session.pausing = false
+	session.stopRequestedAt = time.Time{}
+	forceTerminated := session.forceTerminated
+	session.forceTerminated = false
 
 	if session.orchestrator == nil {
 		return nil
@@ -139,6 +142,15 @@ func (m *Manager) deactivateSessionTask(session *Session, action liveAction) []s
 	case liveActionFollowUp:
 		return session.orchestrator.TakeLiveUserMessages()
 	case liveActionDiscard:
+		// A force-terminated run (forceTerminateStuckTask) already emitted its
+		// terminal event while this goroutine was still stuck, so a live
+		// message queued since then arrived AFTER the cancel was reported and
+		// belongs to the NEXT task. Keep it queued (liveActionNone semantics)
+		// instead of discarding it together with the dead run — the user's
+		// follow-up must not silently vanish.
+		if forceTerminated {
+			return nil
+		}
 		session.orchestrator.DiscardLiveUserMessages()
 	}
 	return nil
@@ -718,6 +730,14 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 		session.mu.Unlock()
 		return SendFresh, ErrSessionArchived
 	}
+	// Same choke point for a session whose deletion has begun: DeleteSession
+	// tears the orchestrator and log handles down after setting the flag, so
+	// a message landing in that window must not launch a task against a
+	// session being dismantled.
+	if session.deleting {
+		session.mu.Unlock()
+		return SendFresh, fmt.Errorf("session %s is being deleted", id)
+	}
 	// Live-send: a message arriving while a task is already running is queued
 	// into the RUNNING request instead of starting a new one — the executor
 	// drains the queue at its next step boundary and delivers the text to the
@@ -802,6 +822,9 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 	// pause request (this is the resume/fresh-send intent).
 	session.active = true
 	session.pauseOwner = pauseOwnerNone
+	session.stopRequestedAt = time.Time{}
+	session.terminalEmitted = false
+	session.forceTerminated = false
 	doneCh := make(chan struct{})
 	session.done = doneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
@@ -1388,12 +1411,20 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	}
 
 	// Archived sessions are read-only: fail fast before touching the task store
-	// or restoring a blackboard. Mirrors the SendMessage guard.
+	// or restoring a blackboard. Mirrors the SendMessage guard. The deleting
+	// check is the same class: the compaction flow's auto-resume re-enters
+	// here after DeleteSession set the flag but before it removed the
+	// session — without this guard the resume would launch a ghost task
+	// against the session being torn down.
 	session.mu.Lock()
 	archived := session.Archived
+	deleting := session.deleting
 	session.mu.Unlock()
 	if archived {
 		return ErrSessionArchived
+	}
+	if deleting {
+		return fmt.Errorf("session %s is being deleted", id)
 	}
 
 	adapter := NewTaskStoreAdapter(ts)
@@ -1472,6 +1503,17 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		session.mu.Unlock()
 		return errors.New("session is already processing a task")
 	}
+	// Re-check deleting INSIDE the activation critical section: the snapshot
+	// guard above ran before the task-store reads and blackboard restore, and
+	// DeleteSession's whole teardown (orchestrator cleanup, log/dump handle
+	// close, map removal, blackboard stop) can serialize into that window —
+	// without this re-check the resume would activate a task against the
+	// session being dismantled (the ghost-task class the deleting flag
+	// exists to kill).
+	if session.deleting {
+		session.mu.Unlock()
+		return fmt.Errorf("session %s is being deleted", id)
+	}
 	// Manual compaction owns the session until it finishes (it swaps the
 	// conversation history while the session is idle); resuming a task in
 	// that window would race the swap. The compaction flow's own auto-resume
@@ -1502,6 +1544,9 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	// the compaction flow just honoured by NOT auto-resuming).
 	session.active = true
 	session.pauseOwner = pauseOwnerNone
+	session.stopRequestedAt = time.Time{}
+	session.terminalEmitted = false
+	session.forceTerminated = false
 	resumeDoneCh := make(chan struct{})
 	session.done = resumeDoneCh
 	taskCtx, cancel := context.WithCancel(ContextWithSessionID(ctx, id))
@@ -1783,6 +1828,16 @@ func (m *Manager) PauseSession(sessionID string) error {
 	session.pauseOwner = pauseOwnerUser
 	if session.active {
 		session.pausing = true
+		// Deliberately do NOT record stopRequestedAt here. A pause is a
+		// COOPERATIVE signal answered at the next step boundary, and a long LLM
+		// call (which routinely exceeds hungSessionThreshold) is not a step
+		// boundary — the executor checks the pause checker only after the
+		// in-flight model request returns, and the tool watchdog polls pause only
+		// while a TOOL is in flight. Flagging a healthy, paused session as "not
+		// responding to a stop request" during that window is the false positive
+		// this avoids. Only a Stop (CancelTask) records stopRequestedAt: it
+		// cancels the context, so an unanswered Stop genuinely means a wedged
+		// goroutine.
 	}
 	session.mu.Unlock()
 	orch.PauseSession()
@@ -2085,6 +2140,20 @@ func (m *Manager) workUnitSnapshot(sessionID, taskID string, active, pausedTask 
 	return out
 }
 
+// hungSessionThreshold is how long a STOP (CancelTask) request may go
+// unanswered before ActiveSessions reports the session as hung. CancelTask
+// cancels the context and force-terminates after the manager's stopTimeout
+// (10s), and its ctx cancellation aborts an in-flight LLM request and every
+// in-flight tool, so a healthy task settles well within the threshold. A Stop
+// still unanswered past it therefore means the task goroutine is genuinely
+// wedged, not merely slow, so the quit modal may honestly present it as "not
+// responding" (the wire contract of ActiveSessionInfo.Hung). A cooperative
+// PAUSE is deliberately excluded: it is answered at the next step boundary,
+// which a long LLM call routinely delays past this threshold, so counting it
+// would false-positive a healthy session (PauseSession no longer records
+// stopRequestedAt).
+const hungSessionThreshold = 10 * time.Second
+
 // ActiveSessionInfo identifies a session that currently has live background
 // work, for the desktop close-confirmation guard.
 type ActiveSessionInfo struct {
@@ -2093,6 +2162,14 @@ type ActiveSessionInfo struct {
 	// Compacting is true when the session's live work is an in-flight manual
 	// context compaction rather than a running task.
 	Compacting bool `json:"compacting"`
+	// Hung is true when a STOP (CancelTask) request was issued for this
+	// session's live work but the task goroutine has not answered within
+	// hungSessionThreshold. It lets the quit confirmation modal flag a wedged
+	// session so "quit anyway" is an informed choice rather than a guess. A
+	// cooperative pause does not set it: a pause is only answered at a step
+	// boundary and can legitimately outlast the threshold during a long LLM
+	// call.
+	Hung bool `json:"hung"`
 }
 
 // ActiveSessions returns the in-memory sessions that currently have live
@@ -2112,6 +2189,7 @@ func (m *Manager) ActiveSessions() []ActiveSessionInfo {
 		running := s.active
 		compacting := s.compacting
 		name := s.Name
+		stopRequestedAt := s.stopRequestedAt
 		s.mu.Unlock()
 		if !running && !compacting {
 			continue
@@ -2120,6 +2198,7 @@ func (m *Manager) ActiveSessions() []ActiveSessionInfo {
 			ID:         s.ID,
 			Name:       name,
 			Compacting: compacting && !running,
+			Hung:       !stopRequestedAt.IsZero() && time.Since(stopRequestedAt) >= hungSessionThreshold,
 		})
 	}
 
@@ -2186,16 +2265,77 @@ func (m *Manager) ValidateLiveSend(sessionID string, goal, e2s bool, text string
 // should persist the cancellation (user-initiated cancel), and false when the
 // manager is shutting down — in that case the task must stay in_progress so it
 // remains resumable after restart, so the caller skips persistence entirely.
+//
+// It is also the single gate for the run's terminal emission: when
+// forceTerminateStuckTask has already claimed the run (a Stop that exhausted
+// stopTimeout while the task goroutine ignored its cancellation), a settling
+// goroutine reaching this funnel finds the claim taken and skips its own
+// task_cancelled + metrics — preventing a duplicate terminal event with zeroed
+// counters over the forced one. It still returns true so the caller's
+// idempotent cleanup (abandon goal/E2S, persist cancellation) runs.
 func (m *Manager) emitTaskCancelledUnlessShuttingDown(id string) bool {
 	if m.shuttingDown.Load() {
 		return false
 	}
+	if s, ok := m.sessionByID(id); ok && s != nil && !m.claimTaskTerminal(s) {
+		return true
+	}
+	m.emitTaskCancelled(id)
+	return true
+}
+
+// emitTaskCancelled emits the terminal "task_cancelled" event plus the run's
+// agent metrics. It performs no once-per-run check — callers own that decision
+// (emitTaskCancelledUnlessShuttingDown / forceTerminateStuckTask).
+func (m *Manager) emitTaskCancelled(id string) {
 	m.emitFunc(Event{
 		SessionID: id,
 		Type:      "task_cancelled",
 		Data:      TaskCancelledData{SessionID: id},
 	})
 	m.emitAgentMetrics(id, "cancelled")
+}
+
+// sessionByID returns the live in-memory session for id WITHOUT the lazy
+// restore GetSession performs. It backs the terminal-emission claim, which must
+// never resurrect a session as a side effect.
+func (m *Manager) sessionByID(id string) (*Session, bool) {
+	m.mu.RLock()
+	s := m.sessions[id]
+	m.mu.RUnlock()
+	return s, s != nil
+}
+
+// claimTaskTerminal atomically claims the run's single terminal emission on the
+// session. It returns true for the first caller (which then owns the emission)
+// and false when one has already been claimed — forceTerminateStuckTask for a
+// stuck run, or the settling goroutine's own normal path.
+func (m *Manager) claimTaskTerminal(s *Session) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.terminalEmitted {
+		return false
+	}
+	s.terminalEmitted = true
+	return true
+}
+
+// claimTaskTerminalForceTerminated atomically claims the run's single terminal
+// emission AND marks the run force-terminated under one lock, for
+// forceTerminateStuckTask. Combining both writes in a single critical section is
+// what makes the force-terminate path race-free: a settling stuck goroutine's
+// deactivateSessionTask reads forceTerminated under s.mu, so it must never see
+// the emission claimed while forceTerminated is still false (which would discard
+// a live message queued after the cancel was reported). It returns true for the
+// first caller and false when the emission was already claimed.
+func (m *Manager) claimTaskTerminalForceTerminated(s *Session) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.terminalEmitted {
+		return false
+	}
+	s.terminalEmitted = true
+	s.forceTerminated = true
 	return true
 }
 
@@ -2204,8 +2344,14 @@ func (m *Manager) emitTaskCancelledUnlessShuttingDown(id string) bool {
 // profile) for the task run that just finished — complete, cancel or failure.
 // The counters reset afterwards, so one agent_metrics event covers exactly
 // one task run. No-op when the session is no longer tracked.
+//
+// The lookup is MEMORY-ONLY (sessionByID, no lazy restore): this runs from
+// task-terminal callbacks, including a wedged run settling after
+// DeleteSession already stopped waiting. GetSession would lazily RESTORE the
+// just-deleted session (the store row still exists in that window), rebuilding
+// an orchestrator and reopening log/dump handles nobody will ever close.
 func (m *Manager) emitAgentMetrics(sessionID, finish string) {
-	s, ok := m.GetSession(sessionID)
+	s, ok := m.sessionByID(sessionID)
 	if !ok || s == nil || s.emitter == nil {
 		return
 	}
@@ -2216,11 +2362,13 @@ func (m *Manager) emitAgentMetrics(sessionID, finish string) {
 // trajectory + run counters + plan progress) for a session. ok is false when
 // the session is unknown or has no emitter. It backs the silent-mode
 // step-limit judge, which needs the trajectory — not just the boundary reason.
+// Memory-only lookup (see emitAgentMetrics): a judge callback must never
+// lazily restore a session.
 func (m *Manager) ExecutionWindow(sessionID string) (ExecutionWindowSnapshot, bool) {
 	if sessionID == "" {
 		return ExecutionWindowSnapshot{}, false
 	}
-	s, ok := m.GetSession(sessionID)
+	s, ok := m.sessionByID(sessionID)
 	if !ok || s == nil || s.emitter == nil {
 		return ExecutionWindowSnapshot{}, false
 	}
@@ -2643,7 +2791,14 @@ func (m *Manager) resolveResumableTaskMessage(sessionID, taskID, decision string
 	if decision != "" {
 		extra["decision"] = decision
 	}
-	if err := store.ResolvePendingMessage(context.Background(), sessionID, "task_failed_resumable", "task_id", taskID, extra); err != nil {
+	// Bounded like every other direct store call on the send/terminal paths
+	// (restoreDBReadTimeout): this runs on the task-terminal and send paths
+	// and shares the app's single SQLite pool — an unbounded wait for a pooled
+	// connection under a write storm would hang the settle path. Best-effort
+	// either way: errors are logged only.
+	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+	defer resolveCancel()
+	if err := store.ResolvePendingMessage(resolveCtx, sessionID, "task_failed_resumable", "task_id", taskID, extra); err != nil {
 		m.log().Warn("failed to resolve persisted task_failed_resumable message",
 			"session", sessionID, "task", taskID, "decision", decision, "error", err)
 	}
@@ -2850,6 +3005,12 @@ func (m *Manager) CancelTask(id string) error {
 	}
 
 	doneCh := session.done
+	// Record when the stop was requested so a session that ignores it can be
+	// flagged as hung by ActiveSessions while CancelTask waits (keep the first
+	// timestamp on a repeat Stop: resetting it would hide the hang).
+	if session.stopRequestedAt.IsZero() {
+		session.stopRequestedAt = time.Now()
+	}
 	if session.cancel != nil {
 		session.cancel()
 	}
@@ -2861,11 +3022,110 @@ func (m *Manager) CancelTask(id string) error {
 		select {
 		case <-doneCh:
 		case <-time.After(m.stopTimeout):
-			m.log().Warn("timed out waiting for task goroutine to stop on cancel", "session_id", id)
+			// Re-check done non-blockingly first: the goroutine can settle in the
+			// instant between the timer firing and this arm running. A teardown
+			// that actually completed must win — forcing a terminal state then
+			// would log a spurious "forcing terminal state" and race the
+			// goroutine's own emission (the claim still prevents a duplicate, but
+			// there is nothing to force). Same select-race class as #1.
+			select {
+			case <-doneCh:
+				break
+			default:
+				m.log().Warn("timed out waiting for task goroutine to stop on cancel; forcing terminal state", "session_id", id)
+				m.forceTerminateStuckTask(id)
+			}
 		}
 	}
 
 	return nil
+}
+
+// forceTerminateStuckTask is CancelTask's escape hatch for a task goroutine
+// that ignored its cancellation for the whole stopTimeout — typically parked in
+// a tool call that never returns. Returning nil silently would leave the UI
+// showing "Generating response…" forever, because the terminal event is emitted
+// by the very goroutine that is stuck. Instead the cancellation is forced onto
+// the durable state and the wire: the persisted task is flipped to cancelled
+// (resolving any resumable banner) and the terminal task_cancelled event plus
+// agent metrics are emitted here, so the frontend clears its running state.
+//
+// The session is deliberately NOT deactivated: the goroutine really is still
+// running, so ActiveSessions keeps listing it and the close guard flags it as
+// hung (its stop has gone unanswered past the threshold), which is the honest
+// picture to present on quit.
+//
+// Two guards make the forced path mirror the goroutine's own terminal path
+// instead of doubling it:
+//
+//   - Shutdown wins. A Stop that races application shutdown leaves the task
+//     in_progress and resumable, exactly like emitTaskCancelledUnlessShuttingDown:
+//     the forced path persists nothing and emits nothing while shutting down.
+//   - The emission is claimed once per run (claimTaskTerminal). The stuck
+//     goroutine, when it finally settles, finds the claim taken and skips its
+//     own task_cancelled + zeroed metrics; a repeated Stop click is a no-op
+//     instead of a re-emission.
+func (m *Manager) forceTerminateStuckTask(sessionID string) {
+	// Mirror emitTaskCancelledUnlessShuttingDown: on shutdown the task must stay
+	// in_progress so it remains resumable after restart, so neither persist the
+	// cancellation nor emit a terminal event.
+	if m.shuttingDown.Load() {
+		return
+	}
+	// Claim the run's single terminal emission. If it is already claimed (a
+	// repeated Stop click, or the goroutine settled at the deadline and emitted
+	// its own), there is nothing left to force.
+	if s, ok := m.sessionByID(sessionID); ok && s != nil {
+		// Claim the run's single terminal emission AND mark the run
+		// force-terminated in ONE critical section, so a settling stuck
+		// goroutine's deactivateSessionTask can never observe the claim taken
+		// while forceTerminated is still false — which would make it discard a
+		// live message the user queued after this terminal was reported (see
+		// deactivateSessionTask).
+		if !m.claimTaskTerminalForceTerminated(s) {
+			return
+		}
+	}
+
+	m.clearResumeRequests(sessionID)
+
+	// Best-effort durable terminalization: without it the orphaned in_progress
+	// row would survive as a stale has_unfinished_task after restart. The store
+	// may be absent (no persistence configured).
+	m.mu.RLock()
+	ts := m.taskStore
+	m.mu.RUnlock()
+	if ts != nil {
+		adapter := NewTaskStoreAdapter(ts)
+		taskID, err := adapter.GetUnfinishedTaskID(sessionID)
+		if err != nil {
+			m.log().Warn("stuck-cancel: failed to look up unfinished task", "session", sessionID, "error", err)
+		} else if taskID != "" {
+			// Terminalize the run's goal/E2S state BEFORE persisting the
+			// cancellation, mirroring the settle paths' ordering (abandon →
+			// persistCancellationIfUnfinished). Both abandon helpers resolve
+			// the task through GetUnfinishedTaskID, which matches only
+			// in_progress/paused/failed rows — after PersistCancellation flips
+			// the row to cancelled they would no-op, leaving the persisted
+			// goal state / E2S Σ non-terminal while the row reads cancelled:
+			// on restore the continuation anchor lands on the cancelled task
+			// (GetLatestTaskID is status-agnostic) and the next send silently
+			// RESUMES a run the user explicitly stopped instead of honoring
+			// the new instruction.
+			m.abandonGoalIfUnfinished(sessionID)
+			m.abandonE2SIfUnfinished(sessionID)
+			if err := adapter.PersistCancellation(taskID); err != nil {
+				m.log().Warn("stuck-cancel: failed to persist cancellation", "session", sessionID, "task", taskID, "error", err)
+			}
+			// Resolve the prior task_failed_resumable banner so it does not
+			// reappear as pending on reload after the user stopped the task.
+			m.resolveResumableTaskMessage(sessionID, taskID, "cancelled")
+		}
+	}
+
+	// Emit the terminal event: this call owns the run's emission, and the stuck
+	// goroutine (which owns the normal one) will never reach its own.
+	m.emitTaskCancelled(sessionID)
 }
 
 // cancelUnfinishedTask discards the session's unfinished (e.g. cooperatively
@@ -2921,14 +3181,18 @@ func (m *Manager) cancelUnfinishedTask(sessionID string) error {
 // It uses the in-memory lastCompletedTaskID if available, otherwise falls back
 // to the most recent task ID from the database.
 // Returns nil, nil if no task state is available.
+//
+// The session lookup is MEMORY-ONLY (no lazy restore): this is a read-only,
+// per-session-switch display RPC (fired by the frontend's blackboard hook on
+// every session switch), and restoring a store-only session here would build
+// a full orchestrator and open log/dump/step-dump handles nobody closes — a
+// ghost session for one the user merely viewed. A session that is not in
+// memory cannot carry an in-memory anchor anyway, so the only behavioral
+// difference is skipping the restore: the fallback below queries the same
+// GetLatestTaskID the restore itself anchors from, producing byte-identical
+// output for a store-only session with none of the side effects.
 func (m *Manager) GetBlackboardState(sessionID string) (*BlackboardState, error) {
-	sess, err := m.getOrRestoreSession(sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to restore session: %w", err)
-	}
-	if sess == nil {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
-	}
+	sess, _ := m.sessionByID(sessionID)
 
 	m.mu.RLock()
 	ts := m.taskStore
@@ -2938,25 +3202,39 @@ func (m *Manager) GetBlackboardState(sessionID string) (*BlackboardState, error)
 		return nil, nil // no task persistence — no blackboard state
 	}
 
-	// Try in-memory lastCompletedTaskID first.
-	sess.mu.Lock()
-	taskID := sess.lastCompletedTaskID
-	sess.mu.Unlock()
+	// Try in-memory lastCompletedTaskID first (only a live session has one).
+	if sess != nil {
+		sess.mu.Lock()
+		taskID := sess.lastCompletedTaskID
+		sess.mu.Unlock()
+		if taskID != "" {
+			adapter := NewTaskStoreAdapter(ts)
+			state, err := adapter.LoadTaskState(taskID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load task state: %w", err)
+			}
+			if state == nil {
+				return nil, nil
+			}
+			return &BlackboardState{TaskState: state}, nil
+		}
+	}
 
-	// Fallback: query the database for the latest task.
-	if taskID == "" {
-		dbTaskID, dbErr := ts.GetLatestTaskID(context.Background(), sessionID)
-		if dbErr != nil {
-			return nil, fmt.Errorf("failed to get latest task ID: %w", dbErr)
-		}
-		if dbTaskID == "" {
-			return nil, nil // no tasks for this session
-		}
-		taskID = dbTaskID
+	// Fallback: query the database for the latest task. Bounded like the
+	// restore-path anchor read (restoreDBReadTimeout) — this runs on the
+	// session-switch RPC and shares the app's single SQLite pool.
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+	defer dbCancel()
+	dbTaskID, dbErr := ts.GetLatestTaskID(dbCtx, sessionID)
+	if dbErr != nil {
+		return nil, fmt.Errorf("failed to get latest task ID: %w", dbErr)
+	}
+	if dbTaskID == "" {
+		return nil, nil // no tasks for this session
 	}
 
 	adapter := NewTaskStoreAdapter(ts)
-	state, err := adapter.LoadTaskState(taskID)
+	state, err := adapter.LoadTaskState(dbTaskID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load task state: %w", err)
 	}
