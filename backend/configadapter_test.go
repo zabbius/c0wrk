@@ -296,37 +296,89 @@ func TestToBuilderConfig_MCPTimeouts(t *testing.T) {
 	}
 }
 
-// TestToBuilderConfig_MCPMode verifies the per-server activation mode is
-// carried verbatim into BuilderMCPServer. The adapter deliberately does NOT
-// normalize (empty/invalid → "auto" is owned by the load pipeline's
-// normalizeMCPModes; the frontend rebuild paths start from that validated
-// config), and core only skips "disabled" when building the gateway config —
-// every other value, including empty, behaves as "auto" there by construction.
-func TestToBuilderConfig_MCPMode(t *testing.T) {
+// TestToBuilderConfig_MCPCapabilityModes verifies the per-context activation
+// modes are carried verbatim from capabilities.mcp into BuilderMCPServer's
+// ChatMode/CodeMode. The adapter deliberately does NOT normalize (folding the
+// legacy key into capabilities and canonicalizing values is owned by the load
+// pipeline's migrateLegacyMCPServerModes + normalizeCapabilities; the frontend
+// rebuild paths start from that validated config), and core only skips a
+// BOTH-contexts-disabled server when building the gateway config — every
+// other value, including empty, behaves as "auto" there by construction. A
+// name absent from the section maps to the zero CapabilityModes, and a
+// residual legacy Mode (a programmatic config that bypassed the load
+// pipeline) is ignored: the capabilities section is the only source read.
+func TestToBuilderConfig_MCPCapabilityModes(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.MCP.Servers = map[string]config.MCPServerConfig{
-		"autoMode":     {Command: "cmd", Mode: config.MCPServerModeAuto},
-		"manualMode":   {Command: "cmd", Mode: config.MCPServerModeManual},
-		"disabledMode": {Command: "cmd", Mode: config.MCPServerModeDisabled},
-		"emptyMode":    {Command: "cmd"},
+		"autoMode":     {Command: "cmd"},
+		"manualMode":   {Command: "cmd"},
+		"splitMode":    {Command: "cmd"},
+		"disabledBoth": {Command: "cmd"},
+		"absentCaps":   {Command: "cmd"},
+		"legacyOnly":   {Command: "cmd", Mode: config.MCPServerModeManual},
+	}
+	cfg.Capabilities.MCP = map[string]config.CapabilityModes{
+		"autoMode":     {ChatMode: config.MCPServerModeAuto, CodeMode: config.MCPServerModeAuto},
+		"manualMode":   {ChatMode: config.MCPServerModeManual, CodeMode: config.MCPServerModeManual},
+		"splitMode":    {ChatMode: config.MCPServerModeDisabled, CodeMode: config.MCPServerModeManual},
+		"disabledBoth": {ChatMode: config.MCPServerModeDisabled, CodeMode: config.MCPServerModeDisabled},
 	}
 
 	bc := ToBuilderConfig(cfg, config.PredefinedModelProfiles())
 
-	want := map[string]string{
-		"autoMode":     config.MCPServerModeAuto,
-		"manualMode":   config.MCPServerModeManual,
-		"disabledMode": config.MCPServerModeDisabled,
-		"emptyMode":    "",
+	want := map[string]core.CapabilityModes{
+		"autoMode":     {ChatMode: config.MCPServerModeAuto, CodeMode: config.MCPServerModeAuto},
+		"manualMode":   {ChatMode: config.MCPServerModeManual, CodeMode: config.MCPServerModeManual},
+		"splitMode":    {ChatMode: config.MCPServerModeDisabled, CodeMode: config.MCPServerModeManual},
+		"disabledBoth": {ChatMode: config.MCPServerModeDisabled, CodeMode: config.MCPServerModeDisabled},
+		"absentCaps":   {},
+		"legacyOnly":   {},
 	}
-	for name, mode := range want {
+	for name, modes := range want {
 		got, ok := bc.MCP.Servers[name]
 		if !ok {
 			t.Fatalf("server %q missing from BuilderConfig.MCP.Servers", name)
 		}
-		if got.Mode != mode {
-			t.Errorf("BuilderMCPServer(%q).Mode = %q, want %q (verbatim carry)", name, got.Mode, mode)
+		if got.ChatMode != modes.ChatMode || got.CodeMode != modes.CodeMode {
+			t.Errorf("BuilderMCPServer(%q) = {%q, %q}, want {%q, %q} (verbatim carry)",
+				name, got.ChatMode, got.CodeMode, modes.ChatMode, modes.CodeMode)
 		}
+	}
+}
+
+// TestToBuilderConfig_SkillAgentCapabilities verifies the config→builder
+// mapping for capabilities.skills / capabilities.agents: entries are carried
+// value-for-value into the core mirror type, and an absent section maps to
+// nil (everything auto — zero regression).
+func TestToBuilderConfig_SkillAgentCapabilities(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Capabilities.Skills = map[string]config.CapabilityModes{
+		"study":  {ChatMode: config.MCPServerModeManual, CodeMode: config.MCPServerModeManual},
+		"split":  {ChatMode: config.MCPServerModeDisabled, CodeMode: config.MCPServerModeManual},
+		"absent": {},
+	}
+	cfg.Capabilities.Agents = map[string]config.CapabilityModes{
+		"reviewer": {ChatMode: config.MCPServerModeAuto, CodeMode: config.MCPServerModeDisabled},
+	}
+
+	bc := ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+
+	if len(bc.Capabilities.Skills) != 3 {
+		t.Fatalf("Capabilities.Skills = %v, want 3 entries carried verbatim", bc.Capabilities.Skills)
+	}
+	if got := bc.Capabilities.Skills["study"]; got != (core.CapabilityModes{ChatMode: "manual", CodeMode: "manual"}) {
+		t.Errorf("Capabilities.Skills[study] = %v, want {manual, manual}", got)
+	}
+	if got := bc.Capabilities.Skills["split"]; got != (core.CapabilityModes{ChatMode: "disabled", CodeMode: "manual"}) {
+		t.Errorf("Capabilities.Skills[split] = %v, want {disabled, manual}", got)
+	}
+	if got := bc.Capabilities.Agents["reviewer"]; got != (core.CapabilityModes{ChatMode: "auto", CodeMode: "disabled"}) {
+		t.Errorf("Capabilities.Agents[reviewer] = %v, want {auto, disabled}", got)
+	}
+
+	empty := ToBuilderConfig(&config.Config{}, config.PredefinedModelProfiles())
+	if empty.Capabilities.Skills != nil || empty.Capabilities.Agents != nil {
+		t.Errorf("absent sections = (%v, %v), want nil (everything auto)", empty.Capabilities.Skills, empty.Capabilities.Agents)
 	}
 }
 
@@ -490,6 +542,32 @@ func TestE2SConfigExperimentalGate(t *testing.T) {
 	}
 	if got.MaxSteps != 42 {
 		t.Errorf("BuilderE2SConfig.MaxSteps = %d, want 42 (values pass through)", got.MaxSteps)
+	}
+}
+
+// TestToBuilderConfig_E2SObservationBudget pins that the token-proportional
+// observation-budget knobs reach the core layer: e2s.observation_budget_tokens
+// and e2s.observation_fill_fraction pass through to BuilderE2SConfig (from
+// where the orchestrator bridge copies them into e2s.Config next to the
+// MaxObservationChars char fallback) — seeded defaults included.
+func TestToBuilderConfig_E2SObservationBudget(t *testing.T) {
+	cfg := &config.Config{}
+	config.ApplyDefaults(cfg)
+
+	got := ToBuilderConfig(cfg, config.PredefinedModelProfiles()).E2S
+	if got.ObservationBudgetTokens != 8192 {
+		t.Errorf("default ObservationBudgetTokens = %d, want 8192", got.ObservationBudgetTokens)
+	}
+	if got.ObservationFillFraction != 0.4 {
+		t.Errorf("default ObservationFillFraction = %v, want 0.4", got.ObservationFillFraction)
+	}
+
+	cfg.E2S.ObservationBudgetTokens = 4096
+	cfg.E2S.ObservationFillFraction = 0.25
+	cfg.E2S.ObservationTruncate = 1234
+	got = ToBuilderConfig(cfg, config.PredefinedModelProfiles()).E2S
+	if got.ObservationBudgetTokens != 4096 || got.ObservationFillFraction != 0.25 || got.MaxObservationChars != 1234 {
+		t.Errorf("observation knobs must pass through verbatim: %+v", got)
 	}
 }
 
@@ -715,5 +793,29 @@ func TestActiveModelProfile_RetiredPredefinedID(t *testing.T) {
 		append(config.PredefinedModelProfiles(), custom))
 	if p.ID != "bonsai-2-27b" || p.Kind != config.ModelProfileKindCustom {
 		t.Errorf("retired id resolved to %q (%s), want the custom profile that owns the id", p.ID, p.Kind)
+	}
+}
+
+// TestToBuilderConfig_E2SToolsMapping verifies the config→builder mapping for
+// the E2S tool-catalog narrowing: preset, allow, and deny flow into
+// BuilderE2SToolsConfig so the orchestrator's filter sees the operator's
+// e2s.tools section (core never imports backend/config — the field-by-field
+// copy in ToBuilderConfig IS the seam).
+func TestToBuilderConfig_E2SToolsMapping(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.E2S.Tools.Preset = config.E2SToolsPresetAll
+	cfg.E2S.Tools.Allow = []string{"semantic_search", "read_skill_resource"}
+	cfg.E2S.Tools.Deny = []string{"web_search"}
+
+	bc := ToBuilderConfig(cfg, nil)
+
+	if bc.E2S.Tools.Preset != config.E2SToolsPresetAll {
+		t.Errorf("E2S.Tools.Preset = %q, want %q", bc.E2S.Tools.Preset, config.E2SToolsPresetAll)
+	}
+	if len(bc.E2S.Tools.Allow) != 2 || bc.E2S.Tools.Allow[0] != "semantic_search" {
+		t.Errorf("E2S.Tools.Allow = %v, want [semantic_search read_skill_resource]", bc.E2S.Tools.Allow)
+	}
+	if len(bc.E2S.Tools.Deny) != 1 || bc.E2S.Tools.Deny[0] != "web_search" {
+		t.Errorf("E2S.Tools.Deny = %v, want [web_search]", bc.E2S.Tools.Deny)
 	}
 }

@@ -45,6 +45,16 @@ type Config struct {
 
 	MCP MCPConfig `yaml:"mcp"`
 
+	// Capabilities carries per-name activation modes for the three capability
+	// catalogs — skills, subagent profiles and MCP servers — split by the
+	// execution context a mode applies to (chat vs code). The section is
+	// purely operator-authored and additive: an omitted name, section, or the
+	// whole block behaves as "auto" for both contexts, so a config without it
+	// is exactly the pre-capabilities behavior. The shared enum, the fail-soft
+	// load normalization and the legacy mcp.servers.<name>.mode migration
+	// live in mcp_mode.go.
+	Capabilities CapabilitiesConfig `yaml:"capabilities,omitempty"`
+
 	Router     RouterConfig     `yaml:"router"`
 	Executor   ExecutorConfig   `yaml:"executor"`
 	Security   SecurityConfig   `yaml:"security"`
@@ -1565,15 +1575,47 @@ type MCPServerConfig struct {
 	// soft to the default on the load path.
 	CallTimeout string `yaml:"call_timeout,omitempty" json:"call_timeout,omitempty"`
 
-	// Mode is the per-server activation mode: "auto" (default — connect
-	// whenever the MCP gateway starts or reconfigures), "manual" (keep the
-	// configuration and surface the server as mentionable for the chat-input
-	// completion / send flow instead of treating it as always-on) or
-	// "disabled" (never dialed — the server is skipped when the gateway
-	// config is built). Empty selects auto. An unrecognized value is rejected
-	// on the UI save path (validateMCPServerConfig) and fails soft to auto
-	// with a load warning (normalizeMCPModes).
-	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// Mode is the LEGACY per-server activation key (mcp.servers.<name>.mode):
+	// "auto" (the historical default — connect whenever the MCP gateway
+	// starts or reconfigures), "manual" (keep the configuration and surface
+	// the server as mentionable for the chat-input completion / send flow
+	// instead of treating it as always-on) or "disabled" (never dialed — the
+	// server is skipped when the gateway config is built). The load pipeline
+	// folds a set mode into capabilities.mcp.<name> (both contexts, unless
+	// the entry already carries explicit values — migrateLegacyMCPServerModes)
+	// and ALWAYS erases the field, so the key disappears from YAML at the
+	// next save and capabilities.mcp.<name> is the only place the mode
+	// survives. An unrecognized value fails soft to "auto" with a load
+	// warning. The enum is shared with the capabilities section through
+	// ValidMCPServerMode. The JSON tag is "-": the wire format stopped
+	// carrying mode when the per-context capabilities section took over —
+	// UpdateMCPServers does not accept it and GetMCPServers / GetConfig do
+	// not emit it. The YAML tag stays so the load pipeline can still read
+	// (and migrate) legacy configs.
+	Mode string `yaml:"mode,omitempty" json:"-"`
+}
+
+// CapabilityModes is one capability entry's activation modes, one per
+// execution context: ChatMode applies to interactive chat tasks, CodeMode to
+// project (CODE) tasks. Both share the MCP server mode enum — "auto",
+// "manual" or "disabled", with ValidMCPServerMode as the single source of
+// truth — and an empty value IS "auto" (the default), which is why the YAML
+// keys are omitempty.
+type CapabilityModes struct {
+	ChatMode string `yaml:"chat_mode,omitempty" json:"chat_mode,omitempty"`
+	CodeMode string `yaml:"code_mode,omitempty" json:"code_mode,omitempty"`
+}
+
+// CapabilitiesConfig is the top-level capabilities: section (skills, agents,
+// mcp), each map keyed by the capability's name. Every map is optional; a
+// missing name resolves to "auto" in both contexts. The maps are normalized
+// at load: entries whose values are BOTH empty are dropped as meaningless,
+// and capabilities.mcp names outside mcp.servers are dropped as stale, so
+// the section never carries entries the rest of the config cannot resolve.
+type CapabilitiesConfig struct {
+	Skills map[string]CapabilityModes `yaml:"skills,omitempty" json:"skills,omitempty"`
+	Agents map[string]CapabilityModes `yaml:"agents,omitempty" json:"agents,omitempty"`
+	MCP    map[string]CapabilityModes `yaml:"mcp,omitempty" json:"mcp,omitempty"`
 }
 
 // RouterConfig holds router settings.
@@ -2706,8 +2748,25 @@ type E2SConfig struct {
 	PatchRetries int `yaml:"patch_retries"`
 
 	// ObservationTruncate caps the tool observation fed back to the model per
-	// turn, in characters; longer observations are truncated. Default: 2000.
+	// turn, in characters; longer observations are truncated. It is the
+	// FALLBACK cap used when the loop has no model context window to scale
+	// against (ContextWindowTokens == 0); with a window the token-proportional
+	// budget below takes over. Default: 8000.
 	ObservationTruncate int `yaml:"observation_truncate"`
+
+	// ObservationBudgetTokens is the per-turn observation budget in TOKENS —
+	// the ReAct-scale cap (the executor's tool-result budget is 30K tokens
+	// against a comparable window share). It engages when the loop resolves a
+	// model context window: the effective cap is
+	// min(observation_budget_tokens, observation_fill_fraction × window) × 4
+	// characters. Default: 8192.
+	ObservationBudgetTokens int `yaml:"observation_budget_tokens"`
+
+	// ObservationFillFraction caps the observation budget as a fraction of
+	// the model's context window, so a small-window model gets
+	// proportionally smaller observations. Only meaningful together with
+	// observation_budget_tokens and a resolved window. Default: 0.4.
+	ObservationFillFraction float64 `yaml:"observation_fill_fraction"`
 
 	// RepeatNudgeThreshold is the number of consecutive identical step
 	// actions (same tool + target anchor — the semantic fingerprint of
@@ -2722,6 +2781,48 @@ type E2SConfig struct {
 	// threshold so the model always gets at least one nudge first.
 	// Default: 5.
 	RepeatAbortThreshold int `yaml:"repeat_abort_threshold"`
+
+	// Tools narrows the E2S available-tool catalog: the "Available Tools"
+	// section of every turn's system prompt AND the action-dispatch surface.
+	// The default core preset keeps the relevant local-work core (~19 tools:
+	// local_read + local_write + execute + remote_read groups plus the E2S
+	// system plumbing) instead of the full ~85-tool catalog, so the per-turn
+	// prompt stays within budget for small-context models. Filtering happens
+	// BEFORE the E2S plan/delegation/goal stripping, and every filtered-out
+	// name is also rejected fail-closed at dispatch (the catalog is the
+	// dispatch contract). See core/orchestrator_e2s.go.
+	Tools E2SToolsConfig `yaml:"tools"`
+}
+
+// E2S tool-catalog preset values (must match core.E2SToolsPresetCore /
+// core.E2SToolsPresetAll — backend/config does not import the core package).
+const (
+	// E2SToolsPresetCore keeps the capability groups local_read, local_write,
+	// execute, and remote_read plus the E2S system plumbing tools (batch,
+	// tool_result_read, ask_user, store_fact, search_facts,
+	// read_attachment). This is the DEFAULT.
+	E2SToolsPresetCore = "core"
+	// E2SToolsPresetAll restores the full former surface (every registered
+	// tool minus the goal/plan/delegation stripping that always applies).
+	E2SToolsPresetAll = "all"
+)
+
+// E2SToolsConfig configures the E2S tool-catalog narrowing (e2s.tools).
+type E2SToolsConfig struct {
+	// Preset selects the base catalog: "core" (default — the relevant local
+	// work core described on the E2SConfig.Tools field) or "all" (the full
+	// former surface). Any other value is rejected at config load.
+	Preset string `yaml:"preset"`
+
+	// Allow re-includes specific tools the preset excluded (e.g. the
+	// system-group semantic_search, or one MCP tool). Ignored under
+	// preset=all (nothing left to re-include).
+	Allow []string `yaml:"allow"`
+
+	// Deny removes specific tools from the catalog regardless of the preset
+	// or allow — deny wins over allow. A denied name is absent from the
+	// prompt catalog AND rejected fail-closed at action dispatch.
+	Deny []string `yaml:"deny"`
 }
 
 // ExpandEnvVars expands ${ENV_VAR} patterns in a string with their environment variable values.
@@ -2971,16 +3072,27 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	// the adapter without a logger).
 	mcpWarnings := normalizeMCPTimeouts(&cfg)
 
-	// Canonicalize the MCP per-server activation modes (fail-soft: an
-	// unrecognized mode is warned about and reset to the default "auto").
-	// Same pipeline position and surfacing contract as normalizeMCPTimeouts.
-	mcpModeWarnings := normalizeMCPModes(&cfg)
+	// Fold the legacy per-server MCP activation key (mcp.servers.<name>.mode)
+	// into capabilities.mcp and erase it: after the load the legacy field is
+	// dead state, so the next save drops the key from YAML. Fail-soft: an
+	// unrecognized legacy mode is warned about and folds as the default
+	// "auto". Same pipeline position and surfacing contract as
+	// normalizeMCPTimeouts.
+	mcpModeWarnings := migrateLegacyMCPServerModes(&cfg)
+
+	// Canonicalize the capabilities sections (fail-soft: an unrecognized
+	// chat_mode / code_mode is warned about and reset to the default "auto"),
+	// dropping stale capabilities.mcp names and both-empty entries along the
+	// way. Must run after the legacy migration, whose folded values are
+	// already canonical.
+	capWarnings := normalizeCapabilities(&cfg)
 
 	// Warnings collected before validation, in a deterministic order.
 	warnings := autonomyWarnings
 	warnings = append(warnings, shellExecWarnings...)
 	warnings = append(warnings, mcpWarnings...)
 	warnings = append(warnings, mcpModeWarnings...)
+	warnings = append(warnings, capWarnings...)
 
 	// Validate configuration
 	if err := validate(&cfg); err != nil {
@@ -3274,22 +3386,49 @@ func validate(cfg *Config) error {
 	// the model always gets at least one corrective nudge before the loop
 	// aborts. Fail fast at load rather than misbehaving mid-run.
 	for name, v := range map[string]int{
-		"max_steps":              cfg.E2S.MaxSteps,
-		"state_byte_limit":       cfg.E2S.StateByteLimit,
-		"patch_retries":          cfg.E2S.PatchRetries,
-		"observation_truncate":   cfg.E2S.ObservationTruncate,
-		"repeat_nudge_threshold": cfg.E2S.RepeatNudgeThreshold,
-		"repeat_abort_threshold": cfg.E2S.RepeatAbortThreshold,
+		"max_steps":                 cfg.E2S.MaxSteps,
+		"state_byte_limit":          cfg.E2S.StateByteLimit,
+		"patch_retries":             cfg.E2S.PatchRetries,
+		"observation_truncate":      cfg.E2S.ObservationTruncate,
+		"observation_budget_tokens": cfg.E2S.ObservationBudgetTokens,
+		"repeat_nudge_threshold":    cfg.E2S.RepeatNudgeThreshold,
+		"repeat_abort_threshold":    cfg.E2S.RepeatAbortThreshold,
 	} {
 		if v < 0 {
 			return fmt.Errorf("e2s.%s must be >= 0, got %d", name, v)
 		}
+	}
+	if cfg.E2S.ObservationFillFraction < 0 {
+		return fmt.Errorf("e2s.observation_fill_fraction must be >= 0, got %v", cfg.E2S.ObservationFillFraction)
 	}
 	if cfg.E2S.RepeatNudgeThreshold > cfg.E2S.RepeatAbortThreshold {
 		return fmt.Errorf(
 			"e2s.repeat_nudge_threshold (%d) must be <= e2s.repeat_abort_threshold (%d) so a nudge always precedes the abort",
 			cfg.E2S.RepeatNudgeThreshold, cfg.E2S.RepeatAbortThreshold,
 		)
+	}
+	// Validate the E2S tool-catalog narrowing: an unknown preset is a typo,
+	// not a sentinel — reject it at load (the core filter fails closed to the
+	// core preset for anything but "all", so a silent fallback here would
+	// hide the mistake). allow/deny entries must name tools.
+	switch cfg.E2S.Tools.Preset {
+	case E2SToolsPresetCore, E2SToolsPresetAll:
+		// valid
+	default:
+		return fmt.Errorf(
+			"e2s.tools.preset %q is not valid; must be one of: %s, %s",
+			cfg.E2S.Tools.Preset, E2SToolsPresetCore, E2SToolsPresetAll,
+		)
+	}
+	for _, name := range cfg.E2S.Tools.Allow {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("e2s.tools.allow entries must be non-empty tool names")
+		}
+	}
+	for _, name := range cfg.E2S.Tools.Deny {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("e2s.tools.deny entries must be non-empty tool names")
+		}
 	}
 
 	// Validate vector_index.execution_provider enum. ApplyDefaults has

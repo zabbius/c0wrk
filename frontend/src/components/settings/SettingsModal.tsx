@@ -9,6 +9,7 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { ConfigWarningBanner } from './ConfigWarningBanner'
 import { LogLevelSelector } from './LogLevelSelector'
 import { ThemeSelector } from './ThemeSelector'
+import { TabsSettings } from './TabsSettings'
 import { UIScaleSelector } from './UIScaleSelector'
 import { FontSettings } from './FontSettings'
 import { ProxySettings } from './ProxySettings'
@@ -19,11 +20,11 @@ import { LLMSettings } from './LLMSettings'
 import { ModelProfilesSettings } from './ModelProfilesSettings'
 import { SearchSettings } from './SearchSettings'
 import { VectorIndexSettings } from './VectorIndexSettings'
-import { MCPSettings } from './MCPSettings'
+import { CapabilitiesSettings } from './CapabilitiesSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { UpdateSettings } from './UpdateSettings'
 import { ExperimentalSettings } from './ExperimentalSettings'
-import { Settings, Palette, Brain, Search, Shield, Info, Server, AlertTriangle, X, Gauge } from 'lucide-react'
+import { Settings, Palette, Brain, Search, Shield, Info, Component, AlertTriangle, X, Gauge, Database, Globe } from 'lucide-react'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { hasDefaultModel } from '@/api/config'
 // The canonical app mark — the very same SVG Wails derives the bundled
@@ -225,9 +226,9 @@ export function SettingsModal() {
               <Search className="h-4 w-4" />
               <span className="text-xs">Search</span>
             </TabsTrigger>
-            <TabsTrigger value="mcp" className={TAB_TRIGGER_CLASS}>
-              <Server className="h-4 w-4" />
-              <span className="text-xs">MCP</span>
+            <TabsTrigger value="capabilities" className={TAB_TRIGGER_CLASS}>
+              <Component className="h-4 w-4" />
+              <span className="text-xs">Capabilities</span>
             </TabsTrigger>
             <TabsTrigger value="security" className={TAB_TRIGGER_CLASS}>
               <Shield className="h-4 w-4" />
@@ -255,11 +256,17 @@ export function SettingsModal() {
                 <ExperimentalSettings />
               </div>
               <div className="border-t border-border pt-4">
-                <h3 className="text-sm font-medium mb-3">HTTP Proxy</h3>
+                <h3 className="flex items-center gap-2 text-sm font-medium mb-3">
+                  <Globe className="h-4 w-4 text-muted-foreground" />
+                  HTTP Proxy
+                </h3>
                 <ProxySettings />
               </div>
               <div className="border-t border-border pt-4">
-                <h3 className="text-sm font-medium mb-3">Vector Index</h3>
+                <h3 className="flex items-center gap-2 text-sm font-medium mb-3">
+                  <Database className="h-4 w-4 text-muted-foreground" />
+                  Vector Index
+                </h3>
                 <VectorIndexSettings />
               </div>
             </div>
@@ -276,6 +283,12 @@ export function SettingsModal() {
                     and the typed input carries the rest. */}
                 <FontSettings />
               </div>
+              {/* Tabs sits last on the tab: a master switch that reshapes the
+                  whole workspace reads best after the pure appearance knobs
+                  (theme / scale / fonts) above it. */}
+              <div className="border-t border-border pt-4">
+                <TabsSettings />
+              </div>
             </div>
           </TabsContent>
 
@@ -291,8 +304,8 @@ export function SettingsModal() {
             <SearchSettings />
           </TabsContent>
 
-          <TabsContent value="mcp" className={TAB_CONTENT_CLASS}>
-            <MCPSettings />
+          <TabsContent value="capabilities" className={TAB_CONTENT_CLASS}>
+            <CapabilitiesSettings />
           </TabsContent>
 
           <TabsContent value="security" className={TAB_CONTENT_CLASS}>

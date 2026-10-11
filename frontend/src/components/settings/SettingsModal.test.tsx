@@ -32,6 +32,37 @@ vi.mock('@/api/fonts', () => ({
   listFontFamilies: mocks.listFontFamilies,
 }))
 
+// The Capabilities tab mounts CapabilitiesSettings (Subagents + Skills
+// catalogs + capabilities modes) and, inside it, MCPSettings (status, tools,
+// server configs). Only the functions those components actually call are
+// mocked; the rest of each module stays absent per the partial-mock
+// convention.
+const capMocks = vi.hoisted(() => ({
+  listAgents: vi.fn(),
+  listSkills: vi.fn(),
+  getCapabilityModes: vi.fn(),
+  getMCPStatus: vi.fn(),
+  getToolList: vi.fn(),
+  getMCPServers: vi.fn(),
+}))
+
+vi.mock('@/api/agents', () => ({
+  listAgents: capMocks.listAgents,
+}))
+vi.mock('@/api/skills', () => ({
+  listSkills: capMocks.listSkills,
+}))
+vi.mock('@/api/capabilities', () => ({
+  getCapabilityModes: capMocks.getCapabilityModes,
+  updateCapabilityModes: vi.fn(async () => undefined),
+}))
+vi.mock('@/api/mcp', () => ({
+  getMCPStatus: capMocks.getMCPStatus,
+  getToolList: capMocks.getToolList,
+  getMCPServers: capMocks.getMCPServers,
+  updateMCPServers: vi.fn(async () => undefined),
+}))
+
 import { SettingsModal } from './SettingsModal'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -439,5 +470,118 @@ describe('SettingsModal layout: vertical left nav and fixed height', () => {
     // the zoom-corrected viewport), instead of a content-driven max-height.
     expect(content!.className).toContain('h-[calc(var(--ui-vh)*0.8)]')
     expect(content!.className).not.toContain('max-h-[calc(var(--ui-vh)*0.8)]')
+  })
+})
+
+describe('SettingsModal appearance — Tabs block', () => {
+  it('renders the Tabs switch at the bottom of the tab and toggles uiStore.tabsEnabled', async () => {
+    useUIStore.setState({ tabsEnabled: false })
+    useSettingsStore.setState({ open: true, activeTab: 'appearance' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    expect(bannerText()).toContain('Tabs')
+    // Order lock-in: the Tabs section is the LAST block on the Appearance
+    // tab — after the Theme section and the UI Scale + Fonts section — in
+    // the shared space-y-6 stack.
+    const spans = Array.from(document.body.querySelectorAll('span'))
+    const tabsHeader = spans.find((s) => s.textContent === 'Tabs')
+    expect(tabsHeader).toBeDefined()
+    const tabsBlock = tabsHeader!.closest('div.flex.flex-col')
+    expect(tabsBlock).not.toBeNull()
+    const tabsSection = tabsBlock!.parentElement as HTMLElement
+    expect(tabsSection.className).toContain('border-t')
+    const appearanceStack = tabsSection.parentElement as HTMLElement
+    expect(appearanceStack.className).toContain('space-y-6')
+    expect(appearanceStack.lastElementChild).toBe(tabsSection)
+    const prevSection = tabsSection.previousElementSibling
+    expect(prevSection?.textContent).toContain('UI Scale')
+    expect(prevSection?.textContent).toContain('Fonts')
+
+    // The Toggle's peer-switch checkbox is the appearance tab's only checkbox.
+    const toggle = document.body.querySelector<HTMLInputElement>('input[type="checkbox"]')
+    expect(toggle).not.toBeNull()
+    expect(toggle!.checked).toBe(false)
+    expect(useUIStore.getState().tabsEnabled).toBe(false)
+
+    await act(async () => {
+      toggle!.click()
+    })
+    expect(useUIStore.getState().tabsEnabled).toBe(true)
+
+    await act(async () => {
+      toggle!.click()
+    })
+    expect(useUIStore.getState().tabsEnabled).toBe(false)
+  })
+})
+
+describe('SettingsModal Capabilities tab', () => {
+  function primeCapabilitiesMocks() {
+    capMocks.listAgents.mockResolvedValue([{ name: 'code-reviewer', description: 'Reviews code changes' }])
+    capMocks.listSkills.mockResolvedValue([{ name: 'commit', description: 'Commit discipline skill' }])
+    capMocks.getCapabilityModes.mockResolvedValue({ skills: {}, agents: {}, mcp: {} })
+    capMocks.getMCPStatus.mockResolvedValue([])
+    capMocks.getToolList.mockResolvedValue([])
+    capMocks.getMCPServers.mockResolvedValue({})
+  }
+
+  it('renders the renamed Capabilities entry with the Component icon', async () => {
+    primeCapabilitiesMocks()
+    useSettingsStore.setState({ open: true, activeTab: 'general' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    const trigger = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((el) => el.textContent?.includes('Capabilities'))
+    expect(trigger).toBeDefined()
+    // The lucide Component mark (svg.lucide-component), not the old Server.
+    expect(trigger!.querySelector('svg.lucide-component')).not.toBeNull()
+    expect(trigger!.textContent).not.toContain('MCP')
+    // No stale 'mcp' tab remains in the nav.
+    expect(Array.from(document.body.querySelectorAll('[role="tab"]')).some((el) => el.textContent?.trim() === 'MCP')).toBe(false)
+  })
+
+  it('mounts the three subsections in order: Subagents, MCP Servers, Skills', async () => {
+    primeCapabilitiesMocks()
+    useSettingsStore.setState({ open: true, activeTab: 'capabilities' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    const titles = Array.from(document.body.querySelectorAll<HTMLElement>('span.text-sm.font-medium'))
+      .map((el) => el.textContent)
+      .filter((t): t is string => t === 'Subagents' || t === 'MCP Servers' || t === 'Skills')
+    expect(titles).toEqual(['Subagents', 'MCP Servers', 'Skills'])
+  })
+
+  it('renders subagents and skills read-only: identity + two context selectors, no mutation buttons', async () => {
+    primeCapabilitiesMocks()
+    useSettingsStore.setState({ open: true, activeTab: 'capabilities' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    // Catalog entries render with both per-context selectors each.
+    for (const name of ['code-reviewer', 'commit']) {
+      expect(document.body.querySelector(`[aria-label="${name} chat mode"]`)).not.toBeNull()
+      expect(document.body.querySelector(`[aria-label="${name} code mode"]`)).not.toBeNull()
+    }
+    expect(document.body.textContent).toContain('Reviews code changes')
+    expect(document.body.textContent).toContain('Commit discipline skill')
+
+    // Read-only: the only Edit/Delete buttons on this tab live inside MCP
+    // server cards — with no servers configured there are none at all.
+    const buttonLabels = Array.from(document.body.querySelectorAll('button')).map((b) => b.textContent?.trim())
+    expect(buttonLabels).not.toContain('Edit')
+    expect(buttonLabels).not.toContain('Delete')
+    // MCP management stays available in its own subsection.
+    expect(buttonLabels).toContain('Add Server')
   })
 })

@@ -7,7 +7,7 @@ React 19 application providing the user interface for c0wrk: chat interaction, p
 ## Key Files
 
 - `frontend/src/App.tsx` — root component
-- `frontend/src/stores/` — Zustand state management (34 stores)
+- `frontend/src/stores/` — Zustand state management (37 stores)
 - `frontend/src/hooks/` — custom React hooks (event handlers, data loading)
 - `frontend/src/api/` — backend RPC wrapper layer
 - `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config + local image resolution, local file link detection, CodeMirror extensions, the UI-scale geometry helpers `layoutSpace` + `cursorMenuPosition`, and the `@floating-ui/dom` zoom compensation `floatingUiZoom`)
@@ -108,6 +108,8 @@ Three-column panel layout (no router, single-page app). The file viewer can be p
 
 Resize handles (4px) sit between in-flow panels and on the floating viewer's left edge. Sidebar width/collapse, viewer width/collapse, and viewer pin preference persist through Zustand `persist`/localStorage. The unpinned expanded viewer is a right-aligned absolute overlay over the chat, auto-collapses when the pointer lands outside it or when keyboard focus leaves it (an outside `focusin` collapses only after the viewer itself held focus — Radix portal menus restore focus to their trigger a tick after an item's `onSelect` opened a file, and that focus-restore must not dismiss the freshly opened viewer), and leaves a 40px in-flow rail for reopening; pinning keeps it as a permanently docked, resizable column. A middle-click (`auxclick`, `button === 1`) on a viewer tab closes that tab without activating it — browser-style semantics via the same `closeFile` path as the per-tab close button; the event is `preventDefault`-ed so the webview's autoscroll/selection does not kick in.
 
+Above the main row sits the optional **workspace tab bar** (`components/layout/TabBar.tsx`): the outermost context layer of the shell, rendered only while `uiStore.tabsEnabled` is on (Settings → Appearance, default off; the bar then also carries the Settings affordance and the sidebar header drops its own gear). The layer itself always lives — with the flag off it runs its "exactly one tab" special case as an invisible live mirror of the workspace, and the shell is byte-identical to the pre-tab UI. Every tab activation travels the single engine path (`lib/tabEngine`, snapshot/restore over three validated UI slices); the model, invariants, and edge handling live in [tabs.md](tabs.md).
+
 The native desktop window separately persists validated width, height, and maximized state in `~/.c0wrk/window_state.json`. Frontend resize events debounce `PersistWindowBounds`; desktop shutdown performs a final best-effort save, and the next process launch uses valid stored dimensions (falling back to defaults for missing, malformed, or below-minimum values).
 
 ### Sidebar header
@@ -117,7 +119,16 @@ Between the collapse and settings buttons sits a CHAT/CODE segmented toggle:
 - **CODE**: switches to `lastRealProjectId` (the most recent non-No-Project project) or the first available real project
 - The toggle is hidden when no projects are loaded yet
 
-Chat input uses a CodeMirror 6 editor in Markdown mode (`@codemirror/lang-markdown`), providing syntax highlighting for Markdown constructs (headings, bold, italic, code, links) and custom token decorations for `/skill` references (warning color) and `@file` references (info color) via a `StateField`. Autocomplete is powered by `@codemirror/autocomplete` with two custom `CompletionSource` functions: typing `/` at a word boundary triggers fuzzy-filtered skill suggestions, and `@` triggers workspace file/directory suggestions. Open file viewer tabs are boosted to the top of file completions. On send, skill refs are extracted as `activeSkills[]` and file refs are converted to `fileref://` URIs by the core preprocessor (see `core/message_preprocess.go`). An `@file` ref accepts an optional line anchor in GitHub-canonical forms — `#L20`, `#L20-36`, `#L20-L36`, or legacy bare-number `#20-36`; the anchor survives into the `fileref://` URI and positions the viewer on open. Paths containing spaces use the single-quoted form `@'my file.go'` — the canonical insert of the `@`-autocomplete and of the file viewer's "Add to chat" action (anchor allowed after the closing quote or inside it); the legacy backslash-escaped form `@my\ file.go` remains recognized.
+Chat input uses a CodeMirror 6 editor in Markdown mode (`@codemirror/lang-markdown`), providing syntax highlighting for Markdown constructs (headings, bold, italic, code, links) and custom token decorations for `/skill` references (warning color) and `@file` references (info color) via a `StateField`. Autocomplete is powered by `@codemirror/autocomplete` with two custom `CompletionSource` functions: typing `/` at a word boundary triggers fuzzy-filtered skill suggestions, and `@` triggers workspace file/directory suggestions. Open file viewer tabs are boosted to the top of file completions. On send, skill refs are extracted as `activeSkills[]` and file refs are converted to `fileref://` URIs by the core preprocessor (see `core/message_preprocess.go`). An `@file` ref accepts an optional line anchor in GitHub-canonical forms — `#L20`, `#L20-36`, `#L20-L36`, or legacy bare-number `#20-36`; the anchor survives into the `fileref://` URI and positions the viewer on open. Paths containing spaces use the single-quoted form `@'my file.go'` — the canonical insert of the `@`-autocomplete and of the file viewer's "Add to chat" action (anchor allowed after the closing quote or inside it); the legacy backslash-escaped form `@my\ file.go` remains recognized. The `/` completion is session-kind-aware: it filters all three sections (Subagents, MCP Servers, Skills) through the active session's chat/code capability context — a capability hidden in that context is not offered, and a manual-in-context entry carries the "mention to enable" detail (see [capabilities.md](../capabilities.md)).
+
+### Settings → Capabilities
+
+The former MCP settings tab is the **Capabilities** tab: three subsections in the completion-list order — **Subagents → MCP Servers → Skills** — each rendering every configured capability with **two chat/code mode selectors** (`auto` | `manual` | `disabled` per context, [ADR-084](../../decisions/084-per-capability-chat-code-activation-modes.md)):
+
+- **MCP Servers** keeps add/edit/delete/reload on `updateMCPServers` (the wire format carries no mode key); mode edits go through `updateCapabilityModes('mcp', …)` with the **full replacement section**. A card renders its live gateway status except when **both** slots are disabled — the only never-dialed combination renders neutrally (a "disabled" badge, no red state); a partially-disabled server keeps its live status.
+- **Subagents** and **Skills** are view-only (existence is owned by `.agents/` profiles and the skills directories): name, description, and the two selectors — no add/edit/delete.
+- Mode state loads through `getCapabilityModes()`; a failed read leaves the selectors disabled rather than letting the UI write a half-known map (failing lists render, only mode editing is blocked).
+- The `/`-completion and send-path filters read the same modes keyed on the active session's context (`lib/capabilityModes.ts` + `lib/sessionKind.ts`): a capability is mentionable unless `disabled` in that context; an unknown session falls open to the active project's context.
 
 ## Design System
 
@@ -181,7 +192,7 @@ Dark color-scheme. Focus outlines globally suppressed. Custom scrollbar (8px, se
 └──────────────────────────────────────────────────────────┘
 ```
 
-Project switching is orchestrated by `useProjectSwitchState`: it saves source-project UI state through project RPC wrappers (`saveProjectSwitchState`), calls `switchProject`, restores destination tabs/files from `getProjectSwitchState`, and then applies session fallback (saved session → latest session → create session).
+Project switching is orchestrated by `useProjectSwitchState`: it saves source-project UI state through project RPC wrappers (`saveProjectSwitchState`), calls `switchProject`, restores destination tabs/files from `getProjectSwitchState`, and then applies session fallback (saved session → latest session → create session). The saved-session pointer is PROJECT-scoped (one value per project; the No Project pseudo-project is one bucket for all CHAT sessions) — when the switch is driven by the workspace tab engine, the engine re-selects the activating tab's own remembered session on top of whatever the pointer landed on (see [tabs.md](tabs.md) § Activation sequence).
 
 ## Invariants
 
@@ -200,6 +211,8 @@ Project switching is orchestrated by `useProjectSwitchState`: it saves source-pr
 - An unpinned expanded file viewer overlays the chat and auto-collapses on an outside pointerdown, or on focus leaving it once it held focus (a freshly expanded viewer ignores the Radix focus-restore that follows opening a file from a portal menu — e.g. the Research panel's "View artifacts" dropdown); a pinned viewer remains an in-flow resizable column
 - Collapsing an unpinned viewer preserves the unpinned preference and renders a 40px in-flow reopen rail
 - Persisted desktop window dimensions are accepted only at or above the minimum usable size; invalid state falls back to defaults
+- The workspace tab layer always holds at least one tab, its ACTIVE tab always mirrors the live workspace context, and every activation travels the single engine path — the `tabsEnabled` flag gates only visibility (tab bar + sidebar gear) and notification-click routing, never the layer itself (see [tabs.md](tabs.md))
+- Tab arrangements are app-lifetime (`tabStore` never persists); only the `tabsEnabled` flag persists across restarts (`c0wrk-sidebar-collapsed` v7, default off)
 - The frontend is **zoom-safe** under the app-wide UI Scale (`zoom` on `<html>`, see [ui-scale.md](ui-scale.md)): the shell and full-height containers size with percentages, viewport-derived sizes use the `--ui-vh` primitive, and pointer-anchored floating panels open at the cursor and fully inside the visible window at any scale — enforced by `frontend/src/test/zoomViewportInvariant.test.ts` plus the per-primitive guards
 - Every enabled interactive element shows the pointer cursor and every disabled one shows `not-allowed` — a base-layer cursor policy in `frontend/src/index.css` covers native `button`/`input[type=…]`/`select`/`label`/`summary` and ARIA widget roles (`button`, `menuitem*`, `option`, `tab`, `checkbox`, `radio`, `switch`, `combobox`, `link`, `treeitem`); utility classes (e.g. `cursor-grab` on drag canvases) still override it for intentional exceptions, and `cursor-default` on clickable elements is forbidden outside the allowlist in `frontend/src/test/clickableCursorInvariant.test.ts` (Radix disabled menu items keep `pointer-events-none`, so their cursor stays the UA default)
 - Typography is relative-scale-governed: text sizes come from the named Tailwind scale anchored at the 14px `html` root (see Design System); arbitrary `text-[Npx]`/`text-[Nrem]` utilities, px CSS font sizes outside the root rule, and absolute inline `fontSize` values fail the source-scan guard in `frontend/src/test/typeScaleInvariant.test.ts` (API-bound exceptions: the xterm constructor in `Terminal.tsx` and the research DAG canvas SVG labels)
@@ -214,6 +227,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 | `GetConfig()` RPC              | provider `.models` | Per-provider enabled models|
 | `GetLogLevel()` RPC            | log level          | Console/log verbosity      |
 | `GetSecuritySettings()` RPC    | `security.groups`  | Tool-group policy UI state (per-group policy + execute blacklist, ADR-024) |
+| `GetCapabilityModes()` RPC     | `capabilities.*`   | Capability chat/code activation modes UI (ADR-084) |
 | `ListSkills()` RPC             | skills             | `/skill` autocomplete      |
 | `localStorage`                 | sidebar width + collapsed state | Persistent left-panel layout |
 | `localStorage`                 | file-viewer width + collapsed + pinned state | Persistent docked/floating right-panel layout |
@@ -226,6 +240,7 @@ Frontend configuration is derived from backend (no separate frontend config file
 - **New RPC wrapper**: add module in `frontend/src/api/` when backend exposes a new method
 - **Project-switch persistence wrapper updates**: when project switch-state RPC names or payload fields change, update method probing (`Save/GetProjectSwitchState`, `Save/GetProjectUIState`) and guards in `frontend/src/api/projects.ts` + `frontend/src/types/guards.ts`
 - **New store**: create in `frontend/src/stores/`, register in the store initialization sequence
+- **New tab snapshot slice**: extend `TabUIState` in `frontend/src/lib/tabSnapshot.ts` with fail-closed sanitization (`sanitizeTabUI`) and `isSameTabUI` content equality — a deliberate v2 composition change per [tabs.md](tabs.md)
 - **New event handler hook**: add to `frontend/src/hooks/` with type guard and store update logic
 - **Project-switch orchestration changes**: extend `frontend/src/hooks/useProjectSwitchState.ts` to keep save-before-switch and restore-after-switch ordering stable
 - **New display item type**: extend `groupMessages()` in `frontend/src/lib/chatUtils.ts` and add renderer in `ChatMessageRenderer.tsx`
@@ -235,9 +250,11 @@ Frontend configuration is derived from backend (no separate frontend config file
 ## Related Specs
 
 - [ui-scale.md](ui-scale.md) — UI scale feature and the zoom-safety invariant
+- [../capabilities.md](../capabilities.md) — capability activation-mode semantics the Capabilities settings surface and the mention filters consume
 - [fonts.md](fonts.md) — user font selection: UI/mono family pickers (free text + detected + installed options) plus per-scope select-only smoothing pickers over the persisted `fontStore`, once-per-launch dual system-font detection, and the inline `--font-sans`/`--font-mono` `@theme`-token + `--font-smoothing-*` delivery on `<html>` ([ADR-078](../../decisions/078-user-font-selection.md), [ADR-079](../../decisions/079-font-smoothing-selection.md))
 - [button-tooltips.md](button-tooltips.md) — the button tooltip convention: a `title=`, a Radix `TooltipTrigger` wrapper, or a statically visible label on every button — exactly one, the channels never combine (both AST guards flag a `title` under a `TooltipTrigger`); buttons that may hide their label always carry a `title`, always-labeled buttons never carry an echo, picker triggers follow the heading rule
 - [stores.md](stores.md) — Zustand store catalog
+- [tabs.md](tabs.md) — the workspace tab layer: always-live model, `tabsEnabled` flag scope, single activation engine, snapshot slices ([ADR-085](../../decisions/085-workspace-tabs-single-engine.md))
 - [git-operation-console.md](git-operation-console.md) — the footer log of the last git mutation result (button tint, anchored popover, per-project scope, acknowledge semantics)
 - [git-changes-list.md](git-changes-list.md) — the Changes tab file list: porcelain-axis sections, flat name-first rows, tree basename rows, full-path tooltips
 - [events.md](events.md) — event handling architecture
