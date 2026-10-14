@@ -327,6 +327,7 @@ export namespace backend {
 	    hooks?: string[];
 	    signing_repo?: boolean;
 	    signing_global?: boolean;
+	    repo_root?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new CommitSuppression(source);
@@ -337,6 +338,7 @@ export namespace backend {
 	        this.hooks = source["hooks"];
 	        this.signing_repo = source["signing_repo"];
 	        this.signing_global = source["signing_global"];
+	        this.repo_root = source["repo_root"];
 	    }
 	}
 	export class CommitResult {
