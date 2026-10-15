@@ -71,6 +71,12 @@ type App struct {
 	// messages are also duplicated to the session log.
 	wailsLogger *wailsLogAdapter
 
+	// webviewGpuWatchdog is the (Linux-only, possibly nil) DMABUF-failure
+	// watchdog armed in main before wails.Run and started from DomReady.
+	// Set strictly before the Wails UI loop begins, so a plain field is
+	// safely published (same ordering contract as wailsLogger).
+	webviewGpuWatchdog *webviewGpuWatchdog
+
 	db *sql.DB // shared SQLite connection; opened in Startup, closed in Shutdown. Guarded by stateMu.
 
 	// sessionLogger is stored so Shutdown can close it on early Startup exits
@@ -121,11 +127,12 @@ type App struct {
 	//
 	// Invariant: the flag is armed only immediately before an imminent quit
 	// (ConfirmExit stores it and calls wailsRuntime.Quit in the same
-	// breath), and the platform quit paths that follow cannot be cancelled
-	// by the user — so an armed flag never outlives the process it was armed
-	// for, and a later guard bypass with newly active sessions is
-	// impossible. Any change that makes quit cancellable after arming must
-	// reset this flag on cancellation.
+	// breath; the webview-GPU watchdog's post-relaunch quit does the same
+	// through gpuFallbackQuit), and the platform quit paths that follow
+	// cannot be cancelled by the user — so an armed flag never outlives the
+	// process it was armed for, and a later guard bypass with newly active
+	// sessions is impossible. Any change that makes quit cancellable after
+	// arming must reset this flag on cancellation.
 	exitConfirmed atomic.Bool
 
 	// updateQuitAt records when the updater-driven quit (ApplyUpdate →
@@ -272,6 +279,54 @@ func NewApp() *App {
 // can be wired as a delegate once it is initialized in Startup.
 func (a *App) SetWailsLogger(wl *wailsLogAdapter) {
 	a.wailsLogger = wl
+}
+
+// SetWebviewGpuWatchdog stores the (possibly nil) DMABUF-failure watchdog
+// armed in main before wails.Run. Nil off Linux and whenever detection does
+// not apply (explicit choice, active fallback, safe resolution).
+func (a *App) SetWebviewGpuWatchdog(w *webviewGpuWatchdog) {
+	a.webviewGpuWatchdog = w
+}
+
+// startWebviewGpuWatchdog launches the bounded startup scan from DomReady —
+// the DMABUF failure prints at the webview's first paint, so from here on
+// this run's stderr capture contains everything the scan needs. The quit
+// path is wired to the live Wails context here, where it exists.
+func (a *App) startWebviewGpuWatchdog() {
+	w := a.webviewGpuWatchdog
+	if w == nil {
+		return
+	}
+	if w.quitFn == nil {
+		if a.wailsCtx() != nil {
+			w.quitFn = a.gpuFallbackQuit
+		}
+	}
+	w.start()
+}
+
+// gpuFallbackQuit is the webview-GPU watchdog's post-relaunch quit. It arms
+// the close-guard bypass in the same breath as the quit, mirroring
+// ConfirmExit: the confirmation modal lives in the very webview this
+// relaunch is replacing (a grey window cannot answer it), so an intercepted
+// fallback quit would leave the dying instance alive with an unanswerable
+// dialog — and the sessions the guard protects are auto-resumed in the
+// relaunched instance anyway.
+func (a *App) gpuFallbackQuit() {
+	if a.wailsCtx() == nil {
+		// No live runtime: nothing to quit through, and arming the bypass
+		// now would leave a stale armed flag with no quit behind it (see
+		// the exitConfirmed invariant).
+		a.log().Error("webview GPU fallback: no Wails context; cannot quit for the relaunch")
+		return
+	}
+	a.exitConfirmed.Store(true)
+	a.log().Info("webview GPU fallback: quitting for the relaunched instance (close-guard bypass armed)")
+	if a.quitFn != nil {
+		a.quitFn(a.wailsCtx())
+		return
+	}
+	wailsRuntime.Quit(a.wailsCtx())
 }
 
 // PickDirectory opens a native directory picker dialog. The dialog reopens at
