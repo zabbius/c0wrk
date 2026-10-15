@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { withVirtualTimers } from '@/test/virtualTime'
 
 // --- Mock the git API wrappers so tests never touch the Wails backend ---
 const { gitMocks } = vi.hoisted(() => ({
@@ -226,13 +227,12 @@ describe('BranchDropdown', () => {
     await openDropdown()
 
     const input = body().querySelector('input[placeholder="Search branches..."]') as HTMLInputElement
-    act(() => {
+    // The dispatch sits INSIDE the virtual-time window: Radix's typeahead
+    // focuses its match from a setTimeout(0), which must land on the fake
+    // clock and fire deterministically during the advance.
+    await withVirtualTimers(() => {
       input.focus()
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'm', bubbles: true }))
-    })
-    // Radix's typeahead focuses its match from a setTimeout(0) — let it fire.
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 0))
     })
 
     // Branch rows are plain role=button divs (the menu holds no Radix items
@@ -620,13 +620,24 @@ describe('BranchDropdown — worktree focus switcher', () => {
 })
 
 describe('BranchDropdown — collapsible sections', () => {
-  /** Section header button — found by its exact label. */
-  function sectionHeader(label: string): HTMLButtonElement {
-    const btn = Array.from(body().querySelectorAll('button')).find(
-      (b) => (b.textContent ?? '').trim() === label,
+  /** Section header item — a registered menu item, found by its exact label. */
+  function sectionHeader(label: string): HTMLElement {
+    const item = Array.from(body().querySelectorAll('[role="menuitem"]')).find(
+      (el) => (el.textContent ?? '').trim() === label,
     )
-    expect(btn, `section header "${label}"`).toBeTruthy()
-    return btn as HTMLButtonElement
+    expect(item, `section header "${label}"`).toBeTruthy()
+    return item as HTMLElement
+  }
+
+  /**
+   * A real bubbling keydown (the dispatch path Radix's React handlers listen
+   * on). Roving-focus moves apply from a setTimeout, so the dispatch sits
+   * inside the virtual-time window.
+   */
+  function pressKey(el: Element, key: string): Promise<void> {
+    return withVirtualTimers(() => {
+      el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+    }, 10)
   }
 
   function clickHeader(label: string) {
@@ -753,5 +764,30 @@ describe('BranchDropdown — collapsible sections', () => {
     act(() => setInputValue(input, ''))
     await flush()
     expect(body().textContent).not.toContain('feature/x')
+  })
+
+  it('section headers are arrow-reachable and Enter toggles them without closing the menu', async () => {
+    localAndRemote()
+    renderDropdown()
+    await openDropdown()
+
+    // Pointer-open leaves focus on the menu content; the FIRST item of the
+    // roving collection is the Local header (no search box below the
+    // 5-branch threshold). As a plain button it was invisible to the arrows
+    // — and Tab is prevented inside the menu, so it was unreachable.
+    const menu = body().querySelector('[data-slot="dropdown-menu-content"]') as HTMLElement
+    await pressKey(menu, 'ArrowDown')
+    expect(document.activeElement).toBe(sectionHeader('Local'))
+
+    // Enter collapses the section — the menu stays open.
+    await pressKey(document.activeElement!, 'Enter')
+    expect(isMenuOpen()).toBe(true)
+    expect(sectionHeader('Local').getAttribute('aria-expanded')).toBe('false')
+    expect(body().textContent).not.toContain('feature/x')
+
+    // Enter again re-expands (focus persisted through the header re-render).
+    await pressKey(document.activeElement!, 'Enter')
+    expect(sectionHeader('Local').getAttribute('aria-expanded')).toBe('true')
+    expect(body().textContent).toContain('feature/x')
   })
 })
