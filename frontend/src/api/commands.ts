@@ -1,4 +1,4 @@
-// Custom commands API wrappers (ADR-092)
+// Custom commands API wrappers (ADR-096)
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'

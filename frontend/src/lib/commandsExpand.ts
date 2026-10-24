@@ -1,4 +1,4 @@
-// Leading-command parsing and template expansion for custom commands (ADR-092).
+// Leading-command parsing and template expansion for custom commands (ADR-096).
 //
 // A custom command is invoked by a LEADING `/name args…` token in the chat
 // input (or the collision-qualified `/command: name` form). Commands are NOT
@@ -58,7 +58,7 @@ export function parseLeadingCommandToken(text: string): LeadingCommandToken | nu
   return null
 }
 
-/** The four catalogs a leading plain token resolves against (ADR-092
+/** The four catalogs a leading plain token resolves against (ADR-096
  *  generalizes the ADR-076 collision rule to the command catalog). */
 export interface CommandCatalogView {
   commands: ReadonlyMap<string, CommandDescriptor>
@@ -116,7 +116,7 @@ export interface CommandExpansion {
  * are inserted LITERALLY (a `$1` inside an argument never re-expands and
  * `$&`-style replacement patterns in arguments cannot fire). `$N` beyond the
  * provided arguments and `$0` expand to the empty string. There are no
- * escape sequences in v1 (ADR-092): a literal `$1` in a template is
+ * escape sequences in v1 (ADR-096): a literal `$1` in a template is
  * indistinguishable from the placeholder.
  */
 export function expandCommand(command: CommandDescriptor, args: string): CommandExpansion {

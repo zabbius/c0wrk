@@ -1,4 +1,4 @@
-# Custom Commands (ADR-092)
+# Custom Commands (ADR-096)
 
 ## Role
 
@@ -7,7 +7,7 @@ invoked with a leading `/name` token in the chat input — the fourth `/`
 category alongside the three mention catalogs (Subagents, MCP servers,
 Skills). Commands are INVOCATIONS that replace the message with an expanded
 template; they are not mentions, do not touch the orchestrator, and have no
-capability activation modes. Decision: [ADR-092](../decisions/092-custom-commands.md).
+capability activation modes. Decision: [ADR-096](../decisions/096-custom-commands.md).
 
 ## Key Files
 
@@ -149,7 +149,7 @@ vector:
 
 ## Related Specs
 
-- [decisions/092-custom-commands.md](../decisions/092-custom-commands.md) — the decision
+- [decisions/096-custom-commands.md](../decisions/096-custom-commands.md) — the decision
 - [decisions/076-unified-slash-mentions.md](../decisions/076-unified-slash-mentions.md) — the `/` grammar and collision rule this extends
 - [capabilities.md](capabilities.md) — the activation-mode system deliberately NOT extended to commands in v1
 - [contracts/event-catalog.md](../contracts/event-catalog.md) (`commands:changed`), [contracts/desktop-frontend.md](../contracts/desktop-frontend.md) (`ListCommands`)

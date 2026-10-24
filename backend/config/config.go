@@ -2540,7 +2540,7 @@ type AgentsConfig struct {
 	MaxParallelSubagents int `yaml:"max_parallel_subagents"`
 }
 
-// CommandsConfig holds custom command discovery configuration (ADR-092).
+// CommandsConfig holds custom command discovery configuration (ADR-096).
 // Custom commands are markdown prompt templates invoked with a leading
 // /name token in the chat input.
 type CommandsConfig struct {

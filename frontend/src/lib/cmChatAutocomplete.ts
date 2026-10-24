@@ -215,7 +215,7 @@ function ensureRootSubscription() {
     invalidateAgentsCache()
   })
   // Global custom command directory changes (outside the workspace)
-  // invalidate the commands cache only (ADR-092).
+  // invalidate the commands cache only (ADR-096).
   subscribe('commands:changed', () => {
     invalidateCommandsCache()
   })
@@ -363,7 +363,7 @@ function chatApplyPath(absPath: string, rootPath: string | null, suffix: string,
 // One `/` source for ALL capability kinds (issue #110 + the MCP mention
 // flow): commands, subagents, MCP servers and skills share the single slash
 // trigger, presented as four labelled sections (Commands, Subagents, MCP
-// Servers, Skills). Commands are invocations (ADR-092): a picked command
+// Servers, Skills). Commands are invocations (ADR-096): a picked command
 // inserts its /name (or the collision-qualified /command: name when the name
 // collides with a mention catalog) and the send path expands the template —
 // they are not session-kind filtered (no capability modes exist for them;
@@ -421,7 +421,7 @@ async function slashSource(ctx: CompletionContext): Promise<CompletionResult | n
   const options: MentionCompletion[] = []
 
   // Commands first: section rank 0 — the "run this" affordance answers the
-  // `/` trigger like opencode's command palette (ADR-092). A command whose
+  // `/` trigger like opencode's command palette (ADR-096). A command whose
   // name collides with a visible mention catalog entry is offered in its
   // collision-qualified spelling so the send path resolves it as a command
   // (the plain spelling would be the ambiguous no-op). No session-kind

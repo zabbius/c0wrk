@@ -787,7 +787,7 @@ describe('handleSend /-ref partitioning', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Custom command invocation on the send path (ADR-092): a leading /name that
+// Custom command invocation on the send path (ADR-096): a leading /name that
 // resolves to a command REPLACES the message with the expanded template
 // (frontmatter agent → an extra requested subagent, model → the fallback
 // model override); a collision with a mention catalog stays the ADR-076

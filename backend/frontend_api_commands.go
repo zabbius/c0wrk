@@ -16,7 +16,7 @@ import (
 const commandFileExt = ".md"
 
 // commandFrontmatter is the YAML frontmatter schema of a command template
-// file (ADR-092). Unknown keys are ignored; every field is optional.
+// file (ADR-096). Unknown keys are ignored; every field is optional.
 type commandFrontmatter struct {
 	Description string `yaml:"description"`
 	Agent       string `yaml:"agent"`
@@ -24,7 +24,7 @@ type commandFrontmatter struct {
 }
 
 // ListCommands returns the custom command descriptors for /-autocomplete and
-// send-time template expansion (ADR-092): the project-local .agents/commands
+// send-time template expansion (ADR-096): the project-local .agents/commands
 // directory (highest precedence, when a project is active) plus the configured
 // global command dirs in priority order. The first file claiming a name wins;
 // results are cached and invalidated on project switches and by the

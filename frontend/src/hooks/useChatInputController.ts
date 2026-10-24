@@ -382,11 +382,11 @@ export function useChatInputController(): ChatInputController {
     }
     // Unified /-refs (issue #110 + the MCP mention flow): extract every slash
     // ref (plain and collision-qualified), then partition them against the
-    // three catalogs. A leading custom-command token (ADR-092) is resolved
+    // three catalogs. A leading custom-command token (ADR-096) is resolved
     // separately below — it is an invocation that REPLACES the message, not
     // a mention.
     let refs = extractRefs(messageText)
-    // ADR-092: parse the leading command token structurally (pure, no I/O);
+    // ADR-096: parse the leading command token structurally (pure, no I/O);
     // the catalog fetches below resolve it.
     const leadingCommand = parseLeadingCommandToken(messageText)
     // Clear the editor SYNCHRONOUSLY before any async work. A message with
@@ -445,7 +445,7 @@ export function useChatInputController(): ChatInputController {
       skillNames = mentionableNamesInContext(skillCatalog, caps?.skills, kind)
       mcpNames = mcpCatalog
     }
-    // ADR-092: leading-command invocation. A token at the very start that
+    // ADR-096: leading-command invocation. A token at the very start that
     // resolves to a command REPLACES the message with the expanded template
     // (frontmatter agent → an extra requested subagent, model → the fallback
     // model override); a collision with a mention catalog stays the ADR-076
@@ -541,7 +541,7 @@ export function useChatInputController(): ChatInputController {
       // into the now-active session would misroute the message (and bypass
       // the origin's in-flight-uploads guard checked above). A command
       // frontmatter model rides along as a FALLBACK override — the user's
-      // explicit toolbar selection still wins (ADR-092). The options
+      // explicit toolbar selection still wins (ADR-096). The options
       // argument is passed only when a binding exists so a plain send keeps
       // its historical shape.
       const mergedAgents =

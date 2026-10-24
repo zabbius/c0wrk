@@ -50,7 +50,7 @@ export interface SendOptions {
    *  message there instead of the active/origin one (e.g. the research
    *  panel's Shift-click gesture). */
   newSession?: boolean
-  /** A custom command's frontmatter model binding (ADR-092): a FALLBACK
+  /** A custom command's frontmatter model binding (ADR-096): a FALLBACK
    *  override used only when the user has no explicit model selected in the
    *  toolbar — an explicit selection always wins. */
   commandModel?: string

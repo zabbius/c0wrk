@@ -154,7 +154,7 @@ export function isSkillDescriptor(v: unknown): v is SkillDescriptor {
     return isObj(v) && typeof v.name === 'string' && typeof v.description === 'string'
 }
 
-/** Element guard for ListCommands (ADR-092): every field is consumed by the
+/** Element guard for ListCommands (ADR-096): every field is consumed by the
  *  completion list or the send-path expansion, so all five must be strings. */
 export function isCommandDescriptor(v: unknown): v is CommandDescriptor {
     return isObj(v)

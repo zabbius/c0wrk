@@ -4,7 +4,7 @@ Custom commands are markdown prompt templates you invoke with a leading
 `/name` token in the chat input — the fourth `/` category alongside
 subagents, MCP servers, and skills. Unlike a mention (which annotates a
 message), a command **replaces** the message with the expanded template
-before it is sent. See [ADR-092](../specs/decisions/092-custom-commands.md)
+before it is sent. See [ADR-096](../specs/decisions/096-custom-commands.md)
 for the design decision.
 
 ## Create a command

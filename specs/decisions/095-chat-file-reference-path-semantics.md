@@ -1,4 +1,4 @@
-# ADR-092: Chat File Reference Path Semantics
+# ADR-095: Chat File Reference Path Semantics
 
 ## Status
 

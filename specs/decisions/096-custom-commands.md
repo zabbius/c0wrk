@@ -1,4 +1,4 @@
-# ADR-092: Custom Commands — the fourth `/` category (opencode-style prompt templates)
+# ADR-096: Custom Commands — the fourth `/` category (opencode-style prompt templates)
 
 ## Status
 

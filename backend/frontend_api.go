@@ -298,7 +298,7 @@ type FrontendAPI struct {
 	agentWatchersMu sync.Mutex
 
 	// Command cache (invalidated on project switch). Mirrors the skill cache
-	// for custom command template discovery (ADR-092).
+	// for custom command template discovery (ADR-096).
 	commandCache            []CommandDescriptorDTO
 	commandCacheGen         uint64 // atomic — bumped to invalidate
 	commandCacheGenSnapshot uint64
@@ -751,7 +751,7 @@ func (l *FrontendAPILifecycle) Init(cfg FrontendAPIConfig) *FrontendAPI {
 		warnIfSeedDirUndiscovered(f.logger, "agents", seedAgentsDir, nil)
 	}
 
-	// Start watchers for global custom command directories (ADR-092). Mirrors
+	// Start watchers for global custom command directories (ADR-096). Mirrors
 	// the skill watchers: changes invalidate the command cache and emit
 	// commands:changed so the frontend autocomplete refreshes. The resolved
 	// list also seeds ListCommands's discovery — the backend owns command

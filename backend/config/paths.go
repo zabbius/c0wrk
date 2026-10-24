@@ -705,7 +705,7 @@ func ProjectAgentsPath(workspacePath string) string {
 
 // ProjectCommandsPath returns the project-local custom commands directory.
 // This is <workspacePath>/.agents/commands. Mirrors ProjectSkillsPath and
-// ProjectAgentsPath for the command template discovery (ADR-092).
+// ProjectAgentsPath for the command template discovery (ADR-096).
 func ProjectCommandsPath(workspacePath string) string {
 	return filepath.Join(workspacePath, ".agents", "commands")
 }
