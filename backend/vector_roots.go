@@ -1,31 +1,8 @@
-// frontend_api_vector_roots.go — the per-root vector-index registry (ADR-080).
-//
-// The vector index used to be a process-wide SINGLETON whose single active
-// target was re-pointed on every SendMessage and project switch. A background
-// session's semantic_search therefore resolved against whatever tree the
-// singleton happened to target, and the user-facing search followed the last
-// driven session instead of the tree the Git panel focused. This file replaces
-// the singleton with one Manager per workspace root:
-//
-//   - Every root ever routed to gets its own vectorindex.Manager with its own
-//     persisted storage dir and its own embedding-cache root (exactly one
-//     manager per root, ever — two managers must never open the same chromem
-//     persistent storage). Concurrent sessions on different trees get
-//     disjoint, simultaneously searchable index state.
-//   - AGENT routing: the semantic_search tool and the RAG-hint injection run
-//     under a task context carrying the session's workspace root
-//     (sdktools.WithWorkspacePathNoProbe, set by the session manager before
-//     Orchestrator.HandleMessage). The router closure resolves THAT root, so a
-//     session always searches its own tree regardless of which session is
-//     active, visible, or focused.
-//   - USER routing: SearchVectorStore / GetVectorIndexStatus /
-//     ReindexVectorIndex have no session context — they resolve the Git-panel
-//     focus root (SetGitPanelFocus), so the user's search follows the tree the
-//     panel displays.
-//
-// The registry keeps a small LRU of live managers (pinned focus + a bounded
-// set of recent roots); evicted roots reopen transparently from their
-// persisted gob state on the next search.
+// frontend_api_vector_roots.go — the per-root vector-index registry (ADR-081):
+// one Manager per workspace root instead of the singleton-era re-pointing.
+// Agent-side routing is context-borne, user-side routing follows the Git-panel
+// focus. See specs/domains/workspace.md (session-workspace routing) and
+// specs/decisions/081-vector-per-root-registry.md.
 package backend
 
 import (
@@ -34,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -43,17 +21,13 @@ import (
 	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
-// vectorRootsCapacity bounds how many per-root managers stay live at once.
-// The focus root is pinned; least-recently-used others are shut down
-// (async — Manager.Shutdown is internally bounded) and reopen transparently
-// from their persisted state on the next search. Four covers a checkout plus
-// the managed trees of the sessions a user realistically keeps warm.
+// vectorRootsCapacity bounds the live per-root managers; the focus root is
+// pinned, least-recently-used others are shut down and reopen transparently
+// from their persisted state on the next search.
 const vectorRootsCapacity = 4
 
-// vectorRootsEvictWait bounds how long ManagerForRoot waits for an in-flight
-// eviction's Shutdown drain before giving up with a retryable error. The
-// manager's own Shutdown is bounded by two grace periods (init + indexing,
-// 10 s each), so this sits comfortably above the worst-case drain.
+// vectorRootsEvictWait bounds the wait for an in-flight eviction's Shutdown
+// drain; it sits above the manager's own two 10 s grace periods.
 const vectorRootsEvictWait = 25 * time.Second
 
 // errVectorStillLoading is the pre-init surface: the background ONNX init has
@@ -64,6 +38,12 @@ var errVectorStillLoading = errors.New("vector search not ready (index backend s
 // errVectorUnavailable is the post-init surface when the embedder never came
 // up (model files missing, ONNX load failure) — no manager can ever be built.
 var errVectorUnavailable = errors.New("vector search unavailable (embedding backend failed to initialize; see vector_index:status events or the session log)")
+
+// errVectorDisabled is the switched-off surface: vector_index.enabled is
+// false, the registry was Disable()d, and every routing path (semantic_search
+// tool, RAG hints, user-facing search) fails fast with it until the
+// restartable init re-wires a factory (UpdateIndexingSettings enabled=true).
+var errVectorDisabled = errors.New("vector search is disabled (vector_index.enabled is false)")
 
 // errVectorNoTarget is the legacy "nothing to search with" surface: no
 // workspace in context and no focus root resolved.
@@ -77,10 +57,9 @@ type vectorRootEntry struct {
 }
 
 // VectorRoots owns one vectorindex.Manager per workspace root and the
-// Git-panel focus the user-facing RPCs follow. All methods are safe for
-// concurrent use; manager creation is single-flight per root under mu (two
-// concurrent searches on one cold root must not build two managers over the
-// same chromem storage dir).
+// Git-panel focus the user-facing RPCs follow. Manager creation is
+// single-flight per root under mu — two managers must never open the same
+// chromem persistent storage.
 type VectorRoots struct {
 	f *FrontendAPI
 
@@ -88,24 +67,29 @@ type VectorRoots struct {
 	roots map[string]*vectorRootEntry // key: canonical (filepath.Clean) root
 	// closing tracks in-flight LRU evictions: root → channel closed when the
 	// evicted manager's Shutdown has RETURNED. ManagerForRoot waits (bounded)
-	// on that channel before building a fresh manager, so the documented
-	// single-flight-per-root invariant also holds across the eviction window:
-	// without it, a reopen during the bounded drain would build a second
-	// manager over the same chromem storage while the first is still closing
-	// (concurrent gob/sidecar writes and handle close).
+	// on it before building a fresh manager, so single-flight-per-root holds
+	// across the eviction window — a reopen during the drain would otherwise
+	// build a second manager over the same chromem storage.
 	closing map[string]chan struct{}
 	focus   string // canonical focus root; "" = none yet
 
-	// factory builds a fresh manager wired to the process-global embedder.
-	// Nil until the desktop background ONNX init succeeds; once the ready
-	// channel is closed with factory still nil, the embedder is known dead
-	// and ManagerForRoot fails with errVectorUnavailable instead of waiting.
+	// factory builds a fresh manager wired to the process-global embedder; nil
+	// until the desktop background ONNX init succeeds. Once ready is closed
+	// with factory still nil, the embedder is known dead and ManagerForRoot
+	// fails with errVectorUnavailable instead of waiting.
 	factory func() (*vectorindex.Manager, error)
 	ready   <-chan struct{}
 	// closeEmbedder releases the process-global embedder exactly once, after
-	// every manager is shut down (ShutdownAll). Per-manager CloseFn stays nil:
-	// an LRU eviction must never close the shared ONNX runtime.
+	// every manager is shut down (ShutdownAll); per-manager CloseFn stays nil
+	// — an LRU eviction must never close the shared ONNX runtime.
 	closeEmbedder func() error
+
+	// disabled is the live off-switch set by Disable() (UpdateIndexingSettings
+	// enabled=false, or the startup skip when the config boots with
+	// vector_index.enabled: false). While set, every path returns
+	// errVectorDisabled and FactoryReady reports false; SetFactory (the
+	// restartable desktop init) clears it.
+	disabled bool
 
 	shutdown bool
 }
@@ -118,13 +102,10 @@ func newVectorRoots(f *FrontendAPI) *VectorRoots {
 	}
 }
 
-// SetFactory wires the manager factory produced by the desktop background
-// ONNX init, together with the readiness channel (closed exactly once when
-// the init settles — success or known-unavailable) and the once-guarded
-// embedder close for final shutdown. Called once from the desktop layer.
-// If ShutdownAll already ran (quit during the background init), the embedder
-// is closed right here: the registry will never build a manager, so nobody
-// else would release it.
+// SetFactory wires the manager factory from the desktop background ONNX init,
+// with the readiness channel and the once-guarded embedder close. Called once
+// from the desktop layer; if ShutdownAll already ran, the embedder is closed
+// right here — nobody else would release it.
 func (vr *VectorRoots) SetFactory(factory func() (*vectorindex.Manager, error), ready <-chan struct{}, closeEmbedder func() error) {
 	vr.mu.Lock()
 	defer vr.mu.Unlock()
@@ -140,18 +121,27 @@ func (vr *VectorRoots) SetFactory(factory func() (*vectorindex.Manager, error), 
 	vr.factory = factory
 	vr.ready = ready
 	vr.closeEmbedder = closeEmbedder
+	// A factory landing here is the restartable init's success path
+	// (startup or an UpdateIndexingSettings enabled=true restart): the
+	// registry is back on, so a previous Disable() no longer applies.
+	vr.disabled = false
 }
 
 // FactoryReady reports whether the registry can build managers: the factory
 // is set, or the background init has settled (in which case creation fails
 // fast with errVectorUnavailable). The project-switch handshake uses this to
-// decide between applying and deferring a switch's vector setup.
+// decide between applying and deferring a switch's vector setup. A disabled
+// registry reports false: there is nothing to set up now, and the switch's
+// deferral is drained by the restart when the user re-enables indexing.
 func (vr *VectorRoots) FactoryReady() bool {
 	if vr == nil {
 		return false
 	}
 	vr.mu.Lock()
 	defer vr.mu.Unlock()
+	if vr.disabled {
+		return false
+	}
 	return vr.factory != nil || vr.readySettledLocked()
 }
 
@@ -169,15 +159,75 @@ func (vr *VectorRoots) readySettledLocked() bool {
 	}
 }
 
-// canonicalRoot normalizes a workspace root into the registry key. Roots
-// arrive absolute from every producer (session workspace bindings, Git-panel
-// focus, project registration); Clean keeps trailing separators and dot
-// segments from forking the map.
+// canonicalRoot normalizes a workspace root into the registry key; Clean keeps
+// trailing separators and dot segments from forking the map.
 func canonicalRoot(root string) string {
 	if root == "" {
 		return ""
 	}
 	return filepath.Clean(root)
+}
+
+// ---------------------------------------------------------------------------
+// Indexing policy: live-config snapshot for the manager factory
+// ---------------------------------------------------------------------------
+
+// VectorIndexingPolicy is the resolved indexing-policy half of
+// vector_index.* — the fields a manager factory must read from the LIVE
+// config (under configMu), never from the startup snapshot, because
+// UpdateIndexingSettings persists them at runtime:
+//
+//   - IgnoreFiles selects the honoured ignore files for the index walk
+//     (nil = both .gitignore and .aiignore; a non-nil slice is the exact
+//     honoured set; an empty non-nil slice honours neither).
+//   - ExcludePatterns are the subtractive exclude-only globs.
+//   - IncludeSubmodules toggles nested-repo (submodule) directories.
+//
+// It maps 1:1 onto vectorindex.ManagerConfig's IgnoreFiles /
+// ExcludePatterns / IncludeSubmodules.
+type VectorIndexingPolicy struct {
+	IgnoreFiles       []string
+	ExcludePatterns   []string
+	IncludeSubmodules bool
+}
+
+// ResolveVectorIndexingPolicy maps the config section's pointer-bool gates
+// onto the indexer's ignore-file selection: both respected → nil (the
+// historical default), either one off → the exact honoured set, both off →
+// the empty non-nil slice (the noop-ignore sentinel). The resolved values
+// are the ones ApplyDefaults would materialize, so this works on both the
+// live config and a freshly loaded one.
+func ResolveVectorIndexingPolicy(vi config.VectorIndexConfig) VectorIndexingPolicy {
+	git, ai := vi.ShouldRespectGitIgnore(), vi.ShouldRespectAIIgnore()
+	var ignoreFiles []string
+	switch {
+	case git && ai:
+		ignoreFiles = nil
+	case git:
+		ignoreFiles = []string{".gitignore"}
+	case ai:
+		ignoreFiles = []string{".aiignore"}
+	default:
+		ignoreFiles = []string{}
+	}
+	return VectorIndexingPolicy{
+		IgnoreFiles:       ignoreFiles,
+		ExcludePatterns:   vi.ExcludePatterns,
+		IncludeSubmodules: vi.ShouldIndexSubmodules(),
+	}
+}
+
+// indexingPolicySnapshotLocked reads the live indexing policy under
+// configMu. The exclude list is cloned so a later settings save that
+// replaces the config's slice cannot race a manager build reading the
+// snapshot.
+func (f *FrontendAPI) indexingPolicySnapshotLocked() VectorIndexingPolicy {
+	if f.config == nil {
+		return ResolveVectorIndexingPolicy(config.VectorIndexConfig{})
+	}
+	pol := ResolveVectorIndexingPolicy(f.config.VectorIndex)
+	pol.ExcludePatterns = slices.Clone(pol.ExcludePatterns)
+	return pol
 }
 
 // awaitReady gates on the background ONNX init: when block is set it waits
@@ -187,7 +237,11 @@ func canonicalRoot(root string) string {
 func (vr *VectorRoots) awaitReady(ctx context.Context, block bool) error {
 	vr.mu.Lock()
 	ready := vr.ready
+	disabled := vr.disabled
 	vr.mu.Unlock()
+	if disabled {
+		return errVectorDisabled
+	}
 	if ready == nil {
 		return errVectorStillLoading
 	}
@@ -207,19 +261,11 @@ func (vr *VectorRoots) awaitReady(ctx context.Context, block bool) error {
 	}
 }
 
-// resolveRootPlan derives (projectID, storage, cache) for a workspace root.
-// The root must be either a registered project's checkout or a managed
-// worktree of one — vector indexing is a CODE-project feature; CHAT session
-// workspaces and auxiliary work dirs have no index.
-//
-// ctx bounds the one store round-trip here: the projects listing runs on
-// ListProjectsCtx derived from the CALLER's ctx, capped per op at
-// sessionStoreOpTimeout (the same budget the plain ListProjects() applied
-// via Manager.opCtx). The project-switch critical section passes switchCtx,
-// so its vector-leg listing cannot outlive switchSectionTimeout (see
-// switchSectionTimeout for the waits that deliberately stay outside that
-// funnel). Everything after the listing — the manager build, SwitchProject's
-// async init, the eviction-drain wait — stays time-bounded, not ctx-bounded.
+// resolveRootPlan derives (projectID, storage, cache) for a workspace root:
+// a registered project's checkout or a managed worktree of one — vector
+// indexing is a CODE-project feature. ctx bounds the one store round-trip
+// (the projects listing); everything after it stays time-bounded, not
+// ctx-bounded.
 func (f *FrontendAPI) resolveRootPlan(ctx context.Context, root string) (projectID, storagePath, cachePath string, err error) {
 	f.seedAcquire()
 	if f.projectManager == nil {
@@ -263,14 +309,9 @@ func (f *FrontendAPI) resolveRootPlan(ctx context.Context, root string) (project
 }
 
 // ManagerForRoot returns the live manager for root, creating and initializing
-// it on first touch. Creation is single-flight per root under vr.mu — two
-// concurrent cold searches on one root must never build two managers over the
-// same chromem persistent storage. The heavy init (branch detect, collection
-// open, background indexing) runs asynchronously inside the manager exactly
-// as it did for the singleton; callers gate on Service.WaitReady. ctx bounds
-// only the projects-listing store read during root resolution (see
-// resolveRootPlan); the manager build below and the bounded eviction-drain
-// wait are time-bounded, not ctx-bounded.
+// it on first touch. Creation is single-flight per root under vr.mu (see
+// VectorRoots.closing for the eviction window); the heavy init runs
+// asynchronously inside the manager.
 func (vr *VectorRoots) ManagerForRoot(ctx context.Context, root string) (*vectorindex.Manager, error) {
 	root = canonicalRoot(root)
 	if root == "" {
@@ -282,15 +323,17 @@ func (vr *VectorRoots) ManagerForRoot(ctx context.Context, root string) (*vector
 	if vr.shutdown {
 		return nil, errors.New("vector search is shutting down")
 	}
+	if vr.disabled {
+		return nil, errVectorDisabled
+	}
 	if e, ok := vr.roots[root]; ok {
 		e.lastUsed = time.Now()
 		return e.mgr, nil
 	}
 	if ch, evicting := vr.closing[root]; evicting {
-		// An eviction of this root is still draining: the outgoing manager
-		// is being shut down over the very storage a fresh manager would
-		// open. Wait (bounded) for the drain, then re-read the map — this is
-		// what keeps creation single-flight across the eviction window.
+		// An eviction of this root is still draining over the very storage a
+		// fresh manager would open: wait (bounded) for the drain, then re-read
+		// the map — this keeps creation single-flight across the window.
 		vr.mu.Unlock()
 		select {
 		case <-ch:
@@ -303,6 +346,9 @@ func (vr *VectorRoots) ManagerForRoot(ctx context.Context, root string) (*vector
 		// concurrent creator, a fresh eviction, or ShutdownAll.
 		if vr.shutdown {
 			return nil, errors.New("vector search is shutting down")
+		}
+		if vr.disabled {
+			return nil, errVectorDisabled
 		}
 		if e, ok := vr.roots[root]; ok {
 			e.lastUsed = time.Now()
@@ -339,10 +385,9 @@ func (vr *VectorRoots) ManagerForRoot(ctx context.Context, root string) (*vector
 }
 
 // evictLocked enforces vectorRootsCapacity: shut down the least-recently-used
-// non-focus managers beyond the cap. The focus manager is pinned. Shutdown is
-// dispatched to a goroutine (it drains the manager's init/indexing goroutines
-// under an internal bounded grace) so a search path never pays the drain;
-// the goroutine's exit is that bounded Shutdown returning.
+// non-focus managers beyond the cap. Shutdown is dispatched to a goroutine so
+// a search path never pays the drain; the goroutine's exit is that bounded
+// Shutdown returning.
 func (vr *VectorRoots) evictLocked() {
 	overflow := len(vr.roots) - vectorRootsCapacity
 	if overflow <= 0 {
@@ -370,11 +415,8 @@ func (vr *VectorRoots) evictLocked() {
 		v := candidates[oldest]
 		candidates = append(candidates[:oldest], candidates[oldest+1:]...)
 		delete(vr.roots, v.root)
-		// Park the root in the closing set until the evicted manager's
-		// Shutdown has fully returned, so a concurrent ManagerForRoot waits
-		// for the drain instead of building a second manager over the same
-		// chromem persistent storage. The channel is closed under vr.mu only
-		// after Shutdown returned, so "gone from the map" and "safe to
+		// Park the root in the closing set until Shutdown has returned — see
+		// VectorRoots.closing for why "gone from the map" and "safe to
 		// rebuild" are one atomic transition for any waiter.
 		closed := make(chan struct{})
 		if vr.closing == nil {
@@ -394,11 +436,9 @@ func (vr *VectorRoots) evictLocked() {
 	}
 }
 
-// rootCallbacks builds the SwitchProject status callbacks for root. Progress
-// and failure reach the vector_index:status UI stream ONLY while root is the
-// current focus (the stream is a single UI channel; a background tree's
-// indexing must not masquerade as the visible one). Non-focus managers log
-// the same facts instead.
+// rootCallbacks builds the SwitchProject status callbacks for root: the
+// vector_index:status stream is a single UI channel, so only the focus root
+// emits — non-focus managers log the same facts instead.
 func (vr *VectorRoots) rootCallbacks(root string) vectorindex.ProjectCallbacks {
 	emitIfFocused := func(st VectorIndexStatus) {
 		vr.mu.Lock()
@@ -431,14 +471,10 @@ func (vr *VectorRoots) rootCallbacks(root string) vectorindex.ProjectCallbacks {
 	}
 }
 
-// ApplyFocus moves the Git-panel focus root and makes sure a manager exists
-// for it, then emits the manager's current status snapshot once so the UI
-// stream re-syncs to the newly visible tree. The outgoing focus manager is
-// left running: a background session on that tree keeps searching its own
-// manager, and killing its in-flight index build because the user looked
-// away would degrade exactly the routing this registry exists to provide.
-// ctx bounds the root-resolution store read (see resolveRootPlan); the
-// project-switch critical section passes its switchCtx here.
+// ApplyFocus moves the Git-panel focus root, ensures a manager exists for it,
+// and emits its current status snapshot so the UI stream re-syncs. The
+// outgoing focus manager stays running: a background session keeps searching
+// its own tree.
 func (vr *VectorRoots) ApplyFocus(ctx context.Context, root string) error {
 	root = canonicalRoot(root)
 	if root == "" {
@@ -475,9 +511,8 @@ func (vr *VectorRoots) FocusRoot() string {
 	return vr.focus
 }
 
-// FocusManager returns (creating if needed) the manager for the current
-// focus root — the manager the user-facing RPCs operate on. ctx bounds the
-// root-resolution store read (see resolveRootPlan).
+// FocusManager returns (creating if needed) the manager for the current focus
+// root — the manager the user-facing RPCs operate on.
 func (vr *VectorRoots) FocusManager(ctx context.Context) (*vectorindex.Manager, error) {
 	root := vr.FocusRoot()
 	if root == "" {
@@ -486,10 +521,9 @@ func (vr *VectorRoots) FocusManager(ctx context.Context) (*vectorindex.Manager, 
 	return vr.ManagerForRoot(ctx, root)
 }
 
-// LiveManager returns the already-live manager for root WITHOUT creating
-// one — the lookup-only path for notification and status probes. Nil when
-// the root has no live manager (it will be built on the next routed search).
-// A hit refreshes the entry's LRU recency.
+// LiveManager returns the already-live manager for root WITHOUT creating one —
+// the lookup-only path for notification and status probes. A hit refreshes the
+// entry's LRU recency.
 func (vr *VectorRoots) LiveManager(root string) *vectorindex.Manager {
 	root = canonicalRoot(root)
 	if root == "" {
@@ -514,12 +548,9 @@ func (vr *VectorRoots) liveRootsForTest() int {
 }
 
 // ManagerForCleanup returns a manager usable for persisted-storage cleanup
-// (DeleteProjectData is a plain fs + park-slot operation, so ANY manager can
-// run it): the focus manager when one is live, any other live manager
-// otherwise, or — when the factory is ready — a THROWAWAY manager the caller
-// must Shutdown after use (disposable=true). Nil when nothing is available
-// (still loading / embedder unavailable): cleanup then stays
-// best-effort-skipped, matching the pre-registry behavior.
+// (DeleteProjectData is a plain fs operation, so ANY manager can run it): the
+// focus manager when live, any live manager otherwise, or a THROWAWAY one the
+// caller must Shutdown (disposable=true). Nil when nothing is available.
 func (vr *VectorRoots) ManagerForCleanup() (mgr *vectorindex.Manager, disposable bool) {
 	vr.mu.Lock()
 	var live *vectorindex.Manager
@@ -545,10 +576,8 @@ func (vr *VectorRoots) ManagerForCleanup() (mgr *vectorindex.Manager, disposable
 }
 
 // ManagerForContext is the agent-side routing primitive: it resolves the
-// manager for the workspace root carried by the executor context (the
-// session's own tree), falling back to the focus root when the context
-// carries none. Every semantic_search call and RAG-hint injection flows
-// through here.
+// manager for the executor context's workspace root (the session's own tree),
+// falling back to the focus root when the context carries none.
 func (vr *VectorRoots) ManagerForContext(ctx context.Context) (*vectorindex.Manager, error) {
 	root := canonicalRoot(sdktools.WorkspacePathFrom(ctx))
 	if root == "" {
@@ -579,8 +608,7 @@ func (vr *VectorRoots) NotifyFileChangeForRoot(root string) {
 }
 
 // Release shuts down and forgets the manager for root, returning it so the
-// caller can clean the root's persisted data (DeleteProjectData stays
-// callable after Shutdown). Nil when no manager was live.
+// caller can clean the root's persisted data. Nil when none was live.
 func (vr *VectorRoots) Release(root string) *vectorindex.Manager {
 	root = canonicalRoot(root)
 	vr.mu.Lock()
@@ -617,11 +645,9 @@ func (vr *VectorRoots) ReleaseProject(projectID string) []*vectorindex.Manager {
 			vr.focus = ""
 		}
 		// Park the root in the closing set exactly like the LRU eviction
-		// above: "gone from the map" and "safe to rebuild" must be one
-		// atomic transition, or a search issued while this manager's
-		// Shutdown is still draining (a task in the project being deleted
-		// is cancelled only later) rebuilds a second manager over the same
-		// chromem storage.
+		// above (see VectorRoots.closing): a search issued while this
+		// Shutdown is still draining must not rebuild over the same chromem
+		// storage.
 		closed := make(chan struct{})
 		if vr.closing == nil {
 			vr.closing = make(map[string]chan struct{})
@@ -643,9 +669,9 @@ func (vr *VectorRoots) ReleaseProject(projectID string) []*vectorindex.Manager {
 	return released
 }
 
-// ShutdownAll shuts down every live manager (bounded individually by
-// Manager.Shutdown's internal grace) and then closes the process-global
-// embedder once. Idempotent; called from FrontendAPILifecycle.Cleanup.
+// ShutdownAll shuts down every live manager and then closes the
+// process-global embedder once. Idempotent; called from
+// FrontendAPILifecycle.Cleanup.
 func (vr *VectorRoots) ShutdownAll() {
 	if vr == nil {
 		return
@@ -675,6 +701,127 @@ func (vr *VectorRoots) ShutdownAll() {
 	}
 }
 
+// Disable is the live off-switch behind UpdateIndexingSettings enabled=false
+// (and the startup skip when the config boots with indexing off): it shuts
+// down every live manager, releases the process-global embedder, drops the
+// factory, and parks the registry so every routing path fails fast with
+// errVectorDisabled until the restartable init re-wires a factory
+// (SetFactory clears the flag). Unlike ShutdownAll it is NOT final — the
+// focus root is kept (it describes the Git panel, not a manager) and the
+// shutdown flag stays clear so a later enable works. Idempotent: a second
+// call on an already-disabled registry finds no managers and a nil
+// closeEmbedder and is a pure no-op. The desktop launcher hook must
+// invalidate any in-flight init BEFORE this runs (see
+// SetVectorIndexEnabledHook): a late SetFactory would otherwise resurrect a
+// factory after Disable unwound it.
+func (vr *VectorRoots) Disable() {
+	if vr == nil {
+		return
+	}
+	vr.mu.Lock()
+	if vr.shutdown {
+		vr.mu.Unlock()
+		return
+	}
+	vr.disabled = true
+	managers := make([]*vectorindex.Manager, 0, len(vr.roots))
+	for root, e := range vr.roots {
+		managers = append(managers, e.mgr)
+		delete(vr.roots, root)
+	}
+	closeEmbedder := vr.closeEmbedder
+	// Drop the wiring: factory/ready must read as "nothing wired" so
+	// FactoryReady() reports false (the project-switch deferral path) and a
+	// stray awaitReady waiter (blocked on the OLD channel) still unblocks —
+	// it re-checks the disabled flag above on its next call.
+	vr.factory = nil
+	vr.ready = nil
+	vr.closeEmbedder = nil
+	vr.mu.Unlock()
+
+	for _, mgr := range managers {
+		mgr.Shutdown()
+	}
+	if closeEmbedder != nil {
+		if err := closeEmbedder(); err != nil {
+			vr.f.log().Warn("failed to close vector embedder on disable", "error", err)
+		}
+	}
+}
+
+// Disabled reports whether the registry is parked by Disable (vector_index.
+// enabled: false). Exposed for status surfaces.
+func (vr *VectorRoots) Disabled() bool {
+	if vr == nil {
+		return false
+	}
+	vr.mu.Lock()
+	defer vr.mu.Unlock()
+	return vr.disabled
+}
+
+// ReloadPolicy applies an indexing-policy change (exclude_patterns /
+// index_submodules / respect_gitignore / respect_aiignore) while indexing
+// stays enabled: every live manager is released — each one baked the
+// previous policy into its Indexer at SwitchProject — and the focus root's
+// manager is rebuilt immediately so the next (incremental) pass applies the
+// new policy and evicts files the new exclude set covers. Non-focus roots
+// pick the policy up when next routed to (their managers are built from the
+// live config by the factory). Roots whose Shutdown is still draining are
+// parked in the closing set exactly like an eviction, so a concurrent search
+// cannot rebuild a second manager over the same chromem storage.
+func (vr *VectorRoots) ReloadPolicy(ctx context.Context) {
+	if vr == nil {
+		return
+	}
+	vr.mu.Lock()
+	if vr.shutdown || vr.disabled {
+		vr.mu.Unlock()
+		return
+	}
+	focus := vr.focus
+	type closingEntry struct {
+		root   string
+		closed chan struct{}
+	}
+	released := make([]*vectorindex.Manager, 0, len(vr.roots))
+	closing := make([]closingEntry, 0, len(vr.roots))
+	for root, e := range vr.roots {
+		released = append(released, e.mgr)
+		delete(vr.roots, root)
+		closed := make(chan struct{})
+		if vr.closing == nil {
+			vr.closing = make(map[string]chan struct{})
+		}
+		vr.closing[root] = closed
+		closing = append(closing, closingEntry{root: root, closed: closed})
+	}
+	vr.mu.Unlock()
+
+	for i, mgr := range released {
+		mgr.Shutdown()
+		e := closing[i]
+		vr.mu.Lock()
+		if ch, ok := vr.closing[e.root]; ok && ch == e.closed {
+			delete(vr.closing, e.root)
+		}
+		close(e.closed)
+		vr.mu.Unlock()
+	}
+	if len(released) > 0 {
+		vr.f.log().Info("vector roots: released live managers for an indexing-policy change", "count", len(released))
+	}
+	// Rebuild the focus root so the UI streams the fresh pass and the new
+	// policy takes effect without waiting for the next routed search. The
+	// factory snapshots the live config, so the rebuilt manager carries the
+	// policy that was just persisted.
+	if focus != "" {
+		if err := vr.ApplyFocus(ctx, focus); err != nil {
+			vr.f.log().Warn("vector roots: focus rebuild after policy change failed", "root", focus, "error", err)
+		}
+	}
+}
+
 // worktreeStorageNames lists the per-tree storage roots under a project
 // vector index's worktrees container. A read error (missing container — the
 // project never indexed a managed tree) yields nil: nothing to enumerate.
@@ -694,12 +841,10 @@ func worktreeStorageNames(viRoot string) []string {
 // Router: the shared search closures (semantic_search tool + RAG hints)
 // ---------------------------------------------------------------------------
 
-// SetVectorRoots late-binds the per-root registry onto the Application. The
-// registry lives on FrontendAPI (it emits UI events and resolves the Git-panel
-// focus), which is constructed after the Application; the search closures
-// registered on the orchestrator builder resolve it at call time and report
-// the still-loading error until this wiring lands (microseconds later in
-// startup, and before any session can run a tool).
+// SetVectorRoots late-binds the per-root registry onto the Application; the
+// search closures resolve it at call time and report the still-loading error
+// until this wiring lands (microseconds later in startup, and before any
+// session can run a tool).
 func (app *Application) SetVectorRoots(vr *VectorRoots) {
 	app.vectorRootsPtr.Store(vr)
 }
@@ -709,14 +854,10 @@ func (app *Application) vectorRootsRegistry() *VectorRoots {
 	return app.vectorRootsPtr.Load()
 }
 
-// buildVectorRouter produces the VectorSearchFunc / VectorSearchWaitFunc pair
-// routed per workspace root. It preserves the singleton-era dispatch contract
-// exactly (the deleted desktop buildVectorCallbacks): waitFunc is THE bounded
-// readiness waiter under one searchWaitTimeout deadline covering the embedder
-// wait and the per-root Service.WaitReady; searchFunc never waits for index
-// readiness (HybridSearchNoWait — an incremental pass starting between the
-// caller's gate and the call fails fast with the actionable status instead of
-// blocking); waitTimeout <= 0 is the explicit fail-fast sentinel.
+// buildVectorRouter produces the per-root VectorSearchFunc /
+// VectorSearchWaitFunc pair. waitFunc is THE bounded readiness waiter under
+// one searchWaitTimeout deadline; searchFunc never waits for index readiness;
+// waitTimeout <= 0 is the explicit fail-fast sentinel.
 func (app *Application) buildVectorRouter(waitTimeout time.Duration) (builtins.VectorSearchFunc, builtins.VectorSearchWaitFunc) {
 	resolve := func(ctx context.Context) (*VectorRoots, *vectorindex.Manager, error) {
 		vr := app.vectorRootsRegistry()
@@ -728,11 +869,10 @@ func (app *Application) buildVectorRouter(waitTimeout time.Duration) (builtins.V
 	}
 
 	searchFunc := builtins.VectorSearchFunc(func(ctx context.Context, opts builtins.VectorSearchOptions) ([]builtins.VectorSearchResult, error) {
-		// The timeout wrap bounds the query execution only (embedding the
-		// query, scanning and fusing) — defense-in-depth, not a readiness
-		// wait. Readiness is the caller's bounded step (waitFunc for the
-		// tool, the shared-deadline pre-wait for RAG hints), and the search
-		// below never waits for it.
+		// The timeout wrap bounds query execution only (embedding, scan,
+		// fuse) — defense-in-depth, not a readiness wait; readiness is the
+		// caller's bounded step (waitFunc for the tool, the shared-deadline
+		// pre-wait for RAG hints).
 		if waitTimeout > 0 {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, waitTimeout)
@@ -745,10 +885,8 @@ func (app *Application) buildVectorRouter(waitTimeout time.Duration) (builtins.V
 		if err := vr.awaitReady(ctx, waitTimeout > 0); err != nil {
 			return nil, err
 		}
-		// Never enter a blocking readiness wait here: an incremental pass
-		// starting between the caller's readiness gate and this call must
-		// fail fast with the actionable status (progress, current file),
-		// not block until the pass finishes.
+		// Never a blocking readiness wait here: a pass starting between the
+		// caller's gate and this call must fail fast, not block.
 		results, err := mgr.Service().HybridSearchNoWait(ctx, vectorindex.SearchOptions{
 			Query:       opts.Query,
 			TopK:        opts.TopK,
@@ -794,9 +932,8 @@ func (app *Application) buildVectorRouter(waitTimeout time.Duration) (builtins.V
 			}
 			return nil
 		}
-		// One deadline covers both stages: waiting for the embedder
-		// (the background init) and waiting for per-root index readiness
-		// (Service.WaitReady).
+		// One deadline covers both stages: the embedder wait (background
+		// init) and the per-root index readiness (Service.WaitReady).
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, waitTimeout)
 		defer cancel()
