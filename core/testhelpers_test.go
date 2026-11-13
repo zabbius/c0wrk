@@ -246,7 +246,7 @@ type mockEmitter struct {
 		content                   string
 		inputTokens, outputTokens int
 	}
-	planStepStarts    []struct{ stepID, description, summary string }
+	planStepStarts    []struct{ stepID, description, summary, model string }
 	planStepCompletes []struct {
 		stepID   string
 		success  bool
@@ -268,9 +268,9 @@ type mockEmitter struct {
 
 func (m *mockEmitter) Routing(_, _, _ string)                               {}
 func (m *mockEmitter) PlanGenerated(_ int, _ []orchestration.PlanStepEvent) {}
-func (m *mockEmitter) PlanStepStart(stepID, description, summary string) {
+func (m *mockEmitter) PlanStepStart(stepID, description, summary, model string) {
 	m.eventOrder = append(m.eventOrder, "plan_step_start")
-	m.planStepStarts = append(m.planStepStarts, struct{ stepID, description, summary string }{stepID, description, summary})
+	m.planStepStarts = append(m.planStepStarts, struct{ stepID, description, summary, model string }{stepID, description, summary, model})
 }
 func (m *mockEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string) {
 	m.eventOrder = append(m.eventOrder, "plan_step_complete")
@@ -294,7 +294,7 @@ func (m *mockEmitter) Thought(_ int, _, _ string)                               
 func (m *mockEmitter) ToolCall(_, _ int, _, _, _ string)                            {}
 func (m *mockEmitter) ToolResult(_, _, _ int, _ string, _ bool)                     {}
 func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                          {}
-func (m *mockEmitter) SubAgentLaunch(_, _ string)                                   {}
+func (m *mockEmitter) SubAgentLaunch(_, _, _ string)                                {}
 func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration, _ string) {}
 
 func (m *mockEmitter) SubAgentPaused(_ string, _ time.Duration)         {}
